@@ -1,0 +1,22 @@
+[package]
+name = "acheflow-server"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+acheflow-composition = { path = "../acheflow-composition", features=["headless"] }
+acheflow-media-api = { path = "../acheflow-media-api" }
+axum.workspace = true
+serde_json = "1"
+rml_rtmp = "0.8"
+tokio-util = { version = "0.7", features = ["rt"] }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+url = "2"
+subtle = "=2.4.1"
+tokio.workspace = true
+tower-http.workspace = true
+
+[lints]
+workspace = true
+

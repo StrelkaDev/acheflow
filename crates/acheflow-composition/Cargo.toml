@@ -1,0 +1,30 @@
+[package]
+name = "acheflow-composition"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+headless = ["dep:anyrender_vello_hybrid", "dep:vello_gpu", "dep:vello_common", "dep:rustc-hash", "dep:pollster"]
+
+[dependencies]
+style = { package="stylo", git="https://github.com/nicoburns/stylo",rev="78734bf554bb40af9dc11c0eedbe724f6055697c",default-features=false }
+wgpu = "30"
+wgpu_context = "0.10"
+anyrender = "0.14"
+peniko = "0.6"
+blitz-dom = { git="https://github.com/DioxusLabs/blitz",rev="e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc",default-features=false,features=["custom-widget"] }
+blitz-html = { git="https://github.com/DioxusLabs/blitz",rev="e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc",default-features=false }
+blitz-paint = { git="https://github.com/DioxusLabs/blitz",rev="e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc",default-features=false,features=["custom-widget"] }
+blitz-traits = { git="https://github.com/DioxusLabs/blitz",rev="e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc",default-features=false }
+anyrender_vello_hybrid = {version="0.11",optional=true}
+vello_gpu = {version="0.3",optional=true}
+vello_common = {version="0.3",optional=true}
+rustc-hash = {version="2",optional=true}
+pollster = {version="0.4",optional=true}
+
+acheflow-media-api = { path = "../acheflow-media-api" }
+image = { version = "0.25", default-features = false }
+
+[lints]
+workspace = true

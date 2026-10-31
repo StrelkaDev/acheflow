@@ -1,0 +1,49 @@
+[package]
+name = "acheflow-ui"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+futures-util = "0.3"
+acheflow-composition = { path = "../acheflow-composition" }
+# Pin the UI engine to the exact upstream API validated for native and WASM.
+acheflow-extension-api = { path = "../acheflow-extension-api" }
+acheflow-media-api = { path = "../acheflow-media-api" }
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
+dioxus-native = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false, features = ["prelude", "vello-hybrid", "woff", "net"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false }
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false, features = ["custom-widget"] }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false, features = ["custom-widget"] }
+anyrender = "0.14"
+peniko = "0.6"
+wgpu = "30"
+wgpu_context = "0.10"
+web-time = "1"
+serde.workspace = true
+serde_json = "1"
+# Enable JPEG decoding in Blitz on both native and WASM targets.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+winit = "=0.31.0-beta.4"
+tokio.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+gloo-timers = { version = "0.3", features = ["futures"] }
+web-sys = { version = "0.3", features = ["Window", "Storage", "Location", "Navigator", "Clipboard"] }
+console_error_panic_hook = "0.1"
+tracing-wasm = "0.2"
+tracing = "0.1"
+
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in"] }
+
+[lints]
+workspace = true
