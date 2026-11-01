@@ -223,7 +223,7 @@ formats or connected publishers cannot be silently replaced by another workspace
 The GUI has an explicit stop/deactivate-active-workspace action for this case.
 FFmpeg output errors redact the destination URL and key.
 
-Defaults are HTTP `127.0.0.1:8080` and RTMP `127.0.0.1:1935`. Configure
+Defaults are HTTP `127.0.0.1:21295` and RTMP `127.0.0.1:1935`. Configure
 `ACHEFLOW_HTTP_ADDR`/`ACHEFLOW_RTMP_ADDR` for remote access and an appropriate
 access boundary: the HTTP control API has no login/tenant authorization. RTMP
 tokens authorize publishers but plain RTMP does not encrypt them. New source URLs

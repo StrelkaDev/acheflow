@@ -5,11 +5,19 @@ use crate::{
     workspaces::{WorkspaceSwitcher, Workspaces, use_workspaces},
 };
 use acheflow_extension_api::ExtensionPanel;
+use base64::Engine;
 use dioxus_native::{CustomWidgetAttr, prelude::*};
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn dashboard() -> Element {
+    let logo = use_hook(|| {
+        format!(
+            "data:image/svg+xml;base64,{}",
+            base64::engine::general_purpose::STANDARD
+                .encode(include_bytes!("../assets/achedev-logo.svg"))
+        )
+    });
     let effects = use_signal(|| true);
     let backend = use_signal(|| "Starting GPU...".to_owned());
     let mut page = use_signal(|| "Overview");
@@ -21,7 +29,7 @@ pub fn dashboard() -> Element {
         style {{include_str!("dashboard.css")}}
         div {class:"app",
             aside {class:"sidebar",
-                div {class:"brand",span {class:"brand-mark","a"}"acheflow"}
+                div {class:"brand",img {class:"brand-mark",alt:"Acheflow",src:logo}"acheflow"}
                 div {class:"workspace-label","WORKSPACE"}
                 div {class:"sidebar-workspaces",WorkspaceSwitcher {project,open:workspace_open}}
                 nav {for item in ["Overview","Live","Extensions","Settings"] {
@@ -71,7 +79,8 @@ pub fn dashboard() -> Element {
 #[component]
 fn GeneralSettings(mut effects: Signal<bool>) -> Element {
     rsx! {
-        div {class:"page-heading",div {h1 {"Settings"}p {"Personalize the control panel."}}}
+        div {class:"page-heading",div {h1 {"Settings"}p {"Server listeners, certificates and appearance."}}}
+        crate::server_settings::ServerSettingsPanel {}
         section {class:"panel",
             div {class:"panel-heading",h2 {"Appearance"}}
             div {class:"padded settings-row",

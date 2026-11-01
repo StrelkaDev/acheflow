@@ -49,7 +49,7 @@ trunk build
 cargo run -p acheflow-server --release --locked
 ```
 
-Open `http://localhost:8080/?perf=1`, wait for the first frame plus five seconds
+Open `http://localhost:21295/?perf=1`, wait for the first frame plus five seconds
 of warm-up and at least 120 samples, then read
 `document.documentElement.dataset.acheflowPerf` from developer tools.
 At this scene/size on the current machine, a repeatable p95 above 33.4 ms is an

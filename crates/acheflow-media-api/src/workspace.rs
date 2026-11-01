@@ -406,7 +406,9 @@ impl Workspace {
             if source.id == 0
                 || !ids.insert(source.id)
                 || source.name.trim().is_empty()
-                || !source.url.starts_with("rtmp://")
+                || !["rtmp://", "rtmps://"]
+                    .iter()
+                    .any(|scheme| source.url.starts_with(scheme))
                 || source.url.len() <= 7
                 || source.key.trim().is_empty()
             {

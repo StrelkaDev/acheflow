@@ -11,6 +11,7 @@ mod project;
 mod scene_canvas;
 mod scene_geometry;
 mod scene_preview;
+mod server_settings;
 mod slider;
 #[cfg(test)]
 mod slider_tests;

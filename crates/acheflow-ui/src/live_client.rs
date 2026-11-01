@@ -154,9 +154,14 @@ impl LiveClient {
             host.to_owned()
         };
         let mut project = self.project.write();
+        let scheme = if self.status.peek().as_ref().is_some_and(|s| s.rtmp_tls) {
+            "rtmps"
+        } else {
+            "rtmp"
+        };
         project.add_source();
         if let Some(source) = project.sources.last_mut() {
-            source.url = format!("rtmp://{host}:{port}/live");
+            source.url = format!("{scheme}://{host}:{port}/live");
         }
     }
     pub async fn copy_text(mut self, text: String) -> bool {

@@ -5,13 +5,17 @@ use rml_rtmp::{
 };
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::TcpListener,
     sync::Semaphore,
 };
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-pub async fn serve(listener: TcpListener, runtime: RuntimeState) -> Result<(), Error> {
+pub async fn serve(
+    listener: TcpListener,
+    runtime: RuntimeState,
+    tls: Option<axum_server::tls_openssl::OpenSSLConfig>,
+) -> Result<(), Error> {
     let capacity = Arc::new(Semaphore::new(16));
     loop {
         let (socket, _) = tokio::select! {_=runtime.shutdown.cancelled()=>return Ok(()),result=listener.accept()=>result?};
@@ -20,15 +24,35 @@ pub async fn serve(listener: TcpListener, runtime: RuntimeState) -> Result<(), E
             continue;
         };
         let runtime = runtime.clone();
+        let tls = tls.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            let _ = connection(socket, runtime).await;
+            let _ = socket.set_nodelay(true);
+            if let Some(tls) = tls {
+                let Ok(ssl) = openssl::ssl::Ssl::new(tls.get_inner().context()) else {
+                    return;
+                };
+                let Ok(mut stream) = tokio_openssl::SslStream::new(ssl, socket) else {
+                    return;
+                };
+                let accepted = tokio::select! {
+                    _ = runtime.shutdown.cancelled() => return,
+                    result = tokio::time::timeout(Duration::from_secs(5), std::pin::Pin::new(&mut stream).accept()) => result,
+                };
+                if let Ok(Ok(())) = accepted {
+                    let _ = connection(stream, runtime).await;
+                }
+            } else {
+                let _ = connection(socket, runtime).await;
+            }
         });
     }
 }
 
-async fn connection(mut socket: TcpStream, runtime: RuntimeState) -> Result<(), Error> {
-    socket.set_nodelay(true)?;
+async fn connection(
+    mut socket: impl AsyncRead + AsyncWrite + Unpin,
+    runtime: RuntimeState,
+) -> Result<(), Error> {
     let cancel = runtime.shutdown.child_token();
     let mut handshake = Handshake::new(PeerType::Server);
     let mut bytes = vec![0; 65536];

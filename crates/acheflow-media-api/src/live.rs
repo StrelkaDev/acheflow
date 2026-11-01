@@ -17,6 +17,8 @@ pub struct ControlRequest {
 pub struct LiveStatus {
     pub workspace_id: Option<String>,
     pub rtmp_address: String,
+    #[serde(default)]
+    pub rtmp_tls: bool,
     pub sources: Vec<SourceStatus>,
     pub formats: Vec<FormatStatus>,
 }

@@ -151,6 +151,6 @@ pub fn server_url(path: &str) -> Result<String, String> {
         .map_err(|e| format!("{e:?}"))?;
     #[cfg(not(target_arch = "wasm32"))]
     let base =
-        std::env::var("ACHEFLOW_SERVER_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".into());
+        std::env::var("ACHEFLOW_SERVER_URL").unwrap_or_else(|_| "http://127.0.0.1:21295".into());
     Ok(format!("{}{path}", base.trim_end_matches('/')))
 }

@@ -33,7 +33,7 @@ pub(super) async fn server(
         .unwrap();
     let server_runtime = runtime.clone();
     let task = tokio::spawn(async move {
-        rtmp::serve(listener, server_runtime).await.unwrap();
+        rtmp::serve(listener, server_runtime, None).await.unwrap();
     });
     (runtime, task, url)
 }

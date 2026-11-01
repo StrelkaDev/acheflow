@@ -91,7 +91,7 @@ In a second terminal, launch the native UI or build the browser UI:
 
 ```sh
 cargo run -p acheflow-ui --release --locked
-# Or build browser assets, then open http://localhost:8080:
+# Or build browser assets, then open http://localhost:21295:
 trunk build
 ```
 

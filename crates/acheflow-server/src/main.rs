@@ -1,4 +1,5 @@
-use std::{error::Error, net::SocketAddr};
+use clap::Parser;
+use std::{error::Error, time::Duration};
 
 use axum::{Router, routing::get};
 use tower_http::services::ServeDir;
@@ -15,12 +16,29 @@ mod output;
 #[cfg(test)]
 mod pipeline_tests;
 mod rtmp;
+mod settings;
+mod tls;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let address: SocketAddr = std::env::var("ACHEFLOW_HTTP_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:8080".to_owned())
-        .parse()?;
+    let settings = settings::SettingsState::from_args(settings::Args::parse())?;
+    let config = &settings.active;
+    let http_tls = tls::load(&config.http_tls)?;
+    let rtmp_tls = tls::load(&config.rtmp_tls)?;
+    let listener =
+        tokio::net::TcpListener::bind((config.http_host.as_str(), config.http_port)).await?;
+    let rtmp_listener =
+        tokio::net::TcpListener::bind((config.rtmp_host.as_str(), config.rtmp_port)).await?;
+    eprintln!(
+        "Acheflow listening on {}://{}",
+        if http_tls.is_some() { "https" } else { "http" },
+        listener.local_addr()?
+    );
+    eprintln!(
+        "{} ingest listening on {}",
+        if rtmp_tls.is_some() { "RTMPS" } else { "RTMP" },
+        rtmp_listener.local_addr()?
+    );
     let web_root = std::env::var("ACHEFLOW_WEB_ROOT").unwrap_or_else(|_| "dist".to_owned());
     let capabilities = ffmpeg::discover().await;
     eprintln!(
@@ -33,10 +51,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     let media_state: ffmpeg::CapabilityState =
         std::sync::Arc::new(tokio::sync::Mutex::new(capabilities));
-    let rtmp_address =
-        std::env::var("ACHEFLOW_RTMP_ADDR").unwrap_or_else(|_| "127.0.0.1:1935".into());
-    let rtmp_listener = tokio::net::TcpListener::bind(&rtmp_address).await?;
     let runtime = live::Runtime::new(media_state.clone(), rtmp_listener.local_addr()?.to_string());
+    runtime
+        .rtmp_tls
+        .store(rtmp_tls.is_some(), std::sync::atomic::Ordering::Relaxed);
+    let settings_routes = Router::new()
+        .route(
+            "/api/server/settings",
+            get(settings::get).put(settings::save),
+        )
+        .with_state(settings);
     let live_routes = Router::new()
         .route("/api/live/status", get(live::status))
         .route(
@@ -56,23 +80,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .with_state(media_state)
         .merge(live_routes)
+        .merge(settings_routes)
         .fallback_service(ServeDir::new(web_root).append_index_html_on_directories(true));
-    let listener = tokio::net::TcpListener::bind(address).await?;
-    eprintln!(
-        "Acheflow HTTP listening on http://{}",
-        listener.local_addr()?
-    );
-
-    eprintln!("RTMP ingest listening on {}", runtime.rtmp_address);
     let rtmp_runtime = runtime.clone();
     let rtmp_task = tokio::spawn(async move {
-        if let Err(error) = rtmp::serve(rtmp_listener, rtmp_runtime).await {
+        if let Err(error) = rtmp::serve(rtmp_listener, rtmp_runtime, rtmp_tls).await {
             eprintln!("RTMP listener stopped: {error}");
         }
     });
-    let result = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await;
+    let handle = axum_server::Handle::new();
+    let shutdown_handle = handle.clone();
+    let shutdown_runtime = runtime.clone();
+    let shutdown_task = tokio::spawn(async move {
+        shutdown_signal().await;
+        shutdown_runtime.shutdown.cancel();
+        shutdown_handle.graceful_shutdown(Some(Duration::from_secs(10)));
+    });
+    let listener = listener.into_std()?;
+    let result = if let Some(tls) = http_tls {
+        axum_server::from_tcp(listener)?
+            .acceptor(axum_server::tls_openssl::OpenSSLAcceptor::new(tls))
+            .handle(handle)
+            .serve(app.into_make_service())
+            .await
+    } else {
+        axum_server::from_tcp(listener)?
+            .handle(handle)
+            .serve(app.into_make_service())
+            .await
+    };
+    shutdown_task.abort();
     runtime.close().await;
     let _ = rtmp_task.await;
     result?;

@@ -2,6 +2,7 @@ pub mod appearance;
 pub mod audio;
 pub mod layer;
 pub mod live;
+pub mod server;
 pub mod workspace;
 
 use serde::{Deserialize, Serialize};

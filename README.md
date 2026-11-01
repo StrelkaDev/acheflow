@@ -59,20 +59,53 @@ cargo install trunk --version 0.22.1 --locked
 trunk build
 ```
 
-Open http://localhost:8080. Trunk builds optimized release WASM by default into
+Open http://localhost:21295. Trunk builds optimized release WASM by default into
 `dist/`; the server serves that directory. Before building, `/` returns 404.
 UI-only development with live rebuild: `trunk serve` on localhost:8081.
 
-The HTTP server binds to `127.0.0.1:8080`; RTMP ingest binds to
-`127.0.0.1:1935` (`ACHEFLOW_RTMP_ADDR` overrides the socket). Override its socket address with
-`ACHEFLOW_HTTP_ADDR`, or its asset directory with `ACHEFLOW_WEB_ROOT` (default
-`dist`, relative to process cwd). Ctrl-C stops HTTP gracefully. `/healthz` reports
-HTTP process liveness, not media readiness. Remote WebGPU needs HTTPS; localhost
-is suitable for development. No WebGL fallback is enabled in this UI.
+The HTTP server binds to `127.0.0.1:21295`; RTMP ingest binds to
+`127.0.0.1:1935`. Use `--listen` for the HTTP host/IP and `--port` for its port;
+`--listen 127.0.0.1:21296` also accepts a socket address. An explicit `--port`
+wins over the port in `--listen`. IPv6 sockets use `[::1]:21295`.
+
+```sh
+cargo run -p acheflow-server -- --listen 0.0.0.0 --port 21295
+cargo run -p acheflow-server -- --rtmp-listen 0.0.0.0 --rtmp-port 1935
+cargo run -p acheflow-server -- --http-cert /certs/fullchain.pem --http-key /certs/key.pem \
+  --rtmp-cert /certs/fullchain.pem --rtmp-key /certs/key.pem
+```
+
+**Settings → Server listeners & TLS** configures the HTTP and RTMP host/port,
+HTTPS and RTMPS certificate chains and private keys. Enter PEM file paths on the
+server; keys are never uploaded to or returned by the UI. Each listener uses TLS
+when both paths are set, and plain HTTP/RTMP when both are empty. TLS replaces
+plain transport on that listener's port. Certificate/key pairs are validated
+before startup and before saving. Use unencrypted PEM private keys (encrypted keys are rejected without prompting).
+TLS uses OpenSSL (a development installation
+is required when compiling the server, e.g. `brew install openssl@3 pkg-config`
+on macOS).
+
+Settings are saved atomically to `acheflow-server.json` in the process working
+directory. Use `--config /path/server.json` or `ACHEFLOW_CONFIG` to select another
+file. Saved changes require a server restart; active values and launch overrides
+are shown in Settings. Priority: CLI arguments > environment overrides > saved
+settings > defaults. Existing `ACHEFLOW_HTTP_ADDR` and `ACHEFLOW_RTMP_ADDR`
+socket overrides remain supported; TLS environment variables are
+`ACHEFLOW_HTTP_CERT`, `ACHEFLOW_HTTP_KEY`, `ACHEFLOW_RTMP_CERT`, `ACHEFLOW_RTMP_KEY`.
+Remove the corresponding overrides on restart to use values saved in Settings.
+`--help` lists all launch options.
+
+Use `ACHEFLOW_WEB_ROOT` to change the asset directory (default `dist`, relative
+to process cwd). Ctrl-C stops listeners and media workers gracefully. `/healthz`
+reports process liveness, not media readiness. Remote WebGPU needs HTTPS;
+localhost is suitable for development. No WebGL fallback is enabled in this UI.
+When using HTTPS from the native UI, set `ACHEFLOW_SERVER_URL=https://host:port`
+and trust the issuing certificate in the operating system.
 
 ## Workspaces and Live
 
-Open Settings in the sidebar for panel appearance and the Sparks background.
+Open Settings in the sidebar for server listeners, TLS certificates, panel appearance
+and the Sparks background.
 
 Click the workspace name in the sidebar to open workspace settings. On narrow
 screens, the sidebar becomes a compact navigation area above the content. Create an
@@ -167,7 +200,7 @@ such as `libx264` and `libx265`; an unavailable explicit encoder is an error.
 `GET /api/media/capabilities` returns the cached startup scan. The Refresh
 encoders action issues `POST` to that endpoint to rescan. Missing FFmpeg and scan
 failures are explicit responses (`available: false`, with an error); HTTP
-liveness still remains healthy. Native UI uses `http://127.0.0.1:8080`, configurable
+liveness still remains healthy. Native UI uses `http://127.0.0.1:21295`, configurable
 with `ACHEFLOW_SERVER_URL`. Browser WASM uses its own page origin; it never runs
 FFmpeg on the client. Start the server for either UI target.
 
@@ -189,11 +222,11 @@ cargo test --workspace --locked
 cargo test -p acheflow-server --locked -- --ignored --nocapture
 cargo test -p acheflow-composition --features headless --locked -- --ignored --nocapture
 trunk build
-curl --fail http://localhost:8080/healthz
+curl --fail http://localhost:21295/healthz
 ```
 
 Browser tracing retains warnings/errors without per-frame TRACE timings.
-Opt-in local frame diagnostics: open `http://localhost:8080/?perf=1` and read
+Opt-in local frame diagnostics: open `http://localhost:21295/?perf=1` and read
 `document.documentElement.dataset.acheflowPerf` in developer tools. Nothing is
 sent externally. See [performance measurements](docs/blitz-performance.md).
 

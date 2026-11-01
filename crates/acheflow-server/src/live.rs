@@ -31,6 +31,7 @@ pub struct Runtime {
     pub control: AsyncMutex<()>,
     pub capabilities: crate::ffmpeg::CapabilityState,
     pub rtmp_address: String,
+    pub rtmp_tls: std::sync::atomic::AtomicBool,
     pub shutdown: CancellationToken,
 }
 
@@ -43,6 +44,7 @@ impl Runtime {
             control: AsyncMutex::new(()),
             capabilities,
             rtmp_address,
+            rtmp_tls: std::sync::atomic::AtomicBool::new(false),
             shutdown: CancellationToken::new(),
         })
     }
@@ -71,6 +73,7 @@ impl Runtime {
         LiveStatus {
             workspace_id,
             rtmp_address: self.rtmp_address.clone(),
+            rtmp_tls: self.rtmp_tls.load(Ordering::Relaxed),
             sources,
             formats,
         }
@@ -194,7 +197,7 @@ fn validate(workspace: &Workspace) -> Result<(), String> {
     for source in &workspace.sources {
         let url = url::Url::parse(&source.url).map_err(|_| "Invalid source RTMP URL")?;
         let app = url.path().trim_matches('/');
-        if url.scheme() != "rtmp"
+        if !matches!(url.scheme(), "rtmp" | "rtmps")
             || url.host_str().is_none()
             || app.is_empty()
             || url.query().is_some()
@@ -202,7 +205,7 @@ fn validate(workspace: &Workspace) -> Result<(), String> {
             || !url.username().is_empty()
         {
             return Err(
-                "Source URL must be rtmp://host:port/application; put its token in Stream key"
+                "Source URL must be rtmp:// or rtmps://host:port/application; put its token in Stream key"
                     .into(),
             );
         }
@@ -480,6 +483,17 @@ async fn image_response(frame: Option<Arc<image::RgbImage>>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn secure_ingest_urls_are_validated_like_plain_rtmp() {
+        let mut workspace = Workspace::default();
+        workspace.add_source();
+        workspace.sources[0].url = "rtmps://localhost:1935/live".into();
+        assert!(validate(&workspace).is_ok());
+        workspace.sources[0].url = "https://localhost:1935/live".into();
+        assert!(validate(&workspace).is_err());
+        workspace.sources[0].url = "rtmps://localhost:1935".into();
+        assert!(validate(&workspace).is_err());
+    }
     #[tokio::test]
     async fn offline_preview_resize_does_not_replace_a_registered_input() {
         let runtime = Runtime::new(
