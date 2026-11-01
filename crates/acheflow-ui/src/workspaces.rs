@@ -126,11 +126,14 @@ pub fn Workspaces(
 ) -> Element {
     let mut busy = use_signal(|| false);
     let mut notice = use_signal(String::new);
+    let mut creating = use_signal(|| false);
+    let server = crate::media::server_url(&project.read(), "").unwrap_or_else(|e| e);
     rsx! {div {class:"workspace-controls",
         if open() {section {class:"workspace-manager",id:"workspace-manager",
             div {class:"panel-heading",div {h2 {"Workspace settings"}p {"Sources, scenes and both stream formats belong to this workspace."}}button {onclick:move |_|open.set(false),"Close"}}
             div {class:"padded",
                 Field {label:"Workspace name",value:project.read().name.clone(),change:move |v|project.write().name=v}
+                p {class:"form-help","Server: {server}"}
                 div {class:"workspace-list",role:"group","aria-label":"Workspaces",
                     for workspace in catalog.read().workspaces.clone() {
                         button {class:if workspace.id==catalog.read().active {"selected"}else{""},onclick:move |_| {
@@ -140,11 +143,7 @@ pub fn Workspaces(
                     }
                 }
                 div {class:"row",
-                    button {class:"primary",onclick:move |_| {
-                        let mut next=catalog.peek().clone();next.update(project.peek().clone());
-                        let config=Workspace { name:format!("Workspace {}",next.workspaces.len()+1), ..Workspace::default() };
-                        next.add(config.clone());project.set(config);catalog.set(next);notice.set("New workspace created".into());
-                    },"+ New workspace"}
+                    button {class:"primary",onclick:move |_|creating.set(true),"+ New workspace"}
                     button {disabled:busy(),onclick:move |_| {
                         match project.read().json() {
                             Err(e)=>notice.set(e),
@@ -164,11 +163,66 @@ pub fn Workspaces(
                         }busy.set(false);
                     });},"Add from file"}
                 }
+                if creating() {
+                    WorkspaceCreation {
+                        name:format!("Workspace {}",catalog.read().workspaces.len()+1),
+                        server:server.clone(),
+                        cancel:move |_|creating.set(false),
+                        create:move |config:Workspace| {
+                            let mut next=catalog.peek().clone();next.update(project.peek().clone());
+                            next.add(config.clone());project.set(config);catalog.set(next);
+                            creating.set(false);notice.set("Workspace created. Connecting to its server…".into());
+                        }
+                    }
+                }
                 p {class:"form-help",role:"status","{storage_status}"}
                 p {class:"form-help","Workspace files and local storage include RTMP keys."}
                 if !notice.read().is_empty(){p {role:"status","{notice}"}}
             }
         }}
+    }}
+}
+
+fn new_workspace(name: &str, server: &str) -> Result<Workspace, String> {
+    if name.trim().is_empty() {
+        return Err("Workspace name is required.".into());
+    }
+    Ok(Workspace {
+        name: name.trim().into(),
+        server_url: acheflow_media_api::workspace::normalize_server_url(server)?,
+        ..Workspace::default()
+    })
+}
+
+#[component]
+fn WorkspaceCreation(
+    name: String,
+    server: String,
+    create: EventHandler<Workspace>,
+    cancel: EventHandler<()>,
+) -> Element {
+    let mut name = use_signal(|| name);
+    let mut server = use_signal(|| server);
+    let mut error = use_signal(|| None::<String>);
+    let choose_server = crate::media::can_choose_server();
+    let mut submit = move || match new_workspace(&name.peek(), &server.peek()) {
+        Ok(config) => create.call(config),
+        Err(message) => error.set(Some(message)),
+    };
+    rsx! {form {class:"workspace-create",onsubmit:move |event|event.prevent_default(),onkeydown:move |event| {
+        if event.key()==Key::Named(NamedKey::Enter) {event.prevent_default();submit();}
+    },
+        h3 {"New workspace"}
+        div {class:"form-grid",
+            label {class:"field",span {"Workspace name"}input {r#type:"text","aria-label":"New workspace name",value:name.peek().clone(),oninput:move |event|name.set(event.value())}}
+            div {class:"field",span {"Server address"}
+                if choose_server {input {r#type:"text","aria-label":"Server address",placeholder:"http://127.0.0.1:21295",value:server.peek().clone(),oninput:move |event|server.set(event.value())}}
+                else {div {class:"readonly-field",role:"textbox","aria-label":"Server address","aria-readonly":"true",tabindex:"0","{server.peek()}"}}
+            }
+        }
+        p {class:"form-help",if choose_server {"Enter the server's HTTP(S) address. API requests, previews and RTMP connection details use this server."}else{"This workspace uses the server hosting this interface. RTMP connection details are discovered automatically."}}
+        if let Some(message)=error(){p {class:"field-error",role:"alert","{message}"}}
+        div {class:"row",button {r#type:"button",class:"primary",onclick:move |_|submit(),"Create workspace"}button {r#type:"button",onclick:move |_|cancel.call(()),"Cancel"}}
     }}
 }
 
@@ -242,22 +296,34 @@ mod tests {
     fn creating_and_importing_keep_workspace_configuration_isolated() {
         let mut c = Catalog::default();
         let mut first = c.current().clone();
+        first.server_url = "https://first.example:8443".into();
         first.add_source();
         first.add_scene(crate::project::Orientation::Vertical);
         c.update(first.clone());
-        c.add(Workspace::default());
+        c.add(new_workspace("Second", "http://second.example:21296/").unwrap());
         assert!(c.current().sources.is_empty());
         c.add(Workspace::from_json(first.json().unwrap().as_bytes()).unwrap());
         assert_eq!(c.workspaces.len(), 3);
         assert_eq!(c.current(), &first);
         c.active = 2;
         assert!(c.current().scenes.is_empty());
+        assert_eq!(c.current().server_url, "http://second.example:21296");
         c.active = 1;
         assert_eq!(c.current(), &first);
         assert_eq!(
             Catalog::decode(&serde_json::to_vec(&c).unwrap()).unwrap(),
             c
         );
+    }
+    #[test]
+    fn creation_requires_a_name_and_an_explicit_server_address() {
+        assert!(new_workspace("Test", "").is_err());
+        assert!(new_workspace(" ", "http://localhost:21295").is_err());
+        assert!(new_workspace("Test", "rtmp://localhost/live").is_err());
+        let workspace = new_workspace(" Test ", " https://host:8443/path/ ").unwrap();
+        assert_eq!(workspace.name, "Test");
+        assert_eq!(workspace.server_url, "https://host:8443/path");
+        assert!(workspace.sources.is_empty());
     }
     #[test]
     fn invalid_catalog_selection_and_duplicate_ids_are_rejected() {

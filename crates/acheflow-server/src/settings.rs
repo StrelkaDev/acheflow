@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 #[derive(Debug, Default, Parser)]
 #[command(version, about = "Acheflow stream server")]
 pub struct Args {
-    /// Server settings JSON file (created when saved in Settings).
+    /// Server settings JSON file.
     #[arg(long, env = "ACHEFLOW_CONFIG", default_value = "acheflow-server.json")]
     pub config: PathBuf,
     /// HTTP(S) bind host/IP, optionally including a port (IPv6: [::1]:21295).

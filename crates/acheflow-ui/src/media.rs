@@ -4,17 +4,55 @@ use dioxus_native::prelude::*;
 
 type Capabilities = Resource<Result<MediaCapabilities, String>>;
 
-pub fn use_capabilities() -> (Capabilities, Signal<u32>) {
+#[cfg(target_arch = "wasm32")]
+static HOSTED_SERVER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// A UI served by an Acheflow server stays attached to that server. A static
+/// web client (no local live API) and the native app choose per-workspace URLs.
+#[cfg(target_arch = "wasm32")]
+pub async fn detect_hosted_server() {
+    let Ok(origin) = default_server_url() else {
+        return;
+    };
+    let status = reqwest::Client::new()
+        .get(format!("{origin}/api/live/status"))
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await;
+    if let Ok(response) = status
+        && response.status().is_success()
+        && response
+            .json::<acheflow_media_api::live::LiveStatus>()
+            .await
+            .is_ok()
+    {
+        let _ = HOSTED_SERVER.set(origin);
+    }
+}
+
+pub fn can_choose_server() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        HOSTED_SERVER.get().is_none()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        true
+    }
+}
+
+pub fn use_capabilities(project: Signal<Workspace>) -> (Capabilities, Signal<u32>) {
     let revision = use_signal(|| 0u32);
+    let endpoint = use_memo(move || server_url(&project.read(), "/api/media/capabilities"));
     let capabilities = use_resource(move || {
         let refresh = revision() > 0;
-        async move { fetch(refresh).await }
+        let url = endpoint();
+        async move { fetch(url?, refresh).await }
     });
     (capabilities, revision)
 }
 
-async fn fetch(refresh: bool) -> Result<MediaCapabilities, String> {
-    let url = server_url("/api/media/capabilities")?;
+async fn fetch(url: String, refresh: bool) -> Result<MediaCapabilities, String> {
     let method = if refresh {
         reqwest::Method::POST
     } else {
@@ -142,7 +180,7 @@ pub fn EncoderPicker(
     }}
 }
 
-pub fn server_url(path: &str) -> Result<String, String> {
+pub fn default_server_url() -> Result<String, String> {
     #[cfg(target_arch = "wasm32")]
     let base = web_sys::window()
         .ok_or("No browser window")?
@@ -152,5 +190,85 @@ pub fn server_url(path: &str) -> Result<String, String> {
     #[cfg(not(target_arch = "wasm32"))]
     let base =
         std::env::var("ACHEFLOW_SERVER_URL").unwrap_or_else(|_| "http://127.0.0.1:21295".into());
-    Ok(format!("{}{path}", base.trim_end_matches('/')))
+    acheflow_media_api::workspace::normalize_server_url(&base)
+}
+
+pub fn server_url(workspace: &Workspace, path: &str) -> Result<String, String> {
+    #[cfg(target_arch = "wasm32")]
+    let hosted = HOSTED_SERVER.get().map(String::as_str);
+    #[cfg(not(target_arch = "wasm32"))]
+    let hosted = None;
+    resolve_server_url(workspace, path, hosted)
+}
+
+fn resolve_server_url(
+    workspace: &Workspace,
+    path: &str,
+    hosted: Option<&str>,
+) -> Result<String, String> {
+    if let Some(base) = hosted {
+        return Ok(format!("{base}{path}"));
+    }
+    let base = if workspace.server_url.is_empty() {
+        default_server_url()?
+    } else {
+        acheflow_media_api::workspace::normalize_server_url(&workspace.server_url)?
+    };
+    Ok(format!("{base}{path}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_api_paths_use_the_workspaces_server_and_proxy_prefix() {
+        let first = Workspace {
+            server_url: "https://first.example:8443/acheflow/".into(),
+            ..Workspace::default()
+        };
+        let second = Workspace {
+            server_url: "http://[::1]:21296".into(),
+            ..Workspace::default()
+        };
+        for path in [
+            "/api/live/status",
+            "/api/live/config",
+            "/api/media/capabilities",
+            "/api/live/preview/horizontal?workspace=test",
+            "/api/live/source/1?workspace=test",
+        ] {
+            assert_eq!(
+                server_url(&first, path).unwrap(),
+                format!("https://first.example:8443/acheflow{path}")
+            );
+            assert_eq!(
+                server_url(&second, path).unwrap(),
+                format!("http://[::1]:21296{path}")
+            );
+        }
+    }
+
+    #[test]
+    fn server_hosted_ui_stays_on_its_own_server_even_for_imported_workspaces() {
+        let workspace = Workspace {
+            server_url: "https://another.example".into(),
+            ..Workspace::default()
+        };
+        for path in [
+            "/api/live/status",
+            "/api/live/config",
+            "/api/media/capabilities",
+            "/api/live/source/1",
+        ] {
+            assert_eq!(
+                resolve_server_url(&workspace, path, Some("https://local.example:21295")).unwrap(),
+                format!("https://local.example:21295{path}")
+            );
+        }
+        assert_eq!(
+            resolve_server_url(&workspace, "/api/live/status", None).unwrap(),
+            "https://another.example/api/live/status"
+        );
+    }
 }

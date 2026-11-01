@@ -129,6 +129,9 @@ pub struct Workspace {
     pub id: String,
     pub version: u32,
     pub name: String,
+    /// HTTP(S) API base. Empty in legacy files: use the UI's startup default.
+    #[serde(default)]
+    pub server_url: String,
     pub horizontal: Stream,
     pub vertical: Stream,
     pub sources: Vec<Source>,
@@ -142,6 +145,7 @@ impl Default for Workspace {
             id: new_token(),
             version: 1,
             name: "My workspace".into(),
+            server_url: String::new(),
             horizontal: Stream {
                 base: Resolution {
                     width: 1920,
@@ -355,6 +359,9 @@ impl Workspace {
     }
     pub fn validate(&self) -> Result<(), String> {
         self.validate_audio()?;
+        if !self.server_url.is_empty() {
+            normalize_server_url(&self.server_url)?;
+        }
         if self.id.is_empty()
             || self.id.len() > 128
             || !self
@@ -512,9 +519,70 @@ impl Workspace {
     }
 }
 
+/// Keep an optional reverse-proxy path while rejecting ambiguous API bases.
+pub fn normalize_server_url(address: &str) -> Result<String, String> {
+    let invalid =
+        || "Enter an HTTP(S) server address without credentials, query or fragment.".to_owned();
+    let url = url::Url::parse(address.trim()).map_err(|_| invalid())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.port() == Some(0)
+    {
+        return Err(invalid());
+    }
+    Ok(url.as_str().trim_end_matches('/').to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_address_survives_export_and_legacy_workspaces_still_load() {
+        let workspace = Workspace {
+            server_url: "https://studio.example:8443/acheflow".into(),
+            ..Workspace::default()
+        };
+        assert_eq!(
+            Workspace::from_json(workspace.json().unwrap().as_bytes()).unwrap(),
+            workspace
+        );
+        let mut legacy = serde_json::to_value(&workspace).unwrap();
+        legacy.as_object_mut().unwrap().remove("server_url");
+        assert!(
+            Workspace::from_json(&serde_json::to_vec(&legacy).unwrap())
+                .unwrap()
+                .server_url
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn server_addresses_require_http_without_credentials_query_or_fragment() {
+        for address in [
+            "",
+            "localhost:21295",
+            "rtmp://host/live",
+            "https://user:pass@host",
+            "https://host/?token=secret",
+            "https://host/#fragment",
+            "http://host:0",
+        ] {
+            assert!(normalize_server_url(address).is_err(), "{address}");
+        }
+        assert_eq!(
+            normalize_server_url(" https://host:8443/prefix/ ").unwrap(),
+            "https://host:8443/prefix"
+        );
+        assert_eq!(
+            normalize_server_url("http://[::1]:21295/").unwrap(),
+            "http://[::1]:21295"
+        );
+    }
     #[test]
     fn native_crop_is_independent_of_offline_pattern_size() {
         let mut workspace = Workspace::default();

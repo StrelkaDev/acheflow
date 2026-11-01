@@ -11,7 +11,6 @@ mod project;
 mod scene_canvas;
 mod scene_geometry;
 mod scene_preview;
-mod server_settings;
 mod slider;
 #[cfg(test)]
 mod slider_tests;
@@ -36,7 +35,7 @@ pub fn launch() {
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
-pub fn start() {
+pub async fn start() {
     console_error_panic_hook::set_once();
     // Per-frame TRACE spans are expensive in browser WASM and fill the timeline.
     let config = tracing_wasm::WASMLayerConfigBuilder::new()
@@ -44,6 +43,7 @@ pub fn start() {
         .set_report_logs_in_timings(false)
         .build();
     tracing_wasm::set_as_global_default_with_config(config);
+    media::detect_hosted_server().await;
     launch();
 }
 

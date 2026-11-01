@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "acheflow-composition"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "acheflow-media-api",
  "anyrender",
@@ -51,25 +51,26 @@ dependencies = [
 
 [[package]]
 name = "acheflow-extension-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "acheflow-media-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cssparser",
  "getrandom 0.4.3",
  "naga 30.0.1",
  "serde",
  "serde_json",
+ "url",
 ]
 
 [[package]]
 name = "acheflow-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "acheflow-composition",
  "acheflow-media-api",
@@ -91,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "acheflow-ui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "acheflow-composition",
  "acheflow-extension-api",

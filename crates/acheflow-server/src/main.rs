@@ -8,6 +8,7 @@ mod audio_mixer;
 mod audio_packet;
 #[cfg(test)]
 mod audio_pipeline_tests;
+mod browser_access;
 mod compositor;
 mod ffmpeg;
 mod ingest;
@@ -21,6 +22,7 @@ mod tls;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let cors = browser_access::from_env()?;
     let settings = settings::SettingsState::from_args(settings::Args::parse())?;
     let config = &settings.active;
     let http_tls = tls::load(&config.http_tls)?;
@@ -80,6 +82,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .with_state(media_state)
         .merge(live_routes)
+        .layer(cors)
         .merge(settings_routes)
         .fallback_service(ServeDir::new(web_root).append_index_html_on_directories(true));
     let rtmp_runtime = runtime.clone();

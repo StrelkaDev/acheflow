@@ -75,9 +75,10 @@ cargo run -p acheflow-server -- --http-cert /certs/fullchain.pem --http-key /cer
   --rtmp-cert /certs/fullchain.pem --rtmp-key /certs/key.pem
 ```
 
-**Settings → Server listeners & TLS** configures the HTTP and RTMP host/port,
-HTTPS and RTMPS certificate chains and private keys. Enter PEM file paths on the
-server; keys are never uploaded to or returned by the UI. Each listener uses TLS
+Configure the HTTP and RTMP host/port and HTTPS/RTMPS certificate chains and
+private keys through launch options, environment variables or the server JSON
+configuration. These restart-only settings are not editable in the UI.
+Certificate and key values are PEM file paths on the server. Each listener uses TLS
 when both paths are set, and plain HTTP/RTMP when both are empty. TLS replaces
 plain transport on that listener's port. Certificate/key pairs are validated
 before startup and before saving. Use unencrypted PEM private keys (encrypted keys are rejected without prompting).
@@ -85,26 +86,32 @@ TLS uses OpenSSL (a development installation
 is required when compiling the server, e.g. `brew install openssl@3 pkg-config`
 on macOS).
 
-Settings are saved atomically to `acheflow-server.json` in the process working
+The server reads `acheflow-server.json` in the process working
 directory. Use `--config /path/server.json` or `ACHEFLOW_CONFIG` to select another
-file. Saved changes require a server restart; active values and launch overrides
-are shown in Settings. Priority: CLI arguments > environment overrides > saved
+file. Changes require a server restart. Priority: CLI arguments > environment overrides > saved
 settings > defaults. Existing `ACHEFLOW_HTTP_ADDR` and `ACHEFLOW_RTMP_ADDR`
 socket overrides remain supported; TLS environment variables are
 `ACHEFLOW_HTTP_CERT`, `ACHEFLOW_HTTP_KEY`, `ACHEFLOW_RTMP_CERT`, `ACHEFLOW_RTMP_KEY`.
-Remove the corresponding overrides on restart to use values saved in Settings.
+Remove the corresponding overrides on restart to use values from the JSON file.
 `--help` lists all launch options.
 
 Use `ACHEFLOW_WEB_ROOT` to change the asset directory (default `dist`, relative
 to process cwd). Ctrl-C stops listeners and media workers gracefully. `/healthz`
 reports process liveness, not media readiness. Remote WebGPU needs HTTPS;
 localhost is suitable for development. No WebGL fallback is enabled in this UI.
-When using HTTPS from the native UI, set `ACHEFLOW_SERVER_URL=https://host:port`
-and trust the issuing certificate in the operating system.
+For HTTPS, trust the issuing certificate in the operating system/browser.
+`ACHEFLOW_SERVER_URL` supplies the native UI's initial address for legacy
+workspaces; newly created workspaces save their own server address.
+
+For a browser UI hosted at a different origin, allow its exact origin on the
+target server, e.g. `ACHEFLOW_UI_ORIGINS=https://studio.example,http://localhost:8081`.
+The comma-separated list enables CORS only for the media/live API; server settings
+are excluded. Same-origin browser access and the native UI need no CORS setting.
+An HTTPS page must connect to an HTTPS server to avoid mixed-content blocking.
 
 ## Workspaces and Live
 
-Open Settings in the sidebar for server listeners, TLS certificates, panel appearance
+Open Settings in the sidebar for application information, panel appearance
 and the Sparks background.
 
 Click the workspace name in the sidebar to open workspace settings. On narrow
@@ -112,6 +119,25 @@ screens, the sidebar becomes a compact navigation area above the content. Create
 empty workspace, switch between existing workspaces, export the active workspace
 as JSON, or add one from a JSON file. Import creates a separate workspace and
 never replaces an existing one. Rename a workspace in this panel.
+
+The native client and a standalone static web client ask for a name and HTTP(S)
+server address when creating a workspace. This address is shown in the workspace
+panel and preserved in local storage and exported files. Old files without an
+address retain the browser origin or native startup default. Creation does not
+require the server to be online; connection failures are shown in Live and retried.
+
+When opening the web interface hosted by a running Acheflow server, the UI detects
+its same-origin `/api/live/status` at startup and stays attached to that server.
+Workspace creation shows the server address in a read-only field and asks for a name.
+Imported server addresses do not redirect
+this server-hosted UI to another backend. A static web client without a same-origin
+live API uses per-workspace addresses, like the native client.
+
+API requests, FFmpeg capability discovery and all previews use the selected
+workspace's server, including an optional reverse-proxy path. RTMP source creation
+waits for server discovery, then combines the selected hostname with the active
+RTMP port and TLS mode returned by `/api/live/status`. Listener bind addresses
+such as `0.0.0.0` are not used as public ingest hostnames.
 
 Each workspace owns its expected RTMP sources, scenes/layers, selected Studio
 scenes, horizontal/vertical base resolutions and FPS, and per-format RTMP outputs

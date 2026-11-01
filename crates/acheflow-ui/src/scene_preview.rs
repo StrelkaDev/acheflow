@@ -15,6 +15,7 @@ use web_time::Instant;
 
 struct Snapshot {
     owner: String,
+    server: String,
     frame: Option<SceneFrame>,
     patterns: HashMap<u32, SourceFrame>,
     anchor: Instant,
@@ -37,6 +38,7 @@ pub fn ScenePreview(
     let shared: Shared = use_hook(|| {
         Arc::new(Mutex::new(Snapshot {
             owner: String::new(),
+            server: String::new(),
             frame: None,
             patterns: HashMap::new(),
             anchor: Instant::now(),
@@ -68,9 +70,10 @@ pub fn ScenePreview(
             .map(|f| f.time_seconds)
             .unwrap_or_else(|| start.elapsed().as_secs_f64());
         let mut state = config_shared.lock().unwrap();
-        if state.owner != workspace.id {
+        if state.owner != workspace.id || state.server != workspace.server_url {
             state.frame = None;
             state.owner = workspace.id.clone();
+            state.server = workspace.server_url.clone();
             state.boxes.clear();
             state.patterns.clear();
         }
@@ -121,6 +124,7 @@ pub fn ScenePreview(
                     state.frame.as_ref().map(|f| {
                         (
                             state.owner.clone(),
+                            state.server.clone(),
                             f.scene
                                 .layers
                                 .iter()
@@ -129,14 +133,17 @@ pub fn ScenePreview(
                         )
                     })
                 };
-                if let Some((owner, ids)) = request {
+                if let Some((owner, server, ids)) = request {
+                    let workspace = project.peek().clone();
                     let downloaded = futures_util::future::join_all(ids.into_iter().map(|id| {
                         let client = client.clone();
                         let owner = owner.clone();
+                        let workspace = workspace.clone();
                         async move {
-                            let url = crate::media::server_url(&format!(
-                                "/api/live/source/{id}?workspace={owner}"
-                            ))
+                            let url = crate::media::server_url(
+                                &workspace,
+                                &format!("/api/live/source/{id}?workspace={owner}"),
+                            )
                             .ok()?;
                             let (image, size) =
                                 crate::video_preview::download_snapshot(&client, &url).await?;
@@ -151,7 +158,7 @@ pub fn ScenePreview(
                     }))
                     .await;
                     let mut state = shared.lock().unwrap();
-                    if state.owner == owner {
+                    if state.owner == owner && state.server == server {
                         let patterns = if placeholders {
                             state.patterns.clone()
                         } else {

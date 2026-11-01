@@ -85,7 +85,7 @@ pub fn Sources(mut project: Signal<Workspace>) -> Element {
         None
     };
     rsx! {
-        div {class:"page-heading",div {h1 {"Sources"}p {"Incoming RTMP publishers connect with their source token."}}button {class:"primary",onclick:move |_|client.add_source(),"+ RTMP source"}}
+        div {class:"page-heading",div {h1 {"Sources"}p {"Incoming RTMP publishers connect with their source token."}}button {class:"primary",disabled:client.status.read().is_none(),onclick:move |_|client.add_source(),"+ RTMP source"}}
         div {class:"source-actions row",
             button {disabled:(client.busy)(),onclick:move |_|client.command(Action::Apply),"Apply sources / listen"}
             button {disabled:(client.busy)() || !client.owns(),onclick:move |_|client.command(Action::Deactivate),"Deactivate sources"}
@@ -123,7 +123,7 @@ pub fn Sources(mut project: Signal<Workspace>) -> Element {
 }
 #[component]
 fn Settings(mut project: Signal<Workspace>) -> Element {
-    let (capabilities, refresh) = use_capabilities();
+    let (capabilities, refresh) = use_capabilities(project);
     let snapshot = capabilities.read().clone();
     let available = snapshot.as_ref().and_then(|r| r.as_ref().ok()).cloned();
     rsx! {

@@ -1,10 +1,10 @@
 :root { --accent:#e54c00; --accent-hover:#ff6417; --accent-text:#ff975c; --accent-surface:#2d1d16; --accent-border:#9a360c; }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; overflow: hidden; font-family: sans-serif; color: #e9edf5; background: #0c1017; font-size: 14px; }
-button, input { font-family: sans-serif; font-size: 13px; }
+button, input, .readonly-field { font-family: sans-serif; font-size: 13px; }
 button { cursor: pointer; border: 1px solid #303744; color: #cbd2df; background: #1c2330; border-radius: 6px; padding: 9px 14px; }
 button:hover { background: #293243; color: #ffffff; }
-button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+button:focus-visible, input:focus-visible, .readonly-field:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 button:disabled { opacity: 0.45; cursor: default; }
 p { color: #919cad; line-height: 1.6; margin: 7px 0 0; }
 h1,h2,h3 { margin: 0; font-weight: 600; }
@@ -52,7 +52,8 @@ nav { display: flex; flex-direction: column; gap: 6px; }
 .preview-caption { margin-top: 18px; font-size: 10px; color: #77869a; }
 .source-footer { border-top: 1px solid #283141; padding: 14px 24px; display: flex; gap: 24px; flex-wrap: wrap; font-size: 10px; color: #8290a5; }
 .destination-form { padding: 20px 24px 0; display: flex; gap: 12px; }
-input { background: #0f1620; border: 1px solid #354155; color: #e4eaf4; border-radius: 6px; padding: 11px 13px; min-width: 0; flex: 1; }
+input, .readonly-field { background: #0f1620; border: 1px solid #354155; color: #e4eaf4; border-radius: 6px; padding: 11px 13px; min-width: 0; flex: 1; }
+.readonly-field { overflow-wrap:anywhere; }
 .primary { background: var(--accent); color: #100a06; border: 1px solid var(--accent); font-weight: 600; }
 .primary:hover { background: var(--accent-hover); color: #100a06; }
 .empty-state { text-align: center; padding: 28px 20px; }
@@ -77,6 +78,7 @@ input { background: #0f1620; border: 1px solid #354155; color: #e4eaf4; border-r
 @media (max-width:740px) { .workspace-controls { top:12px; } .workspace-manager { max-height:calc(100vh - 180px); } }
 .workspace-manager label { max-width:360px; }
 .workspace-manager .row { margin-top:20px; }
+.workspace-create { margin-top:20px; padding:16px; border:1px solid #43516a; border-radius:8px; }
 .workspace-list { display:flex; gap:8px; flex-wrap:wrap; margin:20px 0; }
 .form-help { font-size: 11px; color:#97a5b8; }
 label,.field { display:flex; flex-direction:column; gap:8px; font-size:12px; color:#aebbd0; min-width:0; }

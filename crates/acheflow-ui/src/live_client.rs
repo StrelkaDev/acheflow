@@ -30,22 +30,44 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
         generation: use_signal(|| 0),
     };
     use_context_provider(|| client);
-    use_future(move || async move {
-        loop {
-            if !*client.busy.peek() {
-                let generation = *client.generation.peek();
-                let response = request(reqwest::Method::GET, "/api/live/status", None).await;
-                if generation == *client.generation.peek() && !*client.busy.peek() {
-                    match response {
-                        Ok(status) => {
-                            client.status.set(Some(status));
-                            client.connection.set(None);
+    let identity = use_memo(move || {
+        let workspace = project.read();
+        (workspace.id.clone(), workspace.server_url.clone())
+    });
+    use_resource(move || {
+        let owner = identity();
+        client.status.set(None);
+        client.error.set(None);
+        client
+            .connection
+            .set(Some("Connecting to workspace server…".into()));
+        client.busy.set(false);
+        *client.generation.write() += 1;
+        async move {
+            loop {
+                if !*client.busy.peek() {
+                    let generation = *client.generation.peek();
+                    let workspace = project.peek().clone();
+                    let response =
+                        request(&workspace, reqwest::Method::GET, "/api/live/status", None).await;
+                    if owner == identity()
+                        && generation == *client.generation.peek()
+                        && !*client.busy.peek()
+                    {
+                        match response {
+                            Ok(status) => {
+                                client.status.set(Some(status));
+                                client.connection.set(None);
+                            }
+                            Err(error) => {
+                                client.status.set(None);
+                                client.connection.set(Some(error));
+                            }
                         }
-                        Err(error) => client.connection.set(Some(error)),
                     }
                 }
+                pause().await;
             }
-            pause().await;
         }
     });
     client
@@ -71,9 +93,11 @@ impl LiveClient {
             return;
         }
         let workspace = self.project.peek().clone();
+        let target = workspace.clone();
         self.busy.set(true);
         self.error.set(None);
         *self.generation.write() += 1;
+        let generation = *self.generation.peek();
         spawn(async move {
             let (method, path, body) = match action {
                 Action::Apply => (
@@ -120,9 +144,15 @@ impl LiveClient {
                 ),
             };
             let result = match body {
-                Ok(body) => request(method, path, Some(body)).await,
+                Ok(body) => request(&target, method, path, Some(body)).await,
                 Err(e) => Err(e.to_string()),
             };
+            if generation != *self.generation.peek()
+                || self.project.peek().id != target.id
+                || self.project.peek().server_url != target.server_url
+            {
+                return;
+            }
             match result {
                 Ok(status) => {
                     self.status.set(Some(status));
@@ -134,34 +164,23 @@ impl LiveClient {
         });
     }
     pub fn add_source(mut self) {
-        let port = self
+        let url = self
             .status
             .peek()
             .as_ref()
-            .and_then(|s| s.rtmp_address.parse::<std::net::SocketAddr>().ok())
-            .map(|a| a.port())
-            .unwrap_or(1935);
-        let base = crate::media::server_url("")
-            .ok()
-            .and_then(|s| reqwest::Url::parse(&s).ok());
-        let host = base
-            .as_ref()
-            .and_then(|u| u.host_str())
-            .unwrap_or("localhost");
-        let host = if host.contains(':') && !host.starts_with('[') {
-            format!("[{host}]")
-        } else {
-            host.to_owned()
+            .ok_or_else(|| "Connect to the workspace server before adding a source.".to_owned())
+            .and_then(|status| ingest_url(&self.project.peek(), status));
+        let url = match url {
+            Ok(url) => url,
+            Err(error) => {
+                self.error.set(Some(error));
+                return;
+            }
         };
         let mut project = self.project.write();
-        let scheme = if self.status.peek().as_ref().is_some_and(|s| s.rtmp_tls) {
-            "rtmps"
-        } else {
-            "rtmp"
-        };
         project.add_source();
         if let Some(source) = project.sources.last_mut() {
-            source.url = format!("{scheme}://{host}:{port}/live");
+            source.url = url;
         }
     }
     pub async fn copy_text(mut self, text: String) -> bool {
@@ -195,18 +214,35 @@ impl LiveClient {
         }
     }
     pub fn preview(&self, path: &str) -> String {
-        crate::media::server_url(&format!("{path}?workspace={}", self.project.read().id))
-            .unwrap_or_default()
+        crate::media::server_url(
+            &self.project.read(),
+            &format!("{path}?workspace={}", self.project.read().id),
+        )
+        .unwrap_or_default()
     }
 }
 
+fn ingest_url(workspace: &Workspace, status: &LiveStatus) -> Result<String, String> {
+    let port = status
+        .rtmp_address
+        .parse::<std::net::SocketAddr>()
+        .map_err(|_| "The server returned an invalid RTMP listener address.".to_owned())?
+        .port();
+    let base = reqwest::Url::parse(&crate::media::server_url(workspace, "")?)
+        .map_err(|e| e.to_string())?;
+    let host = base.host_str().ok_or("The server address has no host.")?;
+    let scheme = if status.rtmp_tls { "rtmps" } else { "rtmp" };
+    Ok(format!("{scheme}://{host}:{port}/live"))
+}
+
 async fn request(
+    workspace: &Workspace,
     method: reqwest::Method,
     path: &str,
     body: Option<serde_json::Value>,
 ) -> Result<LiveStatus, String> {
     let mut request = reqwest::Client::new()
-        .request(method, crate::media::server_url(path)?)
+        .request(method, crate::media::server_url(workspace, path)?)
         .timeout(std::time::Duration::from_secs(15));
     if let Some(body) = body {
         request = request.json(&body);
@@ -232,6 +268,37 @@ async fn pause() {
     gloo_timers::future::TimeoutFuture::new(500).await;
     #[cfg(not(target_arch = "wasm32"))]
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ingest_uses_selected_server_host_and_discovered_listener_port_and_tls() {
+        let mut workspace = Workspace {
+            server_url: "https://remote.example:8443/proxy".into(),
+            ..Workspace::default()
+        };
+        let mut status = LiveStatus {
+            rtmp_address: "0.0.0.0:1940".into(),
+            rtmp_tls: true,
+            ..LiveStatus::default()
+        };
+        assert_eq!(
+            ingest_url(&workspace, &status).unwrap(),
+            "rtmps://remote.example:1940/live"
+        );
+        workspace.server_url = "http://[::1]:21296".into();
+        status.rtmp_address = "[::]:1936".into();
+        status.rtmp_tls = false;
+        assert_eq!(
+            ingest_url(&workspace, &status).unwrap(),
+            "rtmp://[::1]:1936/live"
+        );
+        status.rtmp_address = "invalid".into();
+        assert!(ingest_url(&workspace, &status).is_err());
+    }
 }
 
 #[component]

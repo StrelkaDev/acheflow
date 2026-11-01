@@ -79,8 +79,7 @@ pub fn dashboard() -> Element {
 #[component]
 fn GeneralSettings(mut effects: Signal<bool>) -> Element {
     rsx! {
-        div {class:"page-heading",div {h1 {"Settings"}p {"Server listeners, certificates and appearance."}}}
-        crate::server_settings::ServerSettingsPanel {}
+        div {class:"page-heading",div {h1 {"Settings"}p {"Panel appearance and application information."}}}
         section {class:"panel",
             div {class:"panel-heading",h2 {"Appearance"}}
             div {class:"padded settings-row",
