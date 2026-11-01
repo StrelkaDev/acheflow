@@ -106,20 +106,28 @@ pub fn use_workspaces() -> (Signal<Workspace>, Signal<Catalog>, Signal<String>) 
 }
 
 #[component]
+pub fn WorkspaceSwitcher(project: Signal<Workspace>, mut open: Signal<bool>) -> Element {
+    let name = project.read().name.clone();
+    rsx! {
+        button {class:"workspace-switch",title:"{name}","aria-label":"Choose workspace: {name}","aria-expanded":open().to_string(),"aria-controls":"workspace-manager",onclick:move |_|open.set(!open()),
+            span {class:"workspace-icon","A"}
+            span {class:"workspace-switch-name","{name}"}
+            span {class:"workspace-switch-caret","▾"}
+        }
+    }
+}
+
+#[component]
 pub fn Workspaces(
     mut project: Signal<Workspace>,
     mut catalog: Signal<Catalog>,
     storage_status: Signal<String>,
+    mut open: Signal<bool>,
 ) -> Element {
-    let mut open = use_signal(|| false);
     let mut busy = use_signal(|| false);
     let mut notice = use_signal(String::new);
     rsx! {div {class:"workspace-controls",
-        div {class:"workspace-toolbar",
-            button {class:"workspace-switch",onclick:move |_|open.set(!open()),"{project.read().name} ▾"}
-            span {class:"form-help",role:"status","{storage_status}"}
-        }
-        if open() {section {class:"workspace-manager",
+        if open() {section {class:"workspace-manager",id:"workspace-manager",
             div {class:"panel-heading",div {h2 {"Workspace settings"}p {"Sources, scenes and both stream formats belong to this workspace."}}button {onclick:move |_|open.set(false),"Close"}}
             div {class:"padded",
                 Field {label:"Workspace name",value:project.read().name.clone(),change:move |v|project.write().name=v}
@@ -156,6 +164,7 @@ pub fn Workspaces(
                         }busy.set(false);
                     });},"Add from file"}
                 }
+                p {class:"form-help",role:"status","{storage_status}"}
                 p {class:"form-help","Workspace files and local storage include RTMP keys."}
                 if !notice.read().is_empty(){p {role:"status","{notice}"}}
             }

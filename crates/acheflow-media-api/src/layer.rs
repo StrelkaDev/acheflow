@@ -2,7 +2,7 @@
 use crate::workspace::Resolution;
 use serde::{Deserialize, Serialize};
 
-/// Insets in pixels of the configured source decode canvas, before scaling.
+/// Insets in native source pixels, before fitting into a scene layer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceCrop {

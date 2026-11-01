@@ -32,23 +32,13 @@ pub async fn start(
     cancel: CancellationToken,
 ) -> Result<JoinHandle<()>, String> {
     let VideoSpec { base, fps } = spec;
-    let encoder = output
-        .encoder
-        .clone()
-        .or_else(|| {
-            let preferred = match output.codec.as_str() {
-                "h264" => "libx264",
-                "hevc" => "libx265",
-                "av1" => "libsvtav1",
-                "vp9" => "libvpx-vp9",
-                _ => "",
-            };
-            caps.video_encoders(&output.codec)
-                .find(|e| e.name == preferred)
-                .or_else(|| caps.video_encoders(&output.codec).next())
-                .map(|e| e.name.clone())
-        })
-        .ok_or("No matching FFmpeg encoder")?;
+    let selected = caps.resolve_video_encoder(&output.codec, output.encoder.as_deref())?;
+    let encoder = selected.name.clone();
+    {
+        let mut status = status.lock().unwrap();
+        status.encoder = Some(encoder.clone());
+        status.hardware = selected.hardware;
+    }
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| format!("Cannot create audio pipe: {e}"))?;
@@ -102,24 +92,7 @@ pub async fn start(
         .arg(format!("{}k", output.bitrate_kbps * 2))
         .arg("-g")
         .arg((fps * 2).to_string());
-    match encoder.as_str() {
-        "libx264" | "libx264rgb" => {
-            command.args(["-preset", "veryfast", "-tune", "zerolatency"]);
-        }
-        "libx265" => {
-            command.args(["-preset", "ultrafast", "-x265-params", "log-level=error"]);
-        }
-        "libsvtav1" => {
-            command.args(["-preset", "12"]);
-        }
-        "libvpx-vp9" => {
-            command.args(["-deadline", "realtime", "-cpu-used", "8"]);
-        }
-        name if name.ends_with("_videotoolbox") => {
-            command.args(["-realtime", "1"]);
-        }
-        _ => {}
-    }
+    command.args(encoder_options(&encoder));
     command
         .args([
             "-c:a",
@@ -243,8 +216,100 @@ pub async fn start(
         let _ = errors.await;
     }))
 }
+
+fn encoder_options(encoder: &str) -> &'static [&'static str] {
+    match encoder {
+        "libx264" | "libx264rgb" => &["-preset", "veryfast", "-tune", "zerolatency"],
+        "libx265" => &["-preset", "ultrafast", "-x265-params", "log-level=error"],
+        "libsvtav1" => &["-preset", "12"],
+        "libvpx-vp9" => &["-deadline", "realtime", "-cpu-used", "8"],
+        // FFmpeg VideoToolbox can use a software implementation. Require hardware.
+        // https://github.com/FFmpeg/FFmpeg/blob/n9.0/libavcodec/videotoolboxenc.c
+        name if name.ends_with("_videotoolbox") => {
+            &["-realtime", "1", "-allow_sw", "0", "-require_sw", "0"]
+        }
+        // https://ffmpeg.org/doxygen/9.0/mfenc_8c.html
+        name if name.ends_with("_mf") => &["-hw_encoding", "1"],
+        _ => &[],
+    }
+}
 fn fail(status: &Mutex<OutputStatus>, error: String) {
     let mut status = status.lock().unwrap();
     status.state = OutputState::Failed;
     status.error = Some(error);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn videotoolbox_is_required_to_use_hardware() {
+        for encoder in ["h264_videotoolbox", "hevc_videotoolbox"] {
+            let options = encoder_options(encoder);
+            assert!(options.windows(2).any(|p| p == ["-allow_sw", "0"]));
+            assert!(options.windows(2).any(|p| p == ["-require_sw", "0"]));
+        }
+        assert!(!encoder_options("libx264").contains(&"-allow_sw"));
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "macos")]
+    #[ignore = "requires FFmpeg and actual VideoToolbox hardware; run explicitly"]
+    async fn installed_hardware_and_software_encoders_produce_real_frames() {
+        let caps = crate::ffmpeg::discover().await;
+        for name in ["libx264", "h264_videotoolbox", "hevc_videotoolbox"] {
+            let codec = if name.starts_with("hevc") {
+                "hevc"
+            } else {
+                "h264"
+            };
+            let encoder = caps.resolve_video_encoder(codec, Some(name)).unwrap();
+            assert_eq!(encoder.hardware, name.ends_with("_videotoolbox"));
+            let mut command = tokio::process::Command::new(crate::ffmpeg::executable());
+            command
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-nostdin",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=red:s=320x180:r=30",
+                    "-frames:v",
+                    "6",
+                    "-c:v",
+                    name,
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-b:v",
+                    "500k",
+                ])
+                .args(encoder_options(name))
+                .args(["-f", "framecrc", "-"])
+                .kill_on_drop(true);
+            let result = tokio::time::timeout(Duration::from_secs(20), command.output())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{name}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let frames = String::from_utf8_lossy(&result.stdout)
+                .lines()
+                .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+                .count();
+            assert_eq!(frames, 6, "{name} must encode every frame");
+            println!(
+                "{name}: {} · {frames} encoded frames",
+                if encoder.hardware {
+                    "Hardware"
+                } else {
+                    "Software"
+                }
+            );
+        }
+    }
 }

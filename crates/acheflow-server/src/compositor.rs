@@ -1,5 +1,4 @@
 use crate::{ingest::Input, live::RuntimeState};
-type AudioReceiver = (Arc<Input>, broadcast::Receiver<Arc<Vec<i16>>>);
 use acheflow_media_api::{
     MediaCapabilities,
     live::{FormatStatus, OutputState, OutputStatus},
@@ -7,7 +6,7 @@ use acheflow_media_api::{
 };
 use image::RgbImage;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -26,6 +25,7 @@ pub struct RunningFormat {
     pub frame: watch::Receiver<Arc<RgbImage>>,
     pub frames: Arc<AtomicU64>,
     pub outputs: Vec<Arc<Mutex<OutputStatus>>>,
+    audio_buses: Arc<Mutex<Vec<acheflow_media_api::audio::AudioBusStatus>>>,
     tasks: Vec<JoinHandle<()>>,
     started: Instant,
     renderer: String,
@@ -34,6 +34,7 @@ pub struct RunningFormat {
 impl RunningFormat {
     pub fn status(&self) -> FormatStatus {
         FormatStatus {
+            audio_buses: self.audio_buses.lock().unwrap().clone(),
             time_seconds: self.started.elapsed().as_secs_f64(),
             renderer: Some(self.renderer.clone()),
             error: self.error.lock().unwrap().clone(),
@@ -76,7 +77,7 @@ pub async fn start(
         stream.base.width,
         stream.base.height,
     )));
-    let (audio_tx, _) = broadcast::channel::<Arc<Vec<u8>>>(64);
+    let audio_buses = Arc::new(Mutex::new(vec![]));
     let frames = Arc::new(AtomicU64::new(0));
     let video_runtime = runtime.clone();
     let video_cancel = cancel.clone();
@@ -138,86 +139,33 @@ pub async fn start(
             return Err(error);
         }
     };
-    let audio_runtime = runtime.clone();
-    let audio_cancel = cancel.clone();
-    let audio_sender = audio_tx.clone();
-    let audio = tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_millis(20));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut receivers: HashMap<u32, AudioReceiver> = HashMap::new();
-        loop {
-            tokio::select! {_=audio_cancel.cancelled()=>break,_=ticker.tick()=>{}}
-            let selected = {
-                let workspace = audio_runtime.workspace.read().unwrap();
-                workspace
-                    .as_ref()
-                    .and_then(|w| {
-                        w.scenes
-                            .iter()
-                            .find(|s| Some(s.id) == w.active(orientation))
-                    })
-                    .map(|s| s.layers.iter().map(|l| l.source_id).collect::<HashSet<_>>())
-                    .unwrap_or_default()
-            };
-            let inputs = audio_runtime.inputs.lock().unwrap().clone();
-            receivers.retain(|id, _| selected.contains(id));
-            for id in selected {
-                if let Some(input) = inputs
-                    .get(&id)
-                    .filter(|i| i.connected.load(Ordering::Relaxed))
-                {
-                    if receivers
-                        .get(&id)
-                        .is_none_or(|(old, _)| !Arc::ptr_eq(old, input))
-                    {
-                        receivers.insert(id, (input.clone(), input.audio.subscribe()));
-                    }
-                } else {
-                    receivers.remove(&id);
-                }
-            }
-            let mut sum = vec![0i32; 1920];
-            let mut count = 0;
-            for (input, receiver) in receivers.values_mut() {
-                if input.has_audio.load(Ordering::Relaxed) {
-                    count += 1;
-                }
-                let samples = match receiver.try_recv() {
-                    Ok(samples) => Some(samples),
-                    Err(broadcast::error::TryRecvError::Lagged(_)) => receiver.try_recv().ok(),
-                    _ => None,
-                };
-                if let Some(samples) = samples {
-                    for (out, sample) in sum.iter_mut().zip(samples.iter()) {
-                        *out += i32::from(*sample);
-                    }
-                }
-            }
-            let divisor = count.max(1);
-            let bytes = sum
-                .into_iter()
-                .flat_map(|sample| {
-                    ((sample / divisor).clamp(i16::MIN as i32, i16::MAX as i32) as i16)
-                        .to_le_bytes()
-                })
-                .collect();
-            let _ = audio_sender.send(Arc::new(bytes));
-        }
-    });
     let mut running = RunningFormat {
         orientation,
         cancel,
         frame: video_rx.clone(),
         frames,
         outputs: vec![],
-        tasks: vec![video, audio],
+        audio_buses: audio_buses.clone(),
+        tasks: vec![video],
         started,
         renderer,
         error,
     };
-    for output in stream.outputs.into_iter().filter(|o| o.enabled) {
+    let mut destinations = vec![];
+    for (index, output) in stream
+        .outputs
+        .into_iter()
+        .enumerate()
+        .filter(|(_, o)| o.enabled)
+    {
+        let (audio_tx, audio_rx) = broadcast::channel(8);
         let status = Arc::new(Mutex::new(OutputStatus {
             name: output.name.clone(),
+            encoder: None,
+            hardware: false,
+            audio_scene: None,
+            audio_bus: None,
+            audio_meter: Default::default(),
             state: OutputState::Starting,
             frames: 0,
             error: None,
@@ -230,13 +178,18 @@ pub async fn start(
             },
             capabilities,
             video_rx.clone(),
-            audio_tx.subscribe(),
+            audio_rx,
             status.clone(),
             running.cancel.child_token(),
         )
         .await
         {
             Ok(task) => {
+                destinations.push(crate::audio_mixer::Destination {
+                    index,
+                    sender: audio_tx,
+                    status: status.clone(),
+                });
                 running.outputs.push(status);
                 running.tasks.push(task);
             }
@@ -247,6 +200,13 @@ pub async fn start(
             }
         }
     }
+    running.tasks.push(tokio::spawn(crate::audio_mixer::run(
+        runtime,
+        orientation,
+        destinations,
+        audio_buses,
+        running.cancel.clone(),
+    )));
     Ok(running)
 }
 
@@ -268,6 +228,7 @@ fn gpu_frame(
                 name: "Empty".into(),
                 orientation,
                 layers: vec![],
+                audio: Default::default(),
             }),
         size: workspace.stream(orientation).base.clone(),
         time,
@@ -286,7 +247,10 @@ fn gpu_frame(
                             *id,
                             SourceFrame {
                                 image: f.image.clone(),
-                                size: input.config.resolution.clone(),
+                                size: acheflow_media_api::workspace::Resolution {
+                                    width: f.image.width(),
+                                    height: f.image.height(),
+                                },
                             },
                         )
                     })
@@ -372,7 +336,10 @@ impl Renderer {
                 None
             }
             .unwrap_or_else(|| {
-                let size = &inputs[&layer.source_id].config.resolution;
+                let size = &acheflow_media_api::workspace::Resolution {
+                    width: source.width(),
+                    height: source.height(),
+                };
                 let prepared =
                     acheflow_composition::prepare_source(source, size, layer.crop, &layer.effects);
                 if prepared.width() == layer.width && prepared.height() == layer.height {
@@ -401,6 +368,35 @@ impl Renderer {
 mod tests {
     use super::*;
     use acheflow_media_api::workspace::{Layer, Workspace};
+    #[test]
+    fn gpu_scene_uses_native_frame_dimensions_instead_of_offline_preview() {
+        let mut workspace = Workspace::default();
+        workspace.add_source();
+        let scene = workspace.add_scene(Orientation::Horizontal);
+        workspace.add_layer(scene, 1);
+        let input = Arc::new(Input::new(workspace.sources[0].clone()));
+        input.connected.store(true, Ordering::Relaxed);
+        *input.metadata.lock().unwrap() = (Some(320), Some(180), Some(30.));
+        let image = Arc::new(RgbImage::from_pixel(160, 90, image::Rgb([255, 0, 0])));
+        *input.frame.write().unwrap() = Some(crate::ingest::VideoFrame {
+            received: Instant::now(),
+            image: image.clone(),
+        });
+        let inputs = HashMap::from([(1, input.clone())]);
+        let frame = gpu_frame(&workspace, Orientation::Horizontal, &inputs, 0.);
+        assert_eq!(
+            frame.inputs[&1].size,
+            acheflow_media_api::workspace::Resolution {
+                width: 160,
+                height: 90
+            }
+        );
+        assert!(Arc::ptr_eq(&frame.inputs[&1].image, &image));
+        assert_eq!(
+            (input.status().width, input.status().height),
+            (Some(160), Some(90))
+        );
+    }
     #[test]
     fn scene_edits_invalidate_cached_crop_effects_and_layer_order() {
         use acheflow_media_api::workspace::{EffectKind, LayerEffect, Resolution, SourceCrop};
@@ -490,6 +486,7 @@ mod tests {
         let mut scene = Scene {
             id: 1,
             name: "Test".into(),
+            audio: Default::default(),
             orientation: Orientation::Horizontal,
             layers: vec![Layer {
                 source_id: 1,

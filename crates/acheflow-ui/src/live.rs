@@ -13,16 +13,17 @@ use dioxus_native::prelude::*;
 pub fn Live(project: Signal<Workspace>, visible: bool) -> Element {
     let mut tab = use_signal(|| "Studio");
     rsx! {div {class:"live-root",
-        nav {class:"subnav",for name in ["Analytics","Sources","Scenes","Studio","Settings"] {
+        nav {class:"subnav",for name in ["Analytics","Sources","Scenes","Mixer","Studio","Settings"] {
             button {class:if tab()==name {"selected"}else{""},onclick:move |_|tab.set(name),"{name}"}
         }}
         LiveNotice {}
-        div {class:"live-pages",for name in ["Analytics","Sources","Scenes","Studio","Settings"] {
+        div {class:"live-pages",for name in ["Analytics","Sources","Scenes","Mixer","Studio","Settings"] {
             div {key:"{name}",class:if visible && tab()==name {"tab-scroll active"}else{"tab-scroll"},"aria-hidden":if visible && tab()==name {"false"}else{"true"},
                 div {class:"live-content",
                     if name=="Analytics" {Analytics {}}
                     if name=="Sources" {Sources {project}}
                     if name=="Scenes" {Scenes {project,visible:visible && tab()==name}}
+                    if name=="Mixer" {crate::audio_mixer::AudioMixer {project}}
                     if name=="Studio" {Studio {project,visible:visible && tab()==name}}
                     if name=="Settings" {Settings {project}}
                 }
@@ -103,18 +104,19 @@ pub fn Sources(mut project: Signal<Workspace>) -> Element {
                     Field {label:"RTMP ingest URL",value:source.url,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.url=v;}}}
                     Field {label:"Connection token / RTMP key",secret:true,value:source.key,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.key=v;}}}
                     div {class:"field",span {"Token"}button {onclick:move |_|{let key=project.peek().sources.iter().find(|s|s.id==source.id).map(|s|s.key.clone());if let Some(key)=key {spawn(async move {if client.copy_text(key).await {copied.set(Some(source.id));}});}},if copied()==Some(source.id){"Copied token"}else{"Copy token"}}button {onclick:move |_|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.key=crate::project::new_token();copied.set(None);}},"Generate new token"}span {class:"form-help","Apply to revoke the old token and reconnect this source."}}
-                    NumberField {label:"Source canvas width",value:source.resolution.width,min:16,max:((1920*1080/source.resolution.height.max(1)).min(3840)/2)*2,step:2,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.resolution.width=v;}}}
-                    NumberField {label:"Source canvas height",value:source.resolution.height,min:16,max:((1920*1080/source.resolution.width.max(1)).min(3840)/2)*2,step:2,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.resolution.height=v;}}}
+                    NumberField {label:"Offline preview width",value:source.resolution.width,min:16,max:((1920*1080/source.resolution.height.max(1)).min(3840)/2)*2,step:2,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.resolution.width=v;}}}
+                    NumberField {label:"Offline preview height",value:source.resolution.height,min:16,max:((1920*1080/source.resolution.width.max(1)).min(3840)/2)*2,step:2,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.resolution.height=v;}}}
                 }
                 if let Some(input)=state.as_ref().and_then(|s|s.sources.iter().find(|i|i.id==source.id)) {
                     div {class:"source-footer",
                         span {"Decoded frames: {input.frames}"}
                         span {"Incoming: {input.width.unwrap_or(0)} × {input.height.unwrap_or(0)} / {input.fps.unwrap_or(0.):.1} FPS"}
                         span {if input.audio{"Audio received"}else{"No audio received"}}
+                        for track in &input.audio_tracks {span {"Track {track.track_id}: {track.codec} / {track.sample_rate} Hz / {track.channels} ch · ",if track.active {"receiving"}else{"waiting"}}}
                     }
                     if let Some(error)=input.error.as_ref(){p {class:"field-error padded","{error}"}}
                 }
-                div {class:"panel-note","Incoming video is fitted into this source canvas. Actual incoming dimensions and FPS appear after connection."}
+                div {class:"panel-note","Incoming video keeps its original resolution. Resize and fit it in the scene layer. Offline preview dimensions only size the test pattern while no video is available."}
             }
         }
     }
@@ -150,7 +152,7 @@ fn StreamSettings(
             NumberField {label:"Base height",value:stream.base.height,change:move |v:u32|{if (16..=7680).contains(&v) && v.is_multiple_of(2){let mut r=project.read().stream(orientation).base.clone();r.height=v;project.write().resize_base(orientation,r);}}}
             FrameRateInput {value:stream.fps,change:move |v|project.write().stream_mut(orientation).fps=v}
         }
-        div {class:"panel-heading",h2 {"Restream outputs"}button {class:"primary",onclick:move |_|{let size=project.read().stream(orientation).base.clone();project.write().stream_mut(orientation).outputs.push(Output{name:"New destination".into(),url:String::new(),key:String::new(),resolution:size,quality:"Standard".into(),codec:"h264".into(),encoder:None,bitrate_kbps:4500,enabled:true});},"+ Output"}}
+        div {class:"panel-heading",h2 {"Restream outputs"}button {class:"primary",onclick:move |_|{let size=project.read().stream(orientation).base.clone();project.write().stream_mut(orientation).outputs.push(Output{name:"New destination".into(),url:String::new(),key:String::new(),resolution:size,quality:"Standard".into(),codec:"h264".into(),encoder:None,bitrate_kbps:4500,enabled:true,audio:Default::default()});},"+ Output"}}
         for (index,out) in stream.outputs.iter().enumerate() {
             div {key:"{index}",class:"output-config",
                 div {class:"panel-heading",h3 {"{out.name}"}button {onclick:move |_|{project.write().stream_mut(orientation).outputs.remove(index);},"Remove"}}
@@ -165,6 +167,7 @@ fn StreamSettings(
                     EncoderPicker {project,orientation,index,capabilities:capabilities.clone()}
                     Choice {label:"Output",value:if out.enabled {"Enabled"}else{"Disabled"},choices:vec!["Enabled".into(),"Disabled".into()],change:move |v:String|project.write().stream_mut(orientation).outputs[index].enabled=v=="Enabled"}
                 }
+                crate::audio_mixer::DestinationAudio {project,orientation,index}
             }
         }
         if stream.outputs.is_empty(){div {class:"empty-state",p {"No RTMP outputs configured for this format."}}}
@@ -241,10 +244,13 @@ fn Studio(mut project: Signal<Workspace>, visible: bool) -> Element {
 
                     for out in &format.outputs {
                         div {class:"output-status",strong {"{out.name}"}span {class:"badge","{out.state:?}"}span {"{out.frames} frames"}
+                            if let Some(encoder)=out.encoder.as_ref(){span {"{encoder} · ",if out.hardware {"Hardware"}else{"Software"}}}
+                            if let Some(bus)=out.audio_bus {span {"Audio: scene {out.audio_scene.unwrap_or(0)} → bus {bus}"}crate::audio_mixer::Meters {meter:out.audio_meter.clone()}}
                             if let Some(error)=out.error.as_ref(){p {class:"field-error","{error}"}}
                         }
                     }
                 }else {Canvas {project,scene_id:project.read().active(o),orientation:o,live_images:visible}div {class:"panel-note","Scene layout · start live to render the composition"}}
+                crate::studio_mixer::StudioMixer {project,orientation:o}
             }
         }}
         section {class:"panel",div {class:"panel-heading",h2 {"Chat"}span {class:"badge","Not connected"}}div {class:"empty-state",h3 {"No chat providers connected"}p {"RTMP carries media only. Chat integration is separate."}}}

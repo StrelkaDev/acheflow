@@ -61,6 +61,13 @@ pub fn VideoPreview(
 }
 
 pub(crate) async fn download_rgb(client: &reqwest::Client, url: &str) -> Option<image::RgbImage> {
+    download_snapshot(client, url).await.map(|(image, _)| image)
+}
+
+pub(crate) async fn download_snapshot(
+    client: &reqwest::Client,
+    url: &str,
+) -> Option<(image::RgbImage, acheflow_media_api::workspace::Resolution)> {
     let response = client
         .get(url)
         .header(reqwest::header::CACHE_CONTROL, "no-cache")
@@ -70,6 +77,16 @@ pub(crate) async fn download_rgb(client: &reqwest::Client, url: &str) -> Option<
         .ok()?
         .error_for_status()
         .ok()?;
+    let dimension = |name: &str| {
+        response
+            .headers()
+            .get(name)?
+            .to_str()
+            .ok()?
+            .parse::<u32>()
+            .ok()
+    };
+    let native_size = dimension("x-frame-width").zip(dimension("x-frame-height"));
     if response
         .content_length()
         .is_some_and(|n| n > 2 * 1024 * 1024)
@@ -87,7 +104,16 @@ pub(crate) async fn download_rgb(client: &reqwest::Client, url: &str) -> Option<
     limits.max_image_height = Some(854);
     limits.max_alloc = Some(16 * 1024 * 1024);
     reader.limits(limits);
-    Some(reader.decode().ok()?.to_rgb8())
+    let image = reader.decode().ok()?.to_rgb8();
+    // Older servers have no dimension headers; retain their snapshot aspect ratio.
+    let (width, height) = native_size.unwrap_or_else(|| image.dimensions());
+    if width == 0 || height == 0 || width > 7680 || height > 7680 {
+        return None;
+    }
+    Some((
+        image,
+        acheflow_media_api::workspace::Resolution { width, height },
+    ))
 }
 
 struct Target {

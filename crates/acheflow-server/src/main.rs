@@ -2,6 +2,11 @@ use std::{error::Error, net::SocketAddr};
 
 use axum::{Router, routing::get};
 use tower_http::services::ServeDir;
+mod audio_input;
+mod audio_mixer;
+mod audio_packet;
+#[cfg(test)]
+mod audio_pipeline_tests;
 mod compositor;
 mod ffmpeg;
 mod ingest;

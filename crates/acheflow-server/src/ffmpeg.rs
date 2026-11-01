@@ -86,9 +86,16 @@ async fn scan(executable: &std::path::Path) -> Result<MediaCapabilities, String>
         .filter(|l| l.starts_with("ffmpeg version "))
         .ok_or("Unexpected FFmpeg version response")?
         .to_owned();
-    let encoders = parse_encoders(&output(executable, &["-encoders"]).await?);
+    let mut encoders = parse_encoders(&output(executable, &["-encoders"]).await?);
     if encoders.is_empty() {
         return Err("FFmpeg returned no encoders".into());
+    }
+    for encoder in encoders
+        .iter_mut()
+        .filter(|e| e.media_type == MediaType::Video)
+    {
+        let help = output(executable, &["-h", &format!("encoder={}", encoder.name)]).await?;
+        encoder.hardware = hardware_encoder_help(&help);
     }
     let protocols = output(executable, &["-protocols"]).await?;
     let muxers = output(executable, &["-muxers"]).await?;
@@ -112,6 +119,21 @@ async fn scan(executable: &std::path::Path) -> Result<MediaCapabilities, String>
         }),
         enhanced_rtmp,
         error: None,
+    })
+}
+
+fn hardware_encoder_help(help: &str) -> bool {
+    help.lines().any(|line| {
+        let line = line.trim();
+        if let Some(flags) = line.strip_prefix("General capabilities:") {
+            flags
+                .split_whitespace()
+                .any(|f| matches!(f, "hardware" | "hybrid"))
+        } else if let Some(devices) = line.strip_prefix("Supported hardware devices:") {
+            devices.split_whitespace().any(|d| d != "none")
+        } else {
+            false
+        }
     })
 }
 
@@ -152,6 +174,7 @@ fn parse_encoders(output: &str) -> Vec<Encoder> {
             media_type,
             description: description.into(),
             experimental: flags.as_bytes()[3] == b'X',
+            hardware: false,
         });
     }
     encoders.sort_by(|a, b| a.name.cmp(&b.name));
@@ -162,6 +185,20 @@ fn parse_encoders(output: &str) -> Vec<Encoder> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hardware_detection_uses_encoder_capabilities_not_description() {
+        assert!(hardware_encoder_help(
+            "General capabilities: dr1 delay hybrid\nSupported hardware devices: videotoolbox"
+        ));
+        assert!(hardware_encoder_help(
+            "General capabilities: delay hardware"
+        ));
+        assert!(hardware_encoder_help("Supported hardware devices: cuda"));
+        assert!(!hardware_encoder_help(
+            "Encoder libx264 [software, hardware optimized]\nGeneral capabilities: dr1 delay threads"
+        ));
+        assert!(!hardware_encoder_help("Supported hardware devices: none"));
+    }
     #[test]
     fn parses_encoder_families_and_ignores_legends_and_malformed_rows() {
         let encoders = parse_encoders(

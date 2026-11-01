@@ -1,3 +1,4 @@
+mod audio_mixer;
 mod code_editor;
 mod dashboard;
 pub mod extension_panel;
@@ -10,7 +11,11 @@ mod project;
 mod scene_canvas;
 mod scene_geometry;
 mod scene_preview;
+mod slider;
+#[cfg(test)]
+mod slider_tests;
 mod sparks;
+mod studio_mixer;
 mod video_preview;
 mod workspaces;
 

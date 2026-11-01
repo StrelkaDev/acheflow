@@ -2,7 +2,7 @@
 
 The workspace model is shared by server and native/WASM GUI in
 `acheflow-media-api::workspace`; the GUI's `project.rs` re-exports it. Existing
-workspace JSON receives a generated identity and default source canvas when
+workspace JSON receives a generated identity and default offline source pattern size when
 those fields are absent. Importing a workspace in the GUI creates a separate
 identity. Disk/browser catalogs remain local; the server holds one applied
 workspace at a time and does not auto-start after a restart.
@@ -17,7 +17,7 @@ workspace at a time and does not auto-start after a restart.
    order is compositing order, last on top. Select a layer and drag its corners to resize, or use exact coordinates.
    Layers remain inside the base canvas. The layer list runs front-to-back;
    Forward/Backward changes stacking order. Source crop insets select a region
-   in decode-canvas pixels before it is fitted into the destination rectangle.
+   in native input pixels before it is fitted into the destination rectangle.
    Rotation is not implemented.
 3. In Studio choose a horizontal and/or vertical scene and start live. With no
    outputs a format renders preview only. Each enabled output gets an independent
@@ -28,7 +28,7 @@ workspace at a time and does not auto-start after a restart.
    composition and incoming publishers.
 
 Sources show actual RTMP connection state, decoded frame count, publisher
-metadata dimensions/FPS, audio availability and decoder errors. Studio shows
+decoded dimensions, publisher-reported FPS, audio availability and decoder errors. Studio shows
 each output's starting/streaming/failed state and FFmpeg progress frame count.
 It also lists each selected scene source as receiving video or waiting for RTMP,
 so an active compositor with disconnected inputs is not mistaken for a frozen preview.
@@ -69,7 +69,7 @@ provider is installed in these documents.
 @keyframes pulse { from { opacity: .5; } to { opacity: 1; } }
 ```
 
-Crop insets accept non-negative source-canvas pixels or percentages and must
+Crop insets accept non-negative native source pixels or percentages and must
 leave a nonempty region. They are evaluated before effects/fitting; CSS
 `clip-path` can additionally clip the decorated box. Crop custom properties do
 not currently evaluate `calc()`. `object-fit` supports fill/contain/cover/none/
@@ -108,7 +108,7 @@ fn effect(uv: vec2<f32>, color: vec4<f32>) -> vec4<f32> {
 
 The host provides `sample_source(uv)`, `params.time` (seconds), `params.strength`
 (amount/100), `params.size` (effect texture dimensions), `params.source_size`
-(configured source dimensions). Input/output colors use straight RGBA; a final
+(native decoded source dimensions, or offline pattern dimensions). Input/output colors use straight RGBA; a final
 host pass premultiplies pixels for CSS/Vello blending. Naga validates WGSL before
 GPU compilation. Custom resources, extra entry points, loops/storage writes and
 oversized functions are rejected. Shader code is capped at 32 KiB/effect.
@@ -119,8 +119,10 @@ processing textures per layer are reused; changed dimensions unregister the old
 resources. CSS decoration/animation is rendered by Blitz over the processed video.
 Editor source snapshots arrive at 2 Hz. Without a fresh decoded frame, only the
 scene editor substitutes a cached detailed test-pattern SourceFrame before GPU
-processing. The source's configured intrinsic size is retained for px crop,
-object-fit and shader parameters. Disconnects/stalls restore the pattern; real
+processing. Real snapshots carry their original dimensions in `X-Frame-Width`
+and `X-Frame-Height` headers, so px crop, object-fit and shader parameters use
+native dimensions even though the JPEG is reduced. The saved source `resolution`
+only sizes the offline pattern; it never resizes incoming video. Disconnects/stalls restore the pattern; real
 frames replace it on the next snapshot. Studio and broadcast missing inputs
 remain black/silent. Studio editor overlays are never painted over composition;
 errors, empty states and connection status remain outside its image.
@@ -139,25 +141,57 @@ tokens, playback requests and duplicate active publishers are rejected. Rotating
 or removing a source cancels its publisher/decoders. Authenticated streams are
 reconstructed as FLV tag sequences, with extended timestamps preserved.
 
-Each input has separate FFmpeg video and audio decoders fed by bounded channels
-of eight packets (maximum packet 2 MiB). Video is fitted/padded into its source
-canvas as RGB24; audio is stereo 48 kHz signed PCM. Decoders limit input pictures
-to 8,294,400 pixels and single allocations to 64 MiB. The compositor keeps only
+Each input has a video decoder and up to eight independent audio-track FFmpeg
+decoders, fed by bounded channels of eight packets (maximum packet 2 MiB).
+The RTMP adapter demultiplexes legacy track zero and Enhanced RTMP v2 OneTrack,
+ManyTracks and ManyTracksManyCodecs before decoding. Known Enhanced audio
+FourCCs are AAC, Opus, MP3, FLAC, AC3 and EAC3; actual decode support depends on
+the installed FFmpeg. ModEx and other unknown extensions fail explicitly.
+Video is decoded to native-size RGB24 without scaling or padding; each audio
+track becomes stereo 48 kHz signed PCM. FFmpeg performs mono duplication/downmix. A named FFmpeg
+`showinfo` filter reports one dimension pair per RGB frame through stderr; a
+bounded queue of eight descriptors pairs these with the raw stdout pixels.
+Checksums are disabled, informational logs are discarded, and malformed frame
+descriptors stop the decoder. Implicit FFmpeg autoscaling is disabled, so changed
+input dimensions are supported within the same connection. Frame dimensions
+come from decoding, not publisher metadata. Decoders limit input pictures
+to 8,294,400 pixels, each dimension to 7680, and single FFmpeg allocations to
+64 MiB. The compositor keeps only
 the latest input image; after two seconds without a frame that layer contributes
-no pixels. Uncovered canvas is black.
+no pixels. Uncovered canvas is black. Scene layer geometry and `object-fit`
+control scaling/fitting; use `contain` to preserve aspect ratio or `cover` to
+fill the layer with cropping. Pixel crop insets are checked against the actual
+source at render time, since offline pattern dimensions need not match it.
 GPU source uploads are skipped while the decoded image is unchanged; static effect results are reused. CSS and time-dependent shaders still advance.
 
 Each active orientation has a windowless GPU compositor paced at its configured FPS and a
-20-ms audio mixer. Visible source audio is included once even when a source has
-multiple layers. PCM is averaged across audible sources to avoid sum clipping;
-missing audio is silent. Each output consumes the latest composed image at the
-configured rate and a bounded PCM stream, and FFmpeg encodes video plus AAC.
+20-ms audio engine. Each scene owns up to eight stereo buses and 64 strips keyed
+by source ID and wire track ID. Legacy scenes route track zero of each distinct
+video-layer source once to Program (bus 1); additional tracks start unrouted.
+Explicit strips override those defaults, including an empty send list.
+Gain/send/master controls span 0–200%, stereo balance −100 to +100, with mute and
+scene-wide solo. Float sums retain headroom until each destination gain/mute
+and final i16 saturation; there is no source-count averaging. Missing PCM is
+silent. Timestamped blocks share a per-source clock and bounded 16-block playout
+queues; large discontinuities rebase instead of building a backlog. This is not
+a claim of qualified end-to-end A/V synchronization.
+
+Every destination stores its scene→bus map (default Program), so two destinations
+can share one mix or use isolated mixes. Live / Mixer edits scene controls;
+Live / Settings / Audio routing selects buses for each output. Studio also shows a single row of vertical channel strips with horizontal scrolling under each format preview, following the applied scene during streaming and the selected scene while offline. It includes source levels/gain/mute/solo/balance, bus master controls and destination names. Apply updates
+mixers/routes without restarting video; video/transport changes still require
+stopping. Status reports source tracks, stereo peak/RMS, bus levels, clipping,
+and the actual applied destination scene/bus. UI meters show block peaks at the
+status polling rate rather than latched maximum levels. Each output consumes the
+latest composed image and its own bounded PCM stream, encoded as one AAC stereo
+track, 48 kHz / 128 kbps.
 Internal PCM sockets bind to ephemeral loopback ports. Output failure/blocked IO
 does not stall the compositor or another output. FFmpeg children are cancelled,
 killed/reaped on stop/shutdown; kill-on-drop is also enabled.
 
 Current execution limits: 8 sources, 32 layers per scene, 8 outputs, source decode
-canvases at most 2,073,600 pixels, composed/output frames at most 8,294,400 pixels.
+frames at most 8,294,400 pixels, offline source patterns at most 2,073,600 pixels,
+and composed/output frames at most 8,294,400 pixels.
 FPS remains 1–120; throughput depends on scene size, hardware and encoder.
 Composition uses 8-bit RGBA GPU textures and RGB24 readback. HDR/color management,
 transition effects, recording, outgoing reconnect/backoff and production A/V
@@ -200,13 +234,30 @@ cargo test -p acheflow-server --locked -- --ignored --nocapture
 cargo test -p acheflow-composition --features headless --locked -- --ignored --nocapture
 ```
 
-The opt-in RTMP integration test uses only ephemeral loopback listeners and
+The opt-in RTMP integration tests use only ephemeral loopback listeners and
 synthetic FFmpeg sources. It checks invalid-token rejection, duplicate-publisher
 rejection, decoding, actual red/blue pixels after RTMP re-encoding, non-silent
 source audio at the receiver, both orientations, live repositioning without
 restarting the format, missing-source fallback, reconnect, token revocation,
 stale-owner rejection, live crop/opacity/stacking edits through RTMP, JPEG delivery, and one destination surviving failure of
-another. No platform credentials or external streaming services are needed.
+another. Native-size regressions cover landscape/portrait reconnects despite a
+different offline pattern size, and resolution changes inside one decoder.
+No platform credentials or external streaming services are needed.
 
 References: [rml_rtmp sessions](https://docs.rs/rml_rtmp/latest/rml_rtmp/sessions/index.html),
-[FFmpeg raw media and progress options](https://ffmpeg.org/ffmpeg.html).
+[FFmpeg raw media and progress options](https://ffmpeg.org/ffmpeg.html),
+[showinfo frame metadata](https://ffmpeg.org/ffmpeg-filters.html#showinfo).
+
+Audio acceptance is `real_scene_mixer_multitrack_sources_and_live_destination_routes`:
+it sends stereo tones 440/660 and 880/1100 Hz in one RTMP source and
+1320/1540 Hz in another, through two independent output encoders and RTMP sinks.
+Spectral checks prove selected-tone presence, bus isolation and L/R balance;
+live route/mute/scene edits and source reconnect preserve the running compositor.
+Exact PCM tests additionally cover gain, solo, master mute and saturation.
+
+UI sliders replace bounded audio/effect amount fields: channel/bus/destination
+gain, sends, stereo balance and effect strength/radius. Studio places gain faders
+beside the vertical L/R meters. Dragging keeps control outside the narrow rail;
+arrow keys change one step, Page Up/Down ten steps, Home/End select the limits,
+and the reset button restores the control default. Changes use the existing
+local-save / Apply flow. Resolution and bitrate keep precise numeric editors.

@@ -1,8 +1,8 @@
 use crate::{
     code_editor::{CodeEditor, CodeKind},
-    live::NumberField,
     live_client::{Action, LiveClient},
     project::{EffectKind, Layer, LayerEffect, Workspace},
+    slider::Slider,
 };
 use dioxus_native::prelude::*;
 
@@ -153,7 +153,7 @@ fn LayerInspector(
                             button {disabled:effect_index+1==layer.effects.len(),"aria-label":"Move effect later",onclick:move |_|move_effect(project,scene_id,layer_id,effect_id,1),"↓"}
                             button {onclick:move |_|edit(project,scene_id,layer_id,|l|{l.effects.retain(|e| e.id!=effect_id);}),"Remove"}
                         }
-                        NumberField {label:effect.kind.amount_label(),value:effect.amount,max:effect.kind.max(),change:move |v|edit_effect(project,scene_id,layer_id,effect_id,|e|e.amount=v)}
+                        Slider {label:effect.kind.amount_label(),unit:if effect.kind==EffectKind::Blur {"px"}else{"%"},value:effect.amount as i32,min:0,max:effect.kind.max() as i32,reset:Some(effect.kind.default_amount() as i32),change:move |v:i32|edit_effect(project,scene_id,layer_id,effect_id,|e|e.amount=v as u32)}
                         if effect.kind==EffectKind::Wgsl {
                             p {class:"form-help","fn effect(uv, color) → vec4f · sample_source(uv) · params.time (seconds), params.strength, params.size. Bounded fragment functions; no loops or custom bindings."}
                             CodeEditor {label:"WGSL shader",kind:CodeKind::Wgsl,value:effect.shader.clone(),change:move |v|edit_effect(project,scene_id,layer_id,effect_id,|e|e.shader=v)}

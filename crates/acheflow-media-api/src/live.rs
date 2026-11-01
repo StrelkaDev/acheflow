@@ -29,6 +29,8 @@ pub struct SourceStatus {
     pub height: Option<u32>,
     pub fps: Option<f32>,
     pub audio: bool,
+    #[serde(default)]
+    pub audio_tracks: Vec<crate::audio::AudioTrackStatus>,
     pub error: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -42,10 +44,22 @@ pub struct FormatStatus {
     pub orientation: Orientation,
     pub frames: u64,
     pub outputs: Vec<OutputStatus>,
+    #[serde(default)]
+    pub audio_buses: Vec<crate::audio::AudioBusStatus>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OutputStatus {
     pub name: String,
+    #[serde(default)]
+    pub encoder: Option<String>,
+    #[serde(default)]
+    pub hardware: bool,
+    #[serde(default)]
+    pub audio_scene: Option<u32>,
+    #[serde(default)]
+    pub audio_bus: Option<u32>,
+    #[serde(default)]
+    pub audio_meter: crate::audio::AudioMeter,
     pub state: OutputState,
     pub frames: u64,
     pub error: Option<String>,

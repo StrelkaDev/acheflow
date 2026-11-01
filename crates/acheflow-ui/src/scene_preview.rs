@@ -16,7 +16,6 @@ use web_time::Instant;
 struct Snapshot {
     owner: String,
     frame: Option<SceneFrame>,
-    sizes: HashMap<u32, crate::project::Resolution>,
     patterns: HashMap<u32, SourceFrame>,
     anchor: Instant,
     boxes: Vec<LayerBox>,
@@ -39,7 +38,6 @@ pub fn ScenePreview(
         Arc::new(Mutex::new(Snapshot {
             owner: String::new(),
             frame: None,
-            sizes: HashMap::new(),
             patterns: HashMap::new(),
             anchor: Instant::now(),
             boxes: vec![],
@@ -76,11 +74,6 @@ pub fn ScenePreview(
             state.boxes.clear();
             state.patterns.clear();
         }
-        state.sizes = workspace
-            .sources
-            .iter()
-            .map(|s| (s.id, s.resolution.clone()))
-            .collect();
         if placeholders {
             for source in &workspace.sources {
                 if state
@@ -133,11 +126,10 @@ pub fn ScenePreview(
                                 .iter()
                                 .map(|l| l.source_id)
                                 .collect::<std::collections::BTreeSet<_>>(),
-                            state.sizes.clone(),
                         )
                     })
                 };
-                if let Some((owner, ids, sizes)) = request {
+                if let Some((owner, ids)) = request {
                     let downloaded = futures_util::future::join_all(ids.into_iter().map(|id| {
                         let client = client.clone();
                         let owner = owner.clone();
@@ -146,8 +138,15 @@ pub fn ScenePreview(
                                 "/api/live/source/{id}?workspace={owner}"
                             ))
                             .ok()?;
-                            let image = crate::video_preview::download_rgb(&client, &url).await?;
-                            Some((id, Arc::new(image)))
+                            let (image, size) =
+                                crate::video_preview::download_snapshot(&client, &url).await?;
+                            Some((
+                                id,
+                                SourceFrame {
+                                    image: Arc::new(image),
+                                    size,
+                                },
+                            ))
                         }
                     }))
                     .await;
@@ -159,21 +158,7 @@ pub fn ScenePreview(
                             HashMap::new()
                         };
                         if let Some(frame) = state.frame.as_mut() {
-                            frame.inputs = downloaded
-                                .into_iter()
-                                .flatten()
-                                .filter_map(|(id, image)| {
-                                    sizes.get(&id).map(|size| {
-                                        (
-                                            id,
-                                            SourceFrame {
-                                                image,
-                                                size: size.clone(),
-                                            },
-                                        )
-                                    })
-                                })
-                                .collect();
+                            frame.inputs = downloaded.into_iter().flatten().collect();
                             for (id, pattern) in patterns {
                                 frame.inputs.entry(id).or_insert(pattern);
                             }

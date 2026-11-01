@@ -108,7 +108,52 @@ pub fn validate_css(css: &str) -> Result<(), String> {
 /// (or `:layer`) and local @keyframes for more elaborate styling.
 pub fn layer_stylesheet(css: &str) -> String {
     if css.contains('{') {
-        css.replace(":layer", ".layer")
+        fn scan<'i>(
+            parser: &mut Parser<'i>,
+            aliases: &mut Vec<std::ops::Range<usize>>,
+        ) -> Result<(), cssparser::ParseError<()>> {
+            let mut group = false;
+            while let Ok(token) = parser.next_including_whitespace_and_comments().cloned() {
+                match token {
+                    Token::AtKeyword(name) => {
+                        group = [
+                            "media",
+                            "supports",
+                            "container",
+                            "layer",
+                            "scope",
+                            "starting-style",
+                        ]
+                        .iter()
+                        .any(|n| name.eq_ignore_ascii_case(n));
+                    }
+                    Token::Colon => {
+                        let start = parser.position().byte_index() - 1;
+                        if parser
+                            .try_parse(|p| p.expect_ident_matching("layer"))
+                            .is_ok()
+                        {
+                            aliases.push(start..parser.position().byte_index());
+                        }
+                    }
+                    Token::CurlyBracketBlock if group => {
+                        parser.parse_nested_block(|p| scan(p, aliases))?;
+                        group = false;
+                    }
+                    Token::CurlyBracketBlock | Token::Semicolon => group = false,
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+        let mut aliases = vec![];
+        // Skip declaration blocks, including animation:layer_pulse and strings.
+        let _ = scan(&mut Parser::new(css), &mut aliases);
+        let mut css = css.to_owned();
+        for range in aliases.into_iter().rev() {
+            css.replace_range(range, ".layer");
+        }
+        css
     } else {
         format!(".layer {{ {css} }}")
     }
@@ -127,6 +172,95 @@ pub fn default_layer_css(layer: &crate::workspace::Layer) -> String {
         layer.crop.bottom
     )
 }
+struct LayerRule {
+    rule: std::ops::Range<usize>,
+    body: std::ops::Range<usize>,
+}
+
+/// Only match a top-level plain selector, never a keyframe or nested rule.
+fn last_layer_rule(css: &str) -> Option<LayerRule> {
+    let mut parser = Parser::new(css);
+    let mut selector_start = None;
+    let mut target = None;
+    loop {
+        let start = parser.position().byte_index();
+        let Ok(token) = parser.next_including_whitespace_and_comments().cloned() else {
+            break;
+        };
+        if matches!(token, Token::WhiteSpace(_) | Token::Comment(_)) {
+            continue;
+        }
+        let rule_start = *selector_start.get_or_insert(start);
+        let end = parser.position().byte_index();
+        if matches!(token, Token::CurlyBracketBlock) {
+            let selector = &css[rule_start..end - 1];
+            let mut selector = Parser::new(selector);
+            let layer = selector.expect_delim('.').is_ok()
+                && selector.expect_ident_matching("layer").is_ok()
+                && selector.expect_exhausted().is_ok();
+            let range = parser.parse_nested_block(|p| {
+                let a = p.position().byte_index();
+                while p.next_including_whitespace_and_comments().is_ok() {}
+                Ok::<_, cssparser::ParseError<()>>((a, p.position().byte_index()))
+            });
+            if layer && let Ok((a, b)) = range {
+                target = Some(LayerRule {
+                    rule: rule_start..parser.position().byte_index(),
+                    body: a..b,
+                });
+            }
+        }
+        if matches!(token, Token::CurlyBracketBlock | Token::Semicolon) {
+            selector_start = None;
+        }
+    }
+    target
+}
+
+fn declarations(body: &str) -> Vec<&str> {
+    let mut p = Parser::new(body);
+    let mut start = 0;
+    let mut declarations = vec![];
+    while let Ok(token) = p.next_including_whitespace_and_comments().cloned() {
+        if matches!(token, Token::Semicolon) {
+            let end = p.position().byte_index();
+            declarations.push(&body[start..end]);
+            start = end;
+        }
+    }
+    declarations.push(&body[start..]);
+    declarations
+}
+
+fn edit_layer_rule(css: &str, updates: &str, remove: &[&str]) -> String {
+    let mut css = css.to_owned();
+    if let Some(target) = last_layer_rule(&css) {
+        let retained = declarations(&css[target.body.clone()])
+            .into_iter()
+            .filter(|declaration| {
+                let mut p = Parser::new(declaration);
+                let name = p.expect_ident_cloned().ok();
+                !name.is_some_and(|name| remove.iter().any(|n| name.eq_ignore_ascii_case(n)))
+            })
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n  ");
+        let separator = if retained.is_empty() || retained.ends_with(';') {
+            ""
+        } else {
+            ";"
+        };
+        css.replace_range(
+            target.body,
+            &format!("\n  {retained}{separator}\n  {}\n", updates.trim()),
+        );
+    } else {
+        css.push_str(&format!("\n.layer {{\n  {}\n}}", updates.trim()));
+    }
+    css
+}
+
 /// Edits the last plain `.layer` rule in place, retaining crop, decoration,
 /// keyframes and comments. Dragging does not accumulate override rules.
 pub fn geometry_css(css: &str, x: u32, y: u32, width: u32, height: u32) -> String {
@@ -138,79 +272,61 @@ pub fn geometry_css(css: &str, x: u32, y: u32, width: u32, height: u32) -> Strin
     {
         css.replace_range(a..a + b + old_end.len(), "");
     }
-    let mut css = layer_stylesheet(&css);
-    let mut parser = Parser::new(&css);
-    let mut selector_start = 0;
-    let mut target = None;
-    while let Ok(token) = parser.next_including_whitespace_and_comments().cloned() {
-        let end = parser.position().byte_index();
-        if matches!(token, Token::CurlyBracketBlock) {
-            let selector = &css[selector_start..end - 1];
-            let mut selector = Parser::new(selector);
-            let layer = selector.expect_delim('.').is_ok()
-                && selector.expect_ident_matching("layer").is_ok()
-                && selector.expect_exhausted().is_ok();
-            let range = parser.parse_nested_block(|p| {
-                let a = p.position().byte_index();
-                while p.next_including_whitespace_and_comments().is_ok() {}
-                Ok::<_, cssparser::ParseError<()>>((a, p.position().byte_index()))
-            });
-            if layer && let Ok(range) = range {
-                target = Some(range);
-            }
-            selector_start = parser.position().byte_index();
-        }
-    }
-    drop(parser);
-    let geometry = format!(
-        "\n  left: {x}px; top: {y}px;\n  width: {width}px; height: {height}px;\n  right: auto; bottom: auto;\n"
-    );
-    if let Some((a, b)) = target {
-        let body = &css[a..b];
-        let mut p = Parser::new(body);
-        let mut start = 0;
-        let mut declarations = vec![];
-        while let Ok(token) = p.next_including_whitespace_and_comments().cloned() {
-            if matches!(token, Token::Semicolon) {
-                let end = p.position().byte_index();
-                declarations.push(&body[start..end]);
-                start = end;
-            }
-        }
-        declarations.push(&body[start..]);
-        let retained = declarations
-            .into_iter()
-            .filter(|declaration| {
-                let mut p = Parser::new(declaration);
-                let name = p.expect_ident_cloned().ok();
-                !name.is_some_and(|name| {
-                    ["left", "top", "right", "bottom", "width", "height", "inset"]
-                        .iter()
-                        .any(|n| name.eq_ignore_ascii_case(n))
-                })
-            })
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n  ");
-        drop(p);
-        css.replace_range(a..b, &format!("{geometry}  {retained}\n"));
-    } else {
-        css.push_str(&format!("\n.layer {{{geometry}}}"));
-    }
-    css
+    edit_layer_rule(
+        &layer_stylesheet(&css),
+        &format!(
+            "left: {x}px; top: {y}px;\n  width: {width}px; height: {height}px;\n  right: auto; bottom: auto;"
+        ),
+        &["left", "top", "right", "bottom", "width", "height", "inset"],
+    )
 }
 
+fn merge_layer_rule(css: &str, rule: &str) -> (String, String) {
+    let mut css = css.to_owned();
+    let mut rule = rule.to_owned();
+    if let Some(target) = last_layer_rule(&rule) {
+        let updates = &rule[target.body];
+        let names = declarations(updates)
+            .into_iter()
+            .filter_map(|d| {
+                Parser::new(d)
+                    .expect_ident_cloned()
+                    .ok()
+                    .map(|n| n.to_string())
+            })
+            .collect::<Vec<_>>();
+        let names = names.iter().map(String::as_str).collect::<Vec<_>>();
+        css = edit_layer_rule(&css, updates, &names);
+        rule.replace_range(target.rule, "");
+    }
+    (css, rule)
+}
+
+/// Apply preset declarations in place; only extra rules need a managed block.
 pub fn managed_css(css: &str, name: &str, rule: &str) -> String {
     let start = format!("/* editor {name} */");
     let end = format!("/* end editor {name} */");
     let mut css = css.to_owned();
+    let mut previous = None;
     if let Some(a) = css.find(&start)
-        && let Some(b) = css[a..].find(&end)
+        && let Some(b) = css[a + start.len()..].find(&end)
     {
-        css.replace_range(a..a + b + end.len(), "");
+        let b = a + start.len() + b;
+        previous = Some(css[a + start.len()..b].to_owned());
+        css.replace_range(a..b + end.len(), "");
     }
-    format!("{}\n{start}\n{rule}\n{end}", layer_stylesheet(css.trim()))
+    let mut css = layer_stylesheet(css.trim());
+    if let Some(previous) = previous {
+        // Older presets owned a second .layer rule. Preserve any geometry
+        // edits made there when moving its declarations into the main rule.
+        css = merge_layer_rule(&css, &layer_stylesheet(&previous)).0;
+    }
+    let (css, rule) = merge_layer_rule(&css, &layer_stylesheet(rule));
+    if rule.trim().is_empty() {
+        css
+    } else {
+        format!("{}\n{start}\n{}\n{end}", css.trim(), rule.trim())
+    }
 }
 
 #[cfg(test)]
@@ -237,6 +353,19 @@ mod tests {
         }
     }
     #[test]
+    fn layer_alias_does_not_rewrite_property_values_or_strings() {
+        let css = ":layer {animation:layer_pulse 2s;--label:':layer';} @keyframes layer_pulse {from {opacity:.45;}to {opacity:1;}}";
+        let normalized = layer_stylesheet(css);
+        assert_eq!(normalized, css.replacen(":layer", ".layer", 1));
+        assert_eq!(layer_stylesheet(&normalized), normalized);
+        let nested =
+            "@media (min-width:0px) {:layer {animation:layer_pulse 2s;}}:layer {opacity:1;}";
+        assert_eq!(
+            layer_stylesheet(nested),
+            nested.replace(":layer {", ".layer {")
+        );
+    }
+    #[test]
     fn dragging_edits_geometry_without_hiding_user_properties() {
         let mut css=".layer {left:0px;top:0px;width:100px;height:100px;--crop-left:10%;border:3px solid red;object-fit:cover;} @keyframes pulse {from {opacity:0;}to {opacity:1;}}".to_owned();
         for x in 0..100 {
@@ -254,5 +383,70 @@ mod tests {
             "dragging must not accumulate blank lines"
         );
         assert!(validate_css(&css).is_ok());
+    }
+
+    #[test]
+    fn animation_and_dragging_keep_one_layer_rule() {
+        let animation = "@keyframes layer_pulse {from {opacity:0.45;} to {opacity:1;}} .layer {animation:layer_pulse 2s ease-in-out infinite alternate;}";
+        let keyframes = animation.split(" .layer").next().unwrap();
+        let mut css = ".layer {left:0px;top:0px;width:100px;height:100px;--crop-left:10%;object-fit:cover;/* keep decoration */border:3px solid red;}".to_owned();
+        for x in 0..10 {
+            css = managed_css(&css, "animation", animation);
+            assert_eq!(css.matches(".layer").count(), 1, "{css}");
+            css = geometry_css(&css, x, 78, 1115, 763);
+        }
+        assert_eq!(css.matches(".layer").count(), 1, "{css}");
+        assert_eq!(css.matches("@keyframes").count(), 1);
+        assert_eq!(css.matches("animation:").count(), 1);
+        assert!(css.contains(keyframes));
+        assert!(css.contains("left: 9px"));
+        assert!(css.contains("top: 78px"));
+        assert!(css.contains("width: 1115px; height: 763px"));
+        assert!(css.contains("--crop-left:10%"));
+        assert!(css.contains("object-fit:cover"));
+        assert!(css.contains("/* keep decoration */border:3px solid red;"));
+        assert!(validate_css(&css).is_ok());
+    }
+
+    #[test]
+    fn presets_replace_properties_in_the_existing_layer_rule() {
+        for initial in [
+            "object-fit:cover;opacity:.5",
+            ":layer {object-fit:cover;opacity:.5}",
+        ] {
+            let mut css = initial.to_owned();
+            for _ in 0..3 {
+                css = managed_css(&css, "fit", ".layer {object-fit:contain;}");
+                css = managed_css(
+                    &css,
+                    "frame",
+                    ".layer {border:4px solid #ff9944;border-radius:24px;}",
+                );
+            }
+            assert_eq!(css.matches(".layer").count(), 1, "{css}");
+            assert_eq!(css.matches("object-fit:").count(), 1);
+            assert_eq!(css.matches("border:").count(), 1);
+            assert!(css.contains("object-fit:contain;"));
+            assert!(css.contains("opacity:.5"));
+            assert!(validate_css(&css).is_ok());
+        }
+    }
+
+    #[test]
+    fn replacing_legacy_animation_keeps_dragged_geometry() {
+        let css = ".layer {left:0px;top:0px;width:100px;height:100px;object-fit:cover;}\n/* editor animation */\n@keyframes layer_pulse {from {opacity:.45;}to {opacity:1;}} .layer {left:134px;top:78px;width:1115px;height:763px;animation.layer_pulse 2s;}\n/* end editor animation */";
+        let css = managed_css(
+            css,
+            "animation",
+            "@keyframes layer_pulse {from {opacity:.45;}to {opacity:1;}} .layer {animation:layer_pulse 2s;}",
+        );
+        assert_eq!(css.matches(".layer").count(), 1, "{css}");
+        assert_eq!(css.matches("@keyframes").count(), 1);
+        assert!(css.contains("left:134px;"));
+        assert!(css.contains("top:78px;"));
+        assert!(css.contains("width:1115px;"));
+        assert!(css.contains("height:763px;"));
+        assert!(css.contains("animation:layer_pulse 2s;"));
+        assert!(css.contains("object-fit:cover;"));
     }
 }

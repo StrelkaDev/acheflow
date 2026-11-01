@@ -17,7 +17,7 @@ use tokio::{
     process::{Child, Command},
 };
 
-async fn server(
+pub(super) async fn server(
     mut workspace: Workspace,
     caps: crate::ffmpeg::CapabilityState,
 ) -> (RuntimeState, tokio::task::JoinHandle<()>, String) {
@@ -39,6 +39,10 @@ async fn server(
 }
 
 fn publisher(url: &str, token: &str, color: &str, tone: u32) -> Child {
+    sized_publisher(url, token, color, tone, "160x90")
+}
+
+fn sized_publisher(url: &str, token: &str, color: &str, tone: u32, size: &str) -> Child {
     Command::new(crate::ffmpeg::executable())
         .args([
             "-hide_banner",
@@ -50,7 +54,7 @@ fn publisher(url: &str, token: &str, color: &str, tone: u32) -> Child {
             "lavfi",
             "-i",
         ])
-        .arg(format!("color=c={color}:s=160x90:r=10"))
+        .arg(format!("color=c={color}:s={size}:r=10"))
         .args(["-f", "lavfi", "-i"])
         .arg(format!("sine=frequency={tone}:sample_rate=48000"))
         .args([
@@ -82,7 +86,7 @@ fn publisher(url: &str, token: &str, color: &str, tone: u32) -> Child {
         .unwrap()
 }
 
-async fn until(mut predicate: impl FnMut() -> bool) {
+pub(super) async fn until(mut predicate: impl FnMut() -> bool) {
     tokio::time::timeout(Duration::from_secs(20), async {
         while !predicate() {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -90,6 +94,52 @@ async fn until(mut predicate: impl FnMut() -> bool) {
     })
     .await
     .expect("media condition timed out");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires FFmpeg with libx264 and local TCP; run explicitly"]
+async fn incoming_frames_keep_native_size_across_reconnects() {
+    let mut workspace = Workspace::default();
+    workspace.add_source();
+    workspace.sources[0].resolution = Resolution {
+        width: 64,
+        height: 64,
+    };
+    let token = workspace.sources[0].key.clone();
+    let caps = Arc::new(tokio::sync::Mutex::new(Default::default()));
+    let (runtime, task, url) = server(workspace, caps).await;
+    let input = runtime.inputs.lock().unwrap()[&1].clone();
+    for (size, expected) in [("160x90", (160, 90)), ("90x160", (90, 160))] {
+        let mut publisher = sized_publisher(&url, &token, "red", 440, size);
+        until(|| {
+            input.connected.load(Ordering::Acquire)
+                && input.frames.load(Ordering::Relaxed) > 2
+                && input.frame.read().unwrap().is_some()
+        })
+        .await;
+        let image = input.frame.read().unwrap().as_ref().unwrap().image.clone();
+        let dimensions = image.dimensions();
+        let status = input.status();
+        publisher.kill().await.unwrap();
+        let _ = publisher.wait().await;
+        until(|| !input.connected.load(Ordering::Acquire)).await;
+        assert_eq!(
+            dimensions, expected,
+            "ingest must not resize or pad the source"
+        );
+        assert_eq!(
+            (status.width, status.height),
+            (Some(expected.0), Some(expected.1))
+        );
+        assert!(
+            image
+                .pixels()
+                .all(|p| p.0[0] > 160 && p.0[1] < 50 && p.0[2] < 50),
+            "ingest added borders"
+        );
+    }
+    runtime.close().await;
+    task.await.unwrap();
 }
 
 fn colors(runtime: &RuntimeState, left: &str, right: &str) -> bool {
@@ -113,7 +163,24 @@ fn colors(runtime: &RuntimeState, left: &str, right: &str) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires FFmpeg with libx264 and local TCP; run explicitly"]
 async fn real_rtmp_tokens_scene_audio_reposition_reconnect_and_independent_outputs() {
+    output_pipeline("libx264").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(target_os = "macos")]
+#[ignore = "requires FFmpeg, VideoToolbox hardware, Metal and local TCP; run explicitly"]
+async fn real_rtmp_videotoolbox_output_reports_hardware_and_delivers_media() {
+    output_pipeline("h264_videotoolbox").await;
+}
+
+async fn output_pipeline(encoder: &str) {
     let caps = Arc::new(tokio::sync::Mutex::new(crate::ffmpeg::discover().await));
+    let hardware = caps
+        .lock()
+        .await
+        .resolve_video_encoder("h264", Some(encoder))
+        .unwrap()
+        .hardware;
     assert!(
         caps.lock()
             .await
@@ -147,8 +214,9 @@ async fn real_rtmp_tokens_scene_audio_reposition_reconnect_and_independent_outpu
     workspace.add_source();
     for source in &mut workspace.sources {
         source.resolution = Resolution {
-            width: 160,
-            height: 90,
+            // Offline patterns must not resize the live 160x90 inputs.
+            width: 64,
+            height: 64,
         };
     }
     let scene = workspace.add_scene(Orientation::Horizontal);
@@ -201,9 +269,10 @@ async fn real_rtmp_tokens_scene_audio_reposition_reconnect_and_independent_outpu
         resolution: workspace.horizontal.base.clone(),
         quality: "Custom".into(),
         codec: "h264".into(),
-        encoder: Some("libx264".into()),
+        encoder: Some(encoder.into()),
         bitrate_kbps: 500,
         enabled: true,
+        audio: Default::default(),
     });
     let refused = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let refused_port = refused.local_addr().unwrap().port();
@@ -360,6 +429,11 @@ async fn real_rtmp_tokens_scene_audio_reposition_reconnect_and_independent_outpu
         &runtime.formats.lock().await[0].frames
     ));
     let status = runtime.status().await;
+    assert_eq!(
+        status.formats[0].outputs[0].encoder.as_deref(),
+        Some(encoder)
+    );
+    assert_eq!(status.formats[0].outputs[0].hardware, hardware);
     assert_eq!(
         status.formats[0].outputs[0].state,
         acheflow_media_api::live::OutputState::Streaming

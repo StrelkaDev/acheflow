@@ -59,6 +59,8 @@ pub struct Output {
     pub encoder: Option<String>,
     pub bitrate_kbps: u32,
     pub enabled: bool,
+    #[serde(default)]
+    pub audio: crate::audio::OutputAudio,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,6 +76,7 @@ pub struct Source {
     pub name: String,
     pub url: String,
     pub key: String,
+    /// Offline editor pattern size. Live frames retain their decoded dimensions.
     #[serde(default = "default_input_size")]
     pub resolution: Resolution,
 }
@@ -116,6 +119,8 @@ pub struct Scene {
     pub name: String,
     pub orientation: Orientation,
     pub layers: Vec<Layer>,
+    #[serde(default)]
+    pub audio: crate::audio::SceneAudio,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -201,6 +206,7 @@ impl Workspace {
         self.sources.retain(|s| s.id != id);
         for scene in &mut self.scenes {
             scene.layers.retain(|l| l.source_id != id);
+            scene.audio.strips.retain(|strip| strip.source_id != id);
         }
     }
     pub fn add_scene(&mut self, o: Orientation) -> u32 {
@@ -212,6 +218,7 @@ impl Workspace {
             name: format!("Scene {id}"),
             orientation: o,
             layers: vec![],
+            audio: crate::audio::SceneAudio::default(),
         });
         if self.active(o).is_none() {
             self.set_active(o, Some(id));
@@ -220,6 +227,11 @@ impl Workspace {
     }
     pub fn remove_scene(&mut self, id: u32) {
         self.scenes.retain(|s| s.id != id);
+        for o in Orientation::ALL {
+            for output in &mut self.stream_mut(o).outputs {
+                output.audio.scene_buses.remove(&id);
+            }
+        }
         for o in Orientation::ALL {
             if self.active(o) == Some(id) {
                 let next = self
@@ -287,7 +299,62 @@ impl Workspace {
         }
         self.stream_mut(o).base = size;
     }
+    /// Encoding/transport changes require a restart; audio controls are live.
+    pub fn same_output_profile(&self, other: &Self, orientation: Orientation) -> bool {
+        let strip_audio = |stream: &Stream| {
+            let mut stream = stream.clone();
+            for output in &mut stream.outputs {
+                output.audio = Default::default();
+            }
+            stream
+        };
+        strip_audio(self.stream(orientation)) == strip_audio(other.stream(orientation))
+    }
+    pub fn validate_audio(&self) -> Result<(), String> {
+        let sources = self.sources.iter().map(|s| s.id).collect::<Vec<_>>();
+        for scene in &self.scenes {
+            scene.audio.validate(&sources)?;
+        }
+        for orientation in Orientation::ALL {
+            for output in &self.stream(orientation).outputs {
+                if output.audio.gain > 200 {
+                    return Err("Destination audio gain must be 0–200 percent".into());
+                }
+                for (scene, bus) in &output.audio.scene_buses {
+                    if !self.scenes.iter().any(|s| {
+                        s.id == *scene
+                            && s.orientation == orientation
+                            && s.audio.buses.iter().any(|b| b.id == *bus)
+                    }) {
+                        return Err(
+                            "Destination audio route refers to a missing scene or bus".into()
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    pub fn remove_audio_bus(&mut self, scene_id: u32, bus_id: u32) {
+        if bus_id == crate::audio::PROGRAM_BUS {
+            return;
+        }
+        if let Some(scene) = self.scenes.iter_mut().find(|s| s.id == scene_id) {
+            scene.audio.buses.retain(|b| b.id != bus_id);
+            for strip in &mut scene.audio.strips {
+                strip.sends.remove(&bus_id);
+            }
+        }
+        for orientation in Orientation::ALL {
+            for output in &mut self.stream_mut(orientation).outputs {
+                if output.audio.scene_buses.get(&scene_id) == Some(&bus_id) {
+                    output.audio.scene_buses.remove(&scene_id);
+                }
+            }
+        }
+    }
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_audio()?;
         if self.id.is_empty()
             || self.id.len() > 128
             || !self
@@ -354,7 +421,7 @@ impl Workspace {
             if !valid_size(&source.resolution)
                 || source.resolution.width as u64 * source.resolution.height as u64 > 1920 * 1080
             {
-                return Err("Source decode size must be at most 1920 × 1080 pixels (portrait also supported)".into());
+                return Err("Offline source preview must be at most 1920 × 1080 pixels (portrait also supported)".into());
             }
             if source.key.len() > 256
                 || source.key.len() < 8
@@ -389,12 +456,13 @@ impl Workspace {
                         return Err("Shader code requires a WGSL effect".into());
                     }
                 }
-                if let Some(source) = self.sources.iter().find(|s| s.id == l.source_id)
-                    && !l.crop.valid(&source.resolution)
-                {
-                    return Err(
-                        "Source crop must leave at least one source pixel in each dimension".into(),
-                    );
+                // The incoming size is known only at runtime. Reject impossible
+                // insets here; the renderer checks the actual decoded image.
+                if !l.crop.valid(&Resolution {
+                    width: 7680,
+                    height: 7680,
+                }) {
+                    return Err("Source crop exceeds the maximum input dimensions".into());
                 }
                 if l.effects.len() > 8 || l.effects.iter().any(|e| e.amount > e.kind.max()) {
                     return Err(
@@ -445,6 +513,20 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_crop_is_independent_of_offline_pattern_size() {
+        let mut workspace = Workspace::default();
+        workspace.add_source();
+        workspace.sources[0].resolution = Resolution {
+            width: 64,
+            height: 64,
+        };
+        let scene = workspace.add_scene(Orientation::Horizontal);
+        workspace.add_layer(scene, 1);
+        workspace.scenes[0].layers[0].crop.left = 100;
+        let json = workspace.json().unwrap();
+        assert_eq!(Workspace::from_json(json.as_bytes()).unwrap(), workspace);
+    }
     #[test]
     fn layer_and_effect_identity_survives_reorder_and_legacy_import() {
         let mut w = Workspace::default();
@@ -502,7 +584,7 @@ mod tests {
             Workspace::from_json(p.json().unwrap().as_bytes()).unwrap(),
             p
         );
-        p.scenes[0].layers[1].crop.left = p.sources[0].resolution.width;
+        p.scenes[0].layers[1].crop.left = u32::MAX;
         assert!(p.validate().is_err());
         p.scenes[0].layers[1].crop = SourceCrop::default();
         p.scenes[0].layers[1].effects[0].amount = 101;
@@ -526,6 +608,80 @@ mod tests {
         );
     }
     #[test]
+    fn scene_audio_routes_validate_roundtrip_and_cleanup() {
+        use crate::audio::*;
+        let mut p = Workspace::default();
+        p.add_source();
+        let scene = p.add_scene(Orientation::Horizontal);
+        p.add_layer(scene, 1);
+        p.horizontal.outputs.push(Output {
+            name: "Audio test".into(),
+            url: "rtmp://example.com/live".into(),
+            key: "test-key".into(),
+            resolution: p.horizontal.base.clone(),
+            quality: "Standard".into(),
+            codec: "h264".into(),
+            encoder: None,
+            bitrate_kbps: 4500,
+            enabled: true,
+            audio: Default::default(),
+        });
+        let legacy = {
+            let mut value = serde_json::to_value(&p).unwrap();
+            value["scenes"][0].as_object_mut().unwrap().remove("audio");
+            value["horizontal"]["outputs"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("audio");
+            value
+        };
+        assert_eq!(
+            Workspace::from_json(&serde_json::to_vec(&legacy).unwrap()).unwrap(),
+            p
+        );
+        let second = p.add_scene(Orientation::Horizontal);
+        p.scenes[0].audio.buses.push(AudioBus {
+            id: 2,
+            name: "Clean".into(),
+            ..AudioBus::default()
+        });
+        p.scenes[0].audio.strips.push(AudioStrip {
+            sends: std::collections::BTreeMap::from([(2, 100)]),
+            ..AudioStrip::new(
+                TrackKey {
+                    source_id: 1,
+                    track_id: 1,
+                },
+                false,
+            )
+        });
+        p.horizontal.outputs[0].audio.scene_buses.insert(scene, 2);
+        assert_eq!(
+            Workspace::from_json(p.json().unwrap().as_bytes()).unwrap(),
+            p
+        );
+        assert_eq!(p.scenes[1].audio, SceneAudio::default());
+        let mut changed = p.clone();
+        changed.horizontal.outputs[0].audio.muted = true;
+        assert!(p.same_output_profile(&changed, Orientation::Horizontal));
+        changed.horizontal.outputs[0].bitrate_kbps += 1;
+        assert!(!p.same_output_profile(&changed, Orientation::Horizontal));
+        p.horizontal.outputs[0].audio.scene_buses.insert(second, 2);
+        assert!(p.validate_audio().is_err());
+        p.horizontal.outputs[0].audio.scene_buses.remove(&second);
+        p.remove_audio_bus(scene, 1);
+        assert_eq!(p.scenes[0].audio.buses.len(), 2);
+        p.remove_audio_bus(scene, 2);
+        assert!(p.horizontal.outputs[0].audio.scene_buses.is_empty());
+        assert!(p.scenes[0].audio.strips[0].sends.is_empty());
+        p.remove_source(1);
+        assert!(p.scenes[0].audio.strips.is_empty());
+        p.horizontal.outputs[0].audio.scene_buses.insert(second, 1);
+        p.remove_scene(second);
+        assert!(p.horizontal.outputs[0].audio.scene_buses.is_empty());
+        assert!(p.validate().is_ok());
+    }
+    #[test]
     fn roundtrip_both_formats_and_scene_layers() {
         let mut p = Workspace::default();
         p.add_source();
@@ -541,6 +697,7 @@ mod tests {
             encoder: None,
             bitrate_kbps: 6000,
             enabled: true,
+            audio: Default::default(),
         });
         assert_eq!(
             Workspace::from_json(p.json().unwrap().as_bytes()).unwrap(),
@@ -605,6 +762,7 @@ mod tests {
             encoder: Some("hevc_videotoolbox".into()),
             bitrate_kbps: 4500,
             enabled: true,
+            audio: Default::default(),
         });
         assert_eq!(
             Workspace::from_json(p.json().unwrap().as_bytes()).unwrap(),

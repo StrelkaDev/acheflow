@@ -89,8 +89,8 @@ impl Runtime {
                         );
                     }
                     for format in formats.iter() {
-                        if old.stream(format.orientation) != workspace.stream(format.orientation) {
-                            return Err("Stop streaming before changing resolution, FPS or outputs. Scene layers can be changed live.".into());
+                        if !old.same_output_profile(&workspace, format.orientation) {
+                            return Err("Stop streaming before changing resolution, FPS or outputs. Scene layers, mixers and audio routes can be changed live.".into());
                         }
                     }
                 }
@@ -116,12 +116,10 @@ impl Runtime {
             inputs.clear();
         }
         inputs.retain(|id, input| {
-            let keep = workspace.sources.iter().any(|s| {
-                s.id == *id
-                    && s.key == input.config.key
-                    && s.url == input.config.url
-                    && s.resolution == input.config.resolution
-            });
+            let keep = workspace
+                .sources
+                .iter()
+                .any(|s| s.id == *id && s.key == input.config.key && s.url == input.config.url);
             if !keep {
                 input.disconnect();
             }
@@ -188,6 +186,7 @@ fn validate(workspace: &Workspace) -> Result<(), String> {
     layout.horizontal.outputs.clear();
     layout.vertical.outputs.clear();
     layout.validate()?;
+    workspace.validate_audio()?;
     if workspace.sources.len() > 8 || workspace.scenes.iter().any(|s| s.layers.len() > 32) {
         return Err("At most 8 sources and 32 layers per scene are supported".into());
     }
@@ -314,15 +313,9 @@ pub async fn start(
             if !capabilities.rtmp_codecs().contains(&output.codec) {
                 return Err(invalid(format!("No RTMP encoder for {}", output.codec)));
             }
-            if output.encoder.as_ref().is_some_and(|name| {
-                !capabilities
-                    .video_encoders(&output.codec)
-                    .any(|e| &e.name == name)
-            }) {
-                return Err(invalid(
-                    "Selected encoder is unavailable on this server".into(),
-                ));
-            }
+            capabilities
+                .resolve_video_encoder(&output.codec, output.encoder.as_deref())
+                .map_err(invalid)?;
         }
     }
     if !capabilities.available {
@@ -448,6 +441,7 @@ async fn image_response(frame: Option<Arc<image::RgbImage>>) -> Response {
     let Some(frame) = frame else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    let (width, height) = frame.dimensions();
     let result = tokio::task::spawn_blocking(move || {
         let scale = (480.0 / frame.width() as f64).min(854.0 / frame.height() as f64);
         let preview = image::imageops::resize(
@@ -463,14 +457,22 @@ async fn image_response(frame: Option<Arc<image::RgbImage>>) -> Response {
     })
     .await;
     match result {
-        Ok(Ok(bytes)) => (
-            [
-                (header::CONTENT_TYPE, "image/jpeg"),
-                (header::CACHE_CONTROL, "no-store"),
-            ],
-            bytes,
-        )
-            .into_response(),
+        Ok(Ok(bytes)) => {
+            let mut response = (
+                [
+                    (header::CONTENT_TYPE, "image/jpeg"),
+                    (header::CACHE_CONTROL, "no-store"),
+                ],
+                bytes,
+            )
+                .into_response();
+            // Dimensions of this exact frame, before reducing the JPEG preview.
+            response.headers_mut().insert("x-frame-width", width.into());
+            response
+                .headers_mut()
+                .insert("x-frame-height", height.into());
+            response
+        }
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -478,6 +480,23 @@ async fn image_response(frame: Option<Arc<image::RgbImage>>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn offline_preview_resize_does_not_replace_a_registered_input() {
+        let runtime = Runtime::new(
+            Arc::new(AsyncMutex::new(MediaCapabilities::default())),
+            "127.0.0.1:0".into(),
+        );
+        let mut workspace = Workspace::default();
+        workspace.add_source();
+        runtime.apply(workspace.clone()).await.unwrap();
+        let input = runtime.inputs.lock().unwrap()[&1].clone();
+        workspace.sources[0].resolution = acheflow_media_api::workspace::Resolution {
+            width: 64,
+            height: 64,
+        };
+        runtime.apply(workspace).await.unwrap();
+        assert!(Arc::ptr_eq(&input, &runtime.inputs.lock().unwrap()[&1]));
+    }
     #[tokio::test]
     async fn source_snapshots_disappear_on_disconnect_and_stall_and_return_on_reconnect() {
         let runtime = Runtime::new(
@@ -506,7 +525,10 @@ mod tests {
         });
         assert_eq!(snapshot().await.status(), StatusCode::NOT_FOUND);
         input.connected.store(true, Ordering::Release);
-        assert_eq!(snapshot().await.status(), StatusCode::OK);
+        let response = snapshot().await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["x-frame-width"], "16");
+        assert_eq!(response.headers()["x-frame-height"], "16");
         input.frame.write().unwrap().as_mut().unwrap().received =
             std::time::Instant::now() - std::time::Duration::from_secs(3);
         assert_eq!(snapshot().await.status(), StatusCode::NOT_FOUND);

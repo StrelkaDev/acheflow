@@ -58,7 +58,10 @@ is suitable for development. No WebGL fallback is enabled in this UI.
 
 ## Workspaces and Live
 
-Use the workspace name above the page to open workspace settings. Create an
+Open Settings in the sidebar for panel appearance and the Sparks background.
+
+Click the workspace name in the sidebar to open workspace settings. On narrow
+screens, the sidebar becomes a compact navigation area above the content. Create an
 empty workspace, switch between existing workspaces, export the active workspace
 as JSON, or add one from a JSON file. Import creates a separate workspace and
 never replaces an existing one. Rename a workspace in this panel.
@@ -113,19 +116,24 @@ JSON exports include RTMP keys. Import rejects unsupported versions, malformed
 configuration, missing references, layers outside the canvas, unsupported output
 profiles/encoder identifiers and files larger than 2 MiB. Export reports incomplete configuration
 instead of producing an invalid workspace. Local autosave also retains drafts
-while fields are being edited. Storage errors are shown in the toolbar; a broken
+while fields are being edited. Storage errors are shown in workspace settings; a broken
 catalog is not silently overwritten.
 
 ## FFmpeg discovery and frame rate
 
 Live / Settings displays the server FFmpeg version, encoder inventory and detected
-RTMP/FLV support. Each output selects a video codec and an FFmpeg encoder, or
-keeps automatic selection. Encoder selection is saved in the workspace; older
+RTMP/FLV support. Each output selects a video codec, Software (CPU) or Hardware,
+and a concrete FFmpeg encoder. Studio reports the encoder used by each output.
+Encoder selection is saved in the workspace; older
 JSON files without the optional `encoder` field import as automatic. A missing
 encoder on another server is shown explicitly and is never silently replaced.
 The inventory describes encoders compiled into FFmpeg, not a successful hardware
 initialization test. Choosing a codec does not start a stream; Studio starts
 the selected outputs explicitly.
+
+VideoToolbox hardware selection disables software fallback. On macOS, H.264 and
+HEVC can use `h264_videotoolbox` and `hevc_videotoolbox`. Software uses encoders
+such as `libx264` and `libx265`; an unavailable explicit encoder is an error.
 
 `GET /api/media/capabilities` returns the cached startup scan. The Refresh
 encoders action issues `POST` to that endpoint to rescan. Missing FFmpeg and scan
@@ -171,13 +179,18 @@ RTMP publisher -> token/auth (rml_rtmp) -> FLV tags -> FFmpeg RGB/PCM decoders
                                                     -> JPEG snapshots -> native/WASM UI
 ```
 
-FFmpeg performs decoding, scaling of source canvases, encoding, output scaling
-and RTMP publication. The current compositor uses CPU RGB24 images; visible
-source audio is mixed to stereo 48 kHz PCM before AAC encoding. Inputs have
+FFmpeg decodes inputs at their original resolution, then performs output encoding,
+output scaling and RTMP publication. Source `resolution` only sizes the offline
+editor pattern. The shared GPU compositor fits native input images into scene
+layers and reads back RGB24. Each scene owns an audio mixer with stereo buses,
+source/track strips, gain, mute, solo, balance and sends. Each destination chooses
+a scene bus, encoded as AAC stereo 48 kHz / 128 kbps. Multiple RTMP sources and
+Enhanced RTMP v2 audio tracks are independently decoded. Mixer and route edits
+apply live; use Live / Mixer and Live / Settings / Audio routing. Inputs have
 bounded packet queues and outputs have independent process/IO lifetimes, so a
 failed destination does not stop another output. Missing sources become black
 and silent, and can reconnect while the composition keeps running. Outgoing
-automatic reconnect, HDR/color management and GPU composition are future work.
+automatic reconnect and HDR/color management are future work.
 The HTTP control API is local by default and has no user-login system.
 
 UI markup is HTML-like Dioxus RSX inside Rust; CSS is a separate ordinary file.
