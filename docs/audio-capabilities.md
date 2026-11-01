@@ -1,42 +1,76 @@
 # Audio capability map
 
-## Confirmed scope
+Implemented as of 2026-11-01. This map describes the current audio path; the
+module specifications below retain its design and acceptance criteria.
+
+## Current scope
 
 - Audio can arrive from multiple RTMP sources and as multiple independent
   audio tracks inside a single compatible RTMP input.
 - Each output selects one stereo mixer bus. Multiple independent audio tracks
-  inside one output are outside this request.
+  inside one output are not implemented.
 - Mixer configurations belong to scenes. Destinations store a bus selection for
   each scene, so shared program/clean feeds do not require duplicate mixers.
-- The current transport adapter, FFmpeg demuxer and compatible producer must
-  preserve and identify incoming tracks. Unsupported multitrack input must be
-  reported explicitly, not reduced silently to the first track.
+- The transport adapter demultiplexes legacy track zero and Enhanced RTMP v2
+  OneTrack, ManyTracks and ManyTracksManyCodecs. Each track has its own FFmpeg
+  decoder; unsupported packet types/codecs produce an explicit input error.
+  Actual codec availability depends on the installed FFmpeg and producer.
 
-## Initial audit (before implementation)
+## Implementation
 
-- `ingest.rs` maps only `0:a:0`, resampling it to 48 kHz stereo signed PCM.
-- `compositor.rs` takes the sources used by a selected scene, averages their
-  stereo PCM and sends the same mix to every output of that format.
-- `output.rs` maps one audio input to AAC stereo at 128 kbps.
-- The existing RTMP integration test publishes two sine tones, but its audio
-  assertion checks only non-silence. It does not prove that both sources survive,
-  that left/right remain distinct, or that output routing isolates channels.
-- There is currently no persisted mixer, independent input-track model or
-  per-output bus selection.
+- `audio_packet.rs` preserves wire track IDs. `audio_input.rs` decodes up to
+  eight tracks per source to timestamped 48 kHz stereo i16 blocks. `0:a:0`
+  selects the sole track of each independent decoder. FFmpeg converts incoming
+  channel layouts to stereo; a track ID is distinct from its L/R channels.
+- `acheflow-media-api/src/audio.rs` persists scene strips, buses and destination
+  scene→bus maps. Each scene has 1–8 buses and at most 64 explicit strips.
+  Program (ID 1) is required. Legacy defaults route track zero of each distinct
+  video-layer source once; additional tracks start unrouted. Explicit strips,
+  including an empty send list, override the defaults.
+- `audio_mixer.rs` renders 20 ms blocks with fixed gains and scene-wide solo;
+  source count does not alter gain. Float sums retain headroom until destination
+  gain/mute and final i16 saturation. Missing input is silent. Timestamped playout
+  queues are bounded to 16 blocks; large discontinuities rebase the clock.
+- `compositor.rs` starts one audio engine per active format and independent
+  output workers. Each destination receives its selected scene bus, encoded by
+  `output.rs` as one AAC stereo track at 48 kHz / 128 kbps.
+
+Server files above live in `crates/acheflow-server/src/`. Shared contracts are in
+`crates/acheflow-media-api/src/`. See [live pipeline](live-pipeline.md) for queue,
+decoder and execution limits.
 
 ## Capability boundaries
 
 | Module id | Responsibility | Depends on |
 | --- | --- | --- |
-| audio-ingest | Discover stable source/track identities, retain track metadata, decode each incoming track independently, expose arrival and level information, report unsupported input formats. | — |
-| audio-mixer | Per-scene input strips keyed by source and track; gain, mute, solo and pan; stereo buses and sends; bus gain/mute and meters; bounded PCM processing and explicit clipping. | audio-ingest |
-| output-audio-routing | Persist each destination's bus selection per scene, feed that bus to its AAC encoder, show the applied route, allow live mixer/routing changes without restarting video encoding. | audio-mixer |
+| [audio-ingest](SPEC-audio-ingest.md) | Discover stable source/track identities, retain track metadata, decode each incoming track independently, expose arrival and level information, report unsupported input formats. | — |
+| [audio-mixer](SPEC-audio-mixer.md) | Per-scene input strips keyed by source and track; gain, mute, solo and balance; stereo buses and sends; bus gain/mute and meters; bounded PCM processing and explicit clipping. | audio-ingest |
+| [output-audio-routing](SPEC-output-audio-routing.md) | Persist each destination's bus selection per scene, feed that bus to its AAC encoder, show the applied route, allow live mixer/routing changes without restarting video encoding. | audio-mixer |
 
-Build order: audio-ingest → audio-mixer → output-audio-routing.
+Dependency order: audio-ingest → audio-mixer → output-audio-routing.
 
-Shared workspace contracts must provide stable references and reject duplicate
-or missing track/bus references. Legacy workspace imports require defaults so
-existing sources, scenes and output configurations remain usable.
+Workspace validation rejects duplicate strip/bus IDs and missing source/bus
+references. A configured track may be absent or disconnected and then contributes
+silence. Legacy imports receive defaults for scene mixers and output routes.
+
+## Controls and apply behavior
+
+Live / Mixer selects a scene and exposes source/track controls, per-bus sends,
+bus creation/name/master controls and meters. Gain/send/master/destination controls
+span 0–200%; stereo balance spans −100 to +100. Program cannot be removed;
+removing another bus resets affected destination routes to Program.
+
+Live / Settings / Audio routing chooses a bus for each destination and scene,
+plus destination gain/mute. Studio places a scrollable row of vertical strips
+under each format preview, following the applied scene during streaming and the
+selected scene offline. It shows source L/R levels, gain/mute/solo/balance,
+bus masters and destination names; sends are configured in Live / Mixer.
+
+Edits save locally and reach the server through Apply mixer/routes. Audio-only
+edits do not restart video encoders; transport/video-profile changes still require
+Stop/Start. Source meters become zero after 500 ms without decoded PCM. UI meters
+show block peaks at status polling time, not latched maxima. Meter movement is
+not local audio playback; monitoring is not implemented.
 
 ## Verification required across the complete path
 
@@ -65,8 +99,8 @@ existing sources, scenes and output configurations remain usable.
 - Live apply semantics, meter freshness, queue/backpressure handling, and
   timestamp-based alignment between audio tracks and video.
 
-The user approved this scope and continuing without intermediate approval gates.
-Implementation and verification are tracked in `tasks/todo.md`.
+The completed implementation and historical verification results are recorded in
+[tasks/todo.md](../tasks/todo.md).
 
 ## Implemented verification
 
@@ -79,3 +113,11 @@ Implementation and verification are tracked in `tasks/todo.md`.
   two destinations, live routes/mute/scene edits, applied meters and reconnect.
 - This is stereo mixing, not multichannel destination encoding or monitoring
   playback. Long-duration drift and production A/V latency remain unqualified.
+
+Run the real decoder and complete scene-mixer acceptance tests on a host with
+FFmpeg and a working GPU adapter:
+
+```sh
+cargo test -p acheflow-server real_multitrack_aac_preserves_each_track_and_stereo_channels --locked -- --ignored --nocapture
+cargo test -p acheflow-server real_scene_mixer_multitrack_sources_and_live_destination_routes --locked -- --ignored --nocapture
+```

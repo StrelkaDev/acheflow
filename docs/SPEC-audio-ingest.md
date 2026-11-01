@@ -1,5 +1,8 @@
 # Spec: audio-ingest
 
+Status: implemented. See [audio capabilities](audio-capabilities.md) for current
+limits, controls and verification commands.
+
 Objective: preserve distinct incoming audio tracks across RTMP sources and within
 Enhanced RTMP v2 audio messages. Source ID and wire track ID form a stable key.
 
@@ -17,8 +20,9 @@ peak and decode failure status; disconnected/stalled meters must become zero.
 Retain presentation timestamps on decoded fixed-size audio blocks to align tracks
 of the same source without letting late audio grow an unbounded backlog.
 
-Source: `crates/acheflow-server/src/audio_packet.rs`, `ingest.rs`, and shared
-status contracts. Tests stay beside parser/decoder code and in pipeline tests.
+Source: server `audio_packet.rs`, `audio_input.rs` and `ingest.rs`, with shared
+`acheflow-media-api/src/audio.rs` status contracts. Tests stay beside the
+parser/decoder code and in `audio_pipeline_tests.rs`.
 Use typed structs and explicit bounds, e.g. `TrackKey { source_id, track_id }`.
 No new dependencies; no shell interpolation or logging stream tokens.
 

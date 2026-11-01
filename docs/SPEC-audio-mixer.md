@@ -1,5 +1,8 @@
 # Spec: audio-mixer
 
+Status: implemented. See [audio capabilities](audio-capabilities.md) for current
+limits, controls and verification commands.
+
 Objective: each scene owns reusable stereo mixes that destinations can share.
 Shared Rust/Serde contracts persist source+track strips, gain, mute, scene-wide
 solo, stereo balance/pan, per-bus sends and master gain/mute. The default bus is

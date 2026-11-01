@@ -1,5 +1,9 @@
 # Browser sparks performance — 2026-10-31
 
+These are historical measurements of the Overview sparks scene on 2026-10-31.
+Artifact sizes and frame cadence below apply to that recorded build and scene;
+live composition and audio-mixer performance were not measured here.
+
 ## Finding and fix
 
 The served browser prototype was debug WASM. Its unoptimized Rust UI/rendering
@@ -42,7 +46,7 @@ This is uncompressed size, not a network throughput measurement.
 
 ```sh
 trunk build
-cargo run -p acheflow-server --locked
+cargo run -p acheflow-server --release --locked
 ```
 
 Open `http://localhost:8080/?perf=1`, wait for the first frame plus five seconds

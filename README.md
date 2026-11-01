@@ -14,11 +14,20 @@ The previous egui prototype has been removed from the workspace.
 - `crates/acheflow-composition`: shared wgpu/Blitz scene rendering, CSS layout/animation, WGSL effects and native frame readback.
 - `crates/acheflow-media-api`: shared workspace/scene model, validation, FFmpeg capabilities and live-control types.
 
-Token-authenticated RTMP ingest, FFmpeg decoding/encoding, live scene composition,
+Token-authenticated RTMP ingest, native-resolution video decoding, multitrack
+audio, scene mixing, per-destination audio routing, GPU scene composition,
 RTMP outputs and snapshot previews are implemented. WASM plugin execution and
 chat providers are not connected. Workspace configuration is saved locally;
 see workspace management below. The shared extension panel renderer is in
 `crates/acheflow-ui/src/extension_panel.rs`; no guest modules are loaded.
+
+## Documentation
+
+- [Live pipeline](docs/live-pipeline.md): source setup, CSS/WGSL scenes, media flow, API and limits.
+- [Audio capabilities](docs/audio-capabilities.md): track discovery, scene buses, output routing and verification.
+- [FFmpeg integration](docs/ffmpeg.md): discovery, codecs and hardware encoder selection.
+- [UI integration notes](docs/blitz-prototype.md) and [measured browser performance](docs/blitz-performance.md).
+- [Extension boundary](docs/extensions.md): draft contract and remaining runtime work.
 
 ## Run
 
@@ -31,18 +40,23 @@ If Cargo is missing from PATH, run `source "$HOME/.cargo/env"` first.
 The server compositor requires a working wgpu adapter (Metal/Vulkan/DX12);
 initialization failures are explicit. It runs without a browser or window.
 
-Native window:
+Start the server for either UI target, from the workspace root:
+
+```sh
+cargo run -p acheflow-server --release --locked
+```
+
+Native window, in another terminal:
 
 ```sh
 cargo run -p acheflow-ui --release --locked
 ```
 
-Browser UI, from the workspace root:
+Browser UI, from another terminal in the workspace root:
 
 ```sh
 cargo install trunk --version 0.22.1 --locked
 trunk build
-cargo run -p acheflow-server --release --locked
 ```
 
 Open http://localhost:8080. Trunk builds optimized release WASM by default into
@@ -74,12 +88,13 @@ server FFmpeg capability API: H.264, and HEVC/AV1/VP9 with Enhanced RTMP on FFmp
 7+. A destination must support the chosen Enhanced RTMP codec. Scenes inherit the base resolution for their
 format; changing it scales source-layer coordinates and dimensions.
 
-Live contains Analytics, Sources, Scenes, Studio and Settings. In Sources add
+Live contains Analytics, Sources, Scenes, Mixer, Studio and Settings. In Sources add
 inputs, copy their URL/token into OBS, and click **Apply sources / listen**. New
 tokens are 256-bit random values. Duplicate publishers and invalid tokens are
-rejected; applying a rotated token disconnects its old publisher. Source canvas
-size controls the decoder output; incoming metadata and frame/audio counters
-show the received data.
+rejected; applying a rotated token disconnects its old publisher. **Offline preview
+width/height** only size the scene editor's test pattern. Incoming video keeps
+its decoded resolution; resize/crop/fit it in the scene layer. Sources show
+decoded dimensions, publisher metadata and frame/audio counters.
 
 Add sources to a scene, select a layer and drag its corners to resize. The layer
 inspector has one CSS editor for position, size, crop (`--crop-left/top/right/bottom`
@@ -103,6 +118,20 @@ for editing; **Deactivate sources** stops inputs as well. Studio shows output
 errors and real server-composited JPEG previews at 2 Hz. Analytics uses actual
 worker counters. The output itself runs at the configured FPS, independently
 of the snapshot refresh rate. See [live pipeline](docs/live-pipeline.md).
+
+In **Live / Mixer**, select a scene, configure source/track strips and sends, and
+add or adjust stereo buses. Track zero of each distinct video-layer source starts
+on Program; additional tracks start unrouted. Gain, sends and bus/destination
+gain span 0–200%; balance spans −100 to +100. Solo applies across the scene.
+In **Live / Settings / Audio routing**, select each destination's bus for each
+scene and adjust destination gain/mute. Apply mixer/routes to update running
+audio without restarting video. Each output encodes one AAC stereo track.
+
+Studio also has a horizontally scrollable row of vertical channel strips below
+each format preview, with L/R meters, gain faders, mute/solo/balance and bus
+masters. It follows the applied scene while live and the selected scene while
+offline. Edits save locally; **Apply mixer** sends them to the server. Meters
+report server levels; there is no local monitor playback.
 
 Browser workspaces auto-save in localStorage for the current origin. Native
 workspaces auto-save to `~/.acheflow/workspaces.json`; override this path with
@@ -158,6 +187,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo clippy -p acheflow-ui --lib --target wasm32-unknown-unknown --locked -- -D warnings
 cargo test --workspace --locked
 cargo test -p acheflow-server --locked -- --ignored --nocapture
+cargo test -p acheflow-composition --features headless --locked -- --ignored --nocapture
 trunk build
 curl --fail http://localhost:8080/healthz
 ```
@@ -207,25 +237,23 @@ The bundled DejaVu font has its license under `crates/acheflow-ui/assets/`.
 ## Repowise
 
 The local index uses structural documentation, without model calls or API keys.
+Run commands from this repository root:
 
 ```sh
 repowise status
 repowise doctor
-repowise update --working-tree
+repowise update --working-tree --no-agents
 ```
 
-Before the first Git commit there is no HEAD/history, so incremental updates may
-be limited. Rebuild when necessary:
+Initialize a checkout that has no index with:
 
 ```sh
 repowise init . --yes --no-prose --no-editor-setup --no-agents --no-claude-md --no-hook --no-save-key
 ```
 
 Project MCP settings live in `.codex/config.toml` and `.mcp.json`. Restart the MCP
-session after changing them. Repowise 0.59.0 doctor can still probe the global
-Claude MCP entry pointing to Germina rather than this project's override;
-validate Acheflow directly with `repowise mcp /Users/achedev/acheflow` or CLI search.
-No commit has been created.
+session after changing them. If a tool reports stale files, refresh the index
+before relying on its cached context; check the owning source for current behavior.
 
 Sources: [Blitz](https://github.com/DioxusLabs/blitz),
 [WASM examples](https://github.com/DioxusLabs/blitz/blob/main/HOWTO_WASM.md),

@@ -10,6 +10,11 @@ does not use Dioxus Web's browser-DOM renderer or a WebView.
 
 - `crates/acheflow-ui/src/dashboard.rs`: shared components and Rust UI state.
 - `live.rs`: shared Live tabs, source/scene editing and stream profiles.
+- `audio_mixer.rs`: scene strips, sends, buses, meters and destination routes.
+- `studio_mixer.rs`: compact vertical strips for each format's applied scene.
+- `slider.rs`: shared bounded audio/effect controls with pointer/keyboard input.
+- `layer_editor.rs`: CSS/WGSL inspector, highlighted code and retained drafts.
+- `scene_preview.rs`: shared GPU scene editor and offline source patterns.
 - `project.rs`: re-export of the shared `acheflow-media-api::workspace` model.
 - `media.rs`: shared native/WASM media API client and FFmpeg encoder selection.
 - `live_client.rs`: shared native/WASM live-control API, status polling and preview URLs.
@@ -79,9 +84,15 @@ The extension API remains a separate draft shared-contract crate.
 From the workspace root, with `$HOME/.cargo/bin` in PATH:
 
 ```sh
-cargo run -p acheflow-ui --locked
+cargo run -p acheflow-server --release --locked
+```
+
+In a second terminal, launch the native UI or build the browser UI:
+
+```sh
+cargo run -p acheflow-ui --release --locked
+# Or build browser assets, then open http://localhost:8080:
 trunk build
-cargo run -p acheflow-server --locked
 ```
 
 See README for checks. The bundled font carries its license under `assets/`.

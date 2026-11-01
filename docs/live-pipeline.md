@@ -14,16 +14,23 @@ workspace at a time and does not auto-start after a restart.
    token into the publisher's RTMP stream-key field. The token is distinct from
    output destination keys. Apply sources to register them on the server.
 2. In Scenes create a scene, add source layers, and set placement/size. Layer
-   order is compositing order, last on top. Select a layer and drag its corners to resize, or use exact coordinates.
+   order is compositing order, last on top. Select a layer and drag its corners
+   to resize, or set exact geometry in the CSS inspector.
    Layers remain inside the base canvas. The layer list runs front-to-back;
    Forward/Backward changes stacking order. Source crop insets select a region
    in native input pixels before it is fitted into the destination rectangle.
    Rotation is not implemented.
-3. In Studio choose a horizontal and/or vertical scene and start live. With no
+3. In Mixer select a scene and configure source/track sends and stereo buses.
+   Track zero of each distinct video-layer source defaults to Program; additional
+   tracks need explicit sends. In Settings / Audio routing choose each output's
+   bus per scene and destination gain/mute. See [audio capabilities](audio-capabilities.md).
+4. In Studio choose a horizontal and/or vertical scene and start live. With no
    outputs a format renders preview only. Each enabled output gets an independent
    FFmpeg process with its configured codec, encoder, resolution and bitrate.
-4. Apply scene/source edits while running. Drag release applies live placement.
-   Changing an active format's base, FPS or outputs is rejected until Stop/Start.
+5. Apply scene/source/mixer/route edits while running. Drag release applies live
+   placement; audio-only changes keep the video encoder running. Changing an
+   active format's base, FPS, output transport or video profile is rejected until
+   Stop/Start.
    Stop live leaves registered inputs available; deactivate sources stops both
    composition and incoming publishers.
 
@@ -209,8 +216,8 @@ their failures are shown in Studio.
 - `GET /api/live/preview/horizontal.jpg` and `vertical.jpg`: composed previews.
 - `GET /api/live/source/{id}`: input snapshot.
 
-Preview URLs include a workspace id to avoid displaying another workspace's
-frames after a switch. Snapshots use `Cache-Control: no-store`. Errors use an
+Preview URLs include `?workspace=<workspace-id>` to avoid displaying another
+workspace's frames after a switch. Snapshots use `Cache-Control: no-store`. Errors use an
 `error` string; stop/deactivate return 409 for stale owner ids. A server with live
 formats or connected publishers cannot be silently replaced by another workspace.
 The GUI has an explicit stop/deactivate-active-workspace action for this case.
