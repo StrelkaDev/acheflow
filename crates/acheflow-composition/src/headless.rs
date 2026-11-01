@@ -242,7 +242,7 @@ mod tests {
         assert!(image.get_pixel(16, 16)[2] > 240, "cover aligns right side");
         frame.scene.layers[0].css =
             "left:8px;top:8px;width:32px;height:32px;--crop-left:8px;".into();
-        frame.scene.layers[0].effects.push(LayerEffect {kind:EffectKind::Wgsl,amount:100,enabled:true,shader:"fn effect(uv:vec2f,color:vec4f)->vec4f {return vec4f(vec3f(1.)-color.rgb,color.a);}".into()});
+        frame.scene.layers[0].effects.push(LayerEffect { id: acheflow_media_api::workspace::new_entity_id(),kind:EffectKind::Wgsl,amount:100,enabled:true,shader:"fn effect(uv:vec2f,color:vec4f)->vec4f {return vec4f(vec3f(1.)-color.rgb,color.a);}".into()});
         let image = gpu.render(&frame).unwrap();
         assert!(
             image.get_pixel(20, 20)[0] > 240
@@ -266,5 +266,51 @@ mod tests {
             gpu.render(&frame).unwrap();
         }
         assert_eq!(gpu.bindings.len(), 2, "two reusable textures per layer");
+
+        // A test image is an ordinary GPU input: crop, fitting, decoration and
+        // WGSL keep working when the editor substitutes it for missing video.
+        let pattern = SourceFrame::test_pattern(&Resolution {
+            width: 320,
+            height: 180,
+        });
+        frame.inputs.insert(1, pattern.clone());
+        frame.scene.layers[0].css = "left:0;top:0;width:128px;height:64px;".into();
+        frame.scene.layers[0].effects.clear();
+        let pattern_pixels = gpu.render(&frame).unwrap();
+        assert!(pattern_pixels.pixels().any(|p| p[0] > 180 && p[1] < 100));
+        frame.scene.layers[0].effects.push(LayerEffect {
+            shader: "fn effect(uv:vec2f,c:vec4f)->vec4f{return vec4f(vec3f(1.)-c.rgb,c.a);}".into(),
+            ..LayerEffect::new(EffectKind::Wgsl)
+        });
+        let inverted = gpu.render(&frame).unwrap();
+        let before = pattern_pixels.get_pixel(40, 20);
+        let after = inverted.get_pixel(40, 20);
+        for c in 0..3 {
+            assert!((i32::from(before[c]) + i32::from(after[c]) - 255).abs() < 4);
+        }
+        frame.inputs.insert(
+            1,
+            SourceFrame {
+                image: Arc::new(RgbImage::from_pixel(320, 180, image::Rgb([0, 0, 255]))),
+                size: pattern.size.clone(),
+            },
+        );
+        frame.scene.layers[0].effects.clear();
+        assert!(
+            gpu.render(&frame).unwrap().get_pixel(40, 20)[2] > 240,
+            "video replaces pattern"
+        );
+        frame.inputs.insert(1, pattern);
+        assert_eq!(
+            gpu.render(&frame).unwrap().get_pixel(40, 20),
+            pattern_pixels.get_pixel(40, 20),
+            "pattern returns after disconnect"
+        );
+        frame.inputs.clear();
+        assert_eq!(
+            gpu.render(&frame).unwrap().get_pixel(40, 20).0,
+            [0, 0, 0],
+            "broadcast missing input stays black"
+        );
     }
 }

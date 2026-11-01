@@ -10,6 +10,12 @@ pub fn new_token() -> String {
     }
     token
 }
+/// Stable editor identity, independent of source identity and stacking order.
+pub fn new_entity_id() -> u64 {
+    let mut bytes = [0; 8];
+    getrandom::fill(&mut bytes).expect("secure random source is unavailable");
+    u64::from_le_bytes(bytes).max(1)
+}
 fn default_input_size() -> Resolution {
     Resolution {
         width: 1280,
@@ -73,8 +79,9 @@ pub struct Source {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[derive(Default)]
 pub struct Layer {
+    #[serde(default = "new_entity_id")]
+    pub id: u64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub css: String,
     #[serde(default)]
@@ -86,6 +93,21 @@ pub struct Layer {
     pub y: u32,
     pub width: u32,
     pub height: u32,
+}
+impl Default for Layer {
+    fn default() -> Self {
+        Self {
+            id: new_entity_id(),
+            css: String::new(),
+            crop: SourceCrop::default(),
+            effects: vec![],
+            source_id: 0,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -350,9 +372,17 @@ impl Workspace {
                 return Err("Invalid or duplicate scene".into());
             }
             let base = &self.stream(scene.orientation).base;
+            let mut layer_ids = std::collections::HashSet::new();
             for l in &scene.layers {
+                if l.id == 0 || !layer_ids.insert(l.id) {
+                    return Err("Invalid or duplicate layer identity".into());
+                }
                 crate::appearance::validate_css(&l.css)?;
+                let mut effect_ids = std::collections::HashSet::new();
                 for effect in &l.effects {
+                    if effect.id == 0 || !effect_ids.insert(effect.id) {
+                        return Err("Invalid or duplicate effect identity".into());
+                    }
                     if effect.kind == EffectKind::Wgsl {
                         crate::appearance::validate_shader(&effect.shader)?;
                     } else if !effect.shader.is_empty() {
@@ -415,6 +445,35 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn layer_and_effect_identity_survives_reorder_and_legacy_import() {
+        let mut w = Workspace::default();
+        w.add_source();
+        let scene = w.add_scene(Orientation::Horizontal);
+        w.add_layer(scene, 1);
+        w.add_layer(scene, 1);
+        w.scenes[0].layers[0]
+            .effects
+            .push(LayerEffect::new(EffectKind::Wgsl));
+        let before = serde_json::to_value(&w).unwrap();
+        let first = &before["scenes"][0]["layers"][0];
+        let second = &before["scenes"][0]["layers"][1];
+        assert!(first["id"].as_u64().is_some_and(|id| id != 0));
+        assert_ne!(first["id"], second["id"]);
+        assert!(w.move_layer(scene, 0, 1));
+        let after = serde_json::to_value(&w).unwrap();
+        assert_eq!(after["scenes"][0]["layers"][1], *first);
+        let mut legacy = before;
+        for layer in legacy["scenes"][0]["layers"].as_array_mut().unwrap() {
+            layer.as_object_mut().unwrap().remove("id");
+            for effect in layer["effects"].as_array_mut().unwrap() {
+                effect.as_object_mut().unwrap().remove("id");
+            }
+        }
+        let migrated = Workspace::from_json(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let saved = migrated.json().unwrap();
+        assert_eq!(Workspace::from_json(saved.as_bytes()).unwrap(), migrated);
+    }
     #[test]
     fn legacy_layers_crop_effects_and_reordering_roundtrip() {
         let mut p = Workspace::default();

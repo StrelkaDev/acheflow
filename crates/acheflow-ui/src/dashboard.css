@@ -115,7 +115,7 @@ button.selected { background:#2b241f; color:#ffb17b; border-color:#493429; }
 .scene-list { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:20px; }
 .studio-grid { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(0,1fr); gap:20px; align-items:start; }
 .canvas-wrap { padding:20px; text-align:center; }
-.scene-canvas { width:100%; position:relative; overflow:hidden; background:#090e16; border:1px solid #46536a; border-radius:4px; min-height:100px; }
+.scene-canvas { width:100%; position:relative; overflow:hidden; background:#000000; border:1px solid #46536a; border-radius:4px; min-height:100px; }
 .scene-canvas.portrait { max-width:240px; margin:0 auto; }
 .scene-layer { position:absolute; display:flex; flex-direction:column; align-items:center; justify-content:center; border:1px solid #ed9e68; background:#25354bba; color:#e9edf5; overflow:hidden; font-size:12px; }
 .scene-layer small { margin-top:8px; color:#a3b2c9; font-size:10px; }
@@ -151,7 +151,25 @@ button.selected { background:#2b241f; color:#ffb17b; border-color:#493429; }
 .scene-gpu-error { position:absolute; left:8px; right:8px; top:8px; padding:12px; background:#301e1e; color:#ffd2bc; white-space:pre-wrap; font-size:11px; pointer-events:none; }
 .code-editor { padding:0 24px 24px; display:flex; flex-direction:column; gap:12px; }
 .code-editor label { display:flex; flex-direction:column; gap:10px; font-size:12px; color:#a3b2c9; }
-.code-editor textarea { min-height:240px; width:100%; box-sizing:border-box; padding:16px; background:#0c121c; color:#e4eaf4; border:1px solid #354155; border-radius:6px; font-family:monospace; font-size:12px; line-height:1.5; white-space:pre; overflow:scroll; }
-.code-editor textarea:focus-visible { outline:2px solid #fa9a57; }
+.code-scroll { height:280px; width:100%; overflow:scroll; position:relative; border:1px solid #354155; border-radius:6px; background:#0c121c; scrollbar-color:#8193ad #1c293c; scrollbar-width:auto; }
+.code-content { position:relative; min-width:100%; min-height:248px; font-family:monospace; font-size:12px; }
+.code-highlight, .code-editor .code-input { margin:0; padding:16px; font-family:monospace; font-size:12px; line-height:18px; letter-spacing:0; white-space:pre; tab-size:4; border:0; border-radius:0; box-sizing:border-box; }
+.code-highlight { position:absolute; inset:0; pointer-events:none; color:#d9e3f2; background:transparent; }
+.code-editor .code-input { position:absolute; inset:0; width:100%; height:100%; min-height:0; resize:none; overflow:hidden; color:transparent; caret-color:#ffffff; background:transparent; }
+.code-scroll:focus-within { outline:2px solid #fa9a57; outline-offset:2px; }
+.syntax-comment { color:#8b9cae; } .syntax-string { color:#b8d995; } .syntax-number { color:#f6bd83; }
+.syntax-property { color:#93cced; } .syntax-keyword { color:#d7acdf; } .syntax-name { color:#d5e4f3; } .syntax-punctuation { color:#b0c1d8; }
 .code-error { white-space:pre-wrap; overflow-wrap:anywhere; background:#301e1e; color:#ffd2bc; padding:12px; font-size:11px; }
 .effect-row .code-editor { padding:0; }
+.code-frame { position:relative; height:280px; width:100%; border:1px solid #354155; border-radius:6px; background:#0c121c; overflow:hidden; }
+.code-frame .code-scroll { position:absolute; inset:0; width:auto; height:auto; border:0; border-radius:0; scrollbar-width:none; }
+.code-frame.has-vertical .code-scroll { right:14px; }
+.code-frame.has-horizontal .code-scroll { bottom:14px; }
+.code-rail { position:absolute; background:#1b293c; border:1px solid #34465e; cursor:pointer; }
+.code-rail.vertical { right:0; top:0; bottom:0; width:14px; }
+.code-rail.horizontal { left:0; bottom:0; right:0; height:14px; }
+.code-frame.has-horizontal .code-rail.vertical { bottom:14px; }
+.code-frame.has-vertical .code-rail.horizontal { right:14px; }
+.code-thumb { position:absolute; background:#8193ad; border:2px solid #1b293c; border-radius:4px; min-width:8px; min-height:8px; }
+.code-rail.vertical .code-thumb { left:0; right:0; } .code-rail.horizontal .code-thumb { top:0; bottom:0; }
+.code-rail:hover .code-thumb { background:#b3c5df; } .code-rail:focus-visible { outline:2px solid #fa9a57; outline-offset:-2px; }

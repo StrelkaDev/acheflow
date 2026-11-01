@@ -327,6 +327,7 @@ async fn real_rtmp_tokens_scene_audio_reposition_reconnect_and_independent_outpu
     edited.scenes[0].layers[1]
         .effects
         .push(acheflow_media_api::workspace::LayerEffect {
+            id: acheflow_media_api::workspace::new_entity_id(),
             shader: String::new(),
             kind: acheflow_media_api::workspace::EffectKind::Opacity,
             amount: 50,

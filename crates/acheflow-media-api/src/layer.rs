@@ -77,6 +77,8 @@ impl EffectKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LayerEffect {
+    #[serde(default = "crate::workspace::new_entity_id")]
+    pub id: u64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub shader: String,
     pub kind: EffectKind,
@@ -86,6 +88,7 @@ pub struct LayerEffect {
 impl LayerEffect {
     pub fn new(kind: EffectKind) -> Self {
         Self {
+            id: crate::workspace::new_entity_id(),
             shader: if kind == EffectKind::Wgsl {
                 crate::appearance::DEFAULT_SHADER.into()
             } else {

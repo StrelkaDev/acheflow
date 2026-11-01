@@ -175,7 +175,7 @@ fn StreamSettings(
 fn Scenes(mut project: Signal<Workspace>, visible: bool) -> Element {
     let client = use_context::<LiveClient>();
     let mut selected = use_signal(|| None::<u32>);
-    let mut selected_layer = use_signal(|| None::<usize>);
+    let mut selected_layer = use_signal(|| None::<u64>);
     let current = project
         .read()
         .scenes
@@ -195,7 +195,7 @@ fn Scenes(mut project: Signal<Workspace>, visible: bool) -> Element {
                 div {class:"row padded",button {disabled:(client.busy)(),onclick:move |_|client.command(Action::Apply),"Apply scene & sources"}span {class:"form-help","Select a layer, drag to move, or drag its corners to resize. Releasing applies live changes. CSS layout, crop and effects are in the layer inspector."}}
                 div {class:"panel-heading",h3 {"Add a source layer"}}
                 div {class:"row padded",for source in project.read().sources.clone(){button {onclick:move |_|project.write().add_layer(scene.id,source.id),"+ {source.name}"}}if project.read().sources.is_empty(){p {"Register an RTMP source in Live / Sources first."}}}
-                LayerEditor {project,scene_id:scene.id,selection:selected_layer}
+                LayerEditor {key:"{project.read().id}-{scene.id}",project,scene_id:scene.id,selection:selected_layer}
 
             }
         }else{div {class:"panel empty-state",h3 {"Create your first scene"}p {"Horizontal and vertical scenes inherit their respective base canvas size."}}}
@@ -317,10 +317,14 @@ pub(crate) fn NumberField(
     let mut displayed = use_signal(|| value.to_string());
     let mut reset = use_signal(|| 0u64);
     let mut error = use_signal(|| false);
+    let mut applied = use_signal(|| value);
     use_effect(use_reactive((&value,), move |(value,)| {
-        text.set(value.to_string());
-        displayed.set(value.to_string());
-        error.set(false);
+        if *text.peek() == applied.peek().to_string() {
+            text.set(value.to_string());
+            displayed.set(value.to_string());
+            error.set(false);
+        }
+        applied.set(value);
     }));
     let commit = move || {
         let number = valid_number(&text.peek(), min, max, step);
@@ -338,7 +342,7 @@ pub(crate) fn NumberField(
             }
         }
     };
-    rsx! {div {class:"field",label {"{label}",input {key:"{reset}",r#type:"text",inputmode:"numeric","aria-label":label,value:displayed(),"aria-invalid":error().to_string(),
+    rsx! {div {class:"field",label {"{label}",input {key:"{reset}",r#type:"text",inputmode:"numeric","aria-label":label,value:{let _=displayed();text.peek().clone()},"aria-invalid":error().to_string(),
         oninput:move |e|{text.set(e.value());if *error.peek(){error.set(false);}},
         onblur:move |_| {let mut commit=commit;commit();},
         onkeydown:move |e| {

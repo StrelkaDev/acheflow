@@ -82,7 +82,13 @@ Corner handles and dragging still work. They edit left/top/width/height in the l
 in place, preserving crop/decoration/keyframes without growing the stylesheet. Handles describe
 the layout box before CSS transforms. The front-to-back list controls layer order.
 Draft code is validated on blur/Update layer (Load file is also available).
-Invalid WGSL stays in the editor with an error; it does not replace valid code.
+Invalid code stays in its layer editor with an error; it does not replace valid
+code. Layer/effect identities are saved in workspace JSON (older files receive
+identities on import). Switching layers or reordering retains each visited
+inspector and its draft, native selection and cursor. Two layers of the same
+source have independent identities. CSS/WGSL syntax highlighting shares an
+ordinary Blitz textarea, with scroll rails shown only on overflowing axes; no
+browser-only editor is used.
 Apply scene & sources publishes local edits to the server. CSS is limited to
 16 KiB/layer. Stylesheet edits rebuild that layer document; keyframes are sampled
 against the common scene timeline, but transitions between separate stylesheet
@@ -111,7 +117,14 @@ oversized functions are rejected. Shader code is capped at 32 KiB/effect.
 by the server's windowless wgpu + Blitz/Vello renderer. Input textures and the two
 processing textures per layer are reused; changed dimensions unregister the old
 resources. CSS decoration/animation is rendered by Blitz over the processed video.
-Editor source snapshots arrive at 2 Hz but CSS/WGSL animation can redraw between
+Editor source snapshots arrive at 2 Hz. Without a fresh decoded frame, only the
+scene editor substitutes a cached detailed test-pattern SourceFrame before GPU
+processing. The source's configured intrinsic size is retained for px crop,
+object-fit and shader parameters. Disconnects/stalls restore the pattern; real
+frames replace it on the next snapshot. Studio and broadcast missing inputs
+remain black/silent. Studio editor overlays are never painted over composition;
+errors, empty states and connection status remain outside its image.
+CSS/WGSL animation can redraw between
 snapshots; the server renders at configured FPS independently of any open GUI.
 Server time/renderer/errors are exposed in format status. GPU readback produces
 RGB24 for FFmpeg; zero-copy hardware-encoder integration is not implemented.

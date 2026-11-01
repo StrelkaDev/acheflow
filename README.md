@@ -84,6 +84,13 @@ in px/%), `object-fit`/`object-position`, borders, rounding, opacity and local
 `@keyframes`. Dragging updates a geometry rule in the same CSS. Change stacking
 with Forward/Backward. Add/reorder/disable GPU effects or write a WGSL fragment
 function in the shader editor. CSS and shader code are stored in workspace JSON.
+CSS and WGSL fields have syntax highlighting and draggable scrollbars that appear
+only on overflowing axes. Unapplied/invalid text, selection and cursor stay with their layer
+when selecting or reordering layers; validation still runs on blur/Update layer.
+The scene editor uses a detailed test image for a source without fresh video,
+including the same GPU crop, fitting, CSS and effect chain. Live video replaces it
+automatically. Studio shows only composition pixels, with diagnostics outside
+its image; test images are confined to the scene editor.
 Apply inspector edits to update live output. Select
 scenes in Studio and click **Start live**. Both selected formats run; enabled
 outputs publish RTMP, and a format with no outputs runs preview only. Use

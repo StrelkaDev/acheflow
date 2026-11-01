@@ -459,6 +459,7 @@ mod tests {
             [0, 0, 255]
         );
         w.scenes[0].layers[1].effects.push(LayerEffect {
+            id: acheflow_media_api::workspace::new_entity_id(),
             shader: String::new(),
             kind: EffectKind::Opacity,
             amount: 50,

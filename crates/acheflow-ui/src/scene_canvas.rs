@@ -9,7 +9,7 @@ use dioxus_native::prelude::*;
 #[derive(Clone, Copy)]
 struct LayerDrag {
     scene: u32,
-    index: usize,
+    layer_id: u64,
     client_x: f64,
     client_y: f64,
     bounds: Bounds,
@@ -25,13 +25,14 @@ pub fn Canvas(
     orientation: Orientation,
     #[props(default = false)] editable: bool,
     #[props(default = true)] live_images: bool,
-    #[props(default)] selection: Option<Signal<Option<usize>>>,
+    #[props(default)] selection: Option<Signal<Option<u64>>>,
 ) -> Element {
     let client = use_context::<LiveClient>();
     let mut mounted: Signal<Option<std::rc::Rc<MountedData>>> = use_signal(|| None);
     let dragging: Signal<Option<LayerDrag>> = use_signal(|| None);
     let metrics = use_signal(Vec::<acheflow_composition::gpu::LayerBox>::new);
-    let local_selection = use_signal(|| None::<usize>);
+    let diagnostic = use_signal(|| None::<String>);
+    let local_selection = use_signal(|| None::<u64>);
     let selection = selection.unwrap_or(local_selection);
     let p = project.read();
     let base = p.stream(orientation).base.clone();
@@ -45,6 +46,7 @@ pub fn Canvas(
     } else {
         None
     };
+    let empty = scene.as_ref().map(|s| s.layers.is_empty());
     rsx! {div {class:"canvas-wrap",div {
         class:if orientation==Orientation::Vertical{"scene-canvas portrait"}else{"scene-canvas"},
         style:format!("aspect-ratio: {} / {};",base.width,base.height),
@@ -53,7 +55,7 @@ pub fn Canvas(
             if let Some(drag)=dragging() {
                 let point=event.client_coordinates();
                 let b=scene_geometry::transform(drag.bounds,drag.kind,(point.x-drag.client_x)*drag.scale_x,(point.y-drag.client_y)*drag.scale_y,(base.width,base.height));
-                if let Some(scene)=project.write().scenes.iter_mut().find(|s|s.id==drag.scene) && let Some(layer)=scene.layers.get_mut(drag.index) {
+                if let Some(scene)=project.write().scenes.iter_mut().find(|s|s.id==drag.scene) && let Some(layer)=scene.layers.iter_mut().find(|l|l.id==drag.layer_id) {
                     let css=if layer.css.is_empty(){acheflow_media_api::appearance::default_layer_css(layer)}else{layer.css.clone()};
                     layer.x=b.x;layer.y=b.y;layer.width=b.width;layer.height=b.height;
                     layer.css=acheflow_media_api::appearance::geometry_css(&css,b.x,b.y,b.width,b.height);
@@ -63,27 +65,30 @@ pub fn Canvas(
         onmouseup:move |_|finish_drag(dragging,client),
         onmouseleave:move |_|finish_drag(dragging,client),
         if let Some(scene)=scene {
-        if live_images {ScenePreview {project,scene_id:scene.id,orientation,metrics:Some(metrics)}}
-        for (index,layer) in scene.layers.iter().enumerate(){
-            div {key:"{index}",class:format!("scene-layer {} {} {}",if editable {"editable"}else{""},if editable && selection()==Some(index){"selected-layer"}else{""},if live_images {"has-video"}else{""}),
+        if live_images {ScenePreview {project,scene_id:scene.id,orientation,metrics:Some(metrics),diagnostic,placeholders:editable}}
+        if editable {for (index,layer) in scene.layers.iter().enumerate(){
+            div {key:"{layer.id}",class:format!("scene-layer {} {} {}",if editable {"editable"}else{""},if editable && selection()==Some(layer.id){"selected-layer"}else{""},if live_images {"has-video"}else{""}),
                 style:{let b=layer_bounds(layer,metrics.read().get(index).copied());format!("left:{}%;top:{}%;width:{}%;height:{}%;",b.x as f64/base.width as f64*100.,b.y as f64/base.height as f64*100.,b.width as f64/base.width as f64*100.,b.height as f64/base.height as f64*100.)},
                 onmousedown:{let layer=layer.clone();let scene_id=scene.id;let base=base.clone();move |event:MouseEvent| {
                     if !editable{return;}
                     event.prevent_default();event.stop_propagation();
-                    begin_drag(event,mounted,dragging,selection,DragStart::new(scene_id,index,layer_bounds(&layer,metrics.peek().get(index).copied()),&base,DragKind::Move));
+                    begin_drag(event,mounted,dragging,selection,DragStart::new(scene_id,layer.id,layer_bounds(&layer,metrics.peek().get(index).copied()),&base,DragKind::Move));
                 }},
                 div {class:"layer-label",span {{p.sources.iter().find(|s|s.id==layer.source_id).map(|s|s.name.clone()).unwrap_or_else(||"Missing source".into())}}small {if state.as_ref().and_then(|s|s.sources.iter().find(|s|s.id==layer.source_id)).is_some_and(|s|s.connected){"RTMP connected"}else{"Waiting for RTMP"}}}
-                if editable && selection()==Some(index) {for corner in Corner::ALL {
+                if editable && selection()==Some(layer.id) {for corner in Corner::ALL {
                     button {class:format!("resize-handle {}",corner.class()),"aria-label":corner.label(),title:corner.label(),
                         onmousedown:{let layer=layer.clone();let scene_id=scene.id;let base=base.clone();move |event:MouseEvent| {
                             event.prevent_default();event.stop_propagation();
-                            begin_drag(event,mounted,dragging,selection,DragStart::new(scene_id,index,layer_bounds(&layer,metrics.peek().get(index).copied()),&base,DragKind::Resize(corner)));
+                            begin_drag(event,mounted,dragging,selection,DragStart::new(scene_id,layer.id,layer_bounds(&layer,metrics.peek().get(index).copied()),&base,DragKind::Resize(corner)));
                         }}
                     }
                 }}
             }
-        }if scene.layers.is_empty(){span {class:"canvas-empty","Empty scene"}}}else{span {class:"canvas-empty","No scene selected"}}
-    }p {class:"form-help","{base.width} × {base.height} / {orientation.label()}"}}}
+        }}}
+    }
+        if let Some(error)=diagnostic.read().as_ref(){pre {class:"code-error",role:"alert","{error}"}}
+        if empty.is_none(){p {class:"form-help","No scene selected"}}else if empty==Some(true){p {class:"form-help","Empty scene"}}
+        p {class:"form-help","{base.width} × {base.height} / {orientation.label()}"}}}
 }
 fn finish_drag(mut dragging: Signal<Option<LayerDrag>>, client: LiveClient) {
     if dragging().is_some() {
@@ -96,7 +101,7 @@ fn finish_drag(mut dragging: Signal<Option<LayerDrag>>, client: LiveClient) {
 // All pointer coordinates are converted with the mounted canvas's current size.
 struct DragStart {
     scene: u32,
-    index: usize,
+    layer_id: u64,
     bounds: Bounds,
     kind: DragKind,
     base: (u32, u32),
@@ -105,10 +110,10 @@ fn begin_drag(
     event: MouseEvent,
     mounted: Signal<Option<std::rc::Rc<MountedData>>>,
     mut dragging: Signal<Option<LayerDrag>>,
-    mut selection: Signal<Option<usize>>,
+    mut selection: Signal<Option<u64>>,
     start: DragStart,
 ) {
-    selection.set(Some(start.index));
+    selection.set(Some(start.layer_id));
     let point = event.client_coordinates();
     spawn(async move {
         if let Some(handle) = mounted()
@@ -118,7 +123,7 @@ fn begin_drag(
         {
             dragging.set(Some(LayerDrag {
                 scene: start.scene,
-                index: start.index,
+                layer_id: start.layer_id,
                 client_x: point.x,
                 client_y: point.y,
                 bounds: start.bounds,
@@ -133,14 +138,14 @@ fn begin_drag(
 impl DragStart {
     fn new(
         scene: u32,
-        index: usize,
+        layer_id: u64,
         bounds: Bounds,
         base: &crate::project::Resolution,
         kind: DragKind,
     ) -> Self {
         Self {
             scene,
-            index,
+            layer_id,
             bounds,
             kind,
             base: (base.width, base.height),

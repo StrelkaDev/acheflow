@@ -24,6 +24,64 @@ pub struct SourceFrame {
     pub image: Arc<RgbImage>,
     pub size: Resolution,
 }
+impl SourceFrame {
+    /// Editor-only input. Callers opt in; missing broadcast inputs stay empty.
+    /// Preserve the configured intrinsic size while bounding preview memory.
+    pub fn test_pattern(size: &Resolution) -> Self {
+        let scale = (480. / size.width.max(1) as f64)
+            .min(480. / size.height.max(1) as f64)
+            .min(1.);
+        let w = (size.width as f64 * scale).round().max(1.) as u32;
+        let h = (size.height as f64 * scale).round().max(1.) as u32;
+        let bars = [
+            [235, 235, 235],
+            [245, 210, 35],
+            [30, 210, 220],
+            [35, 205, 65],
+            [215, 45, 205],
+            [235, 45, 45],
+            [35, 75, 230],
+        ];
+        let image = RgbImage::from_fn(w, h, |x, y| {
+            let u = x as f32 / w as f32;
+            let v = y as f32 / h as f32;
+            let mut color = if v < 0.65 {
+                bars[((u * 7.) as usize).min(6)]
+            } else {
+                let level = (u * 255.) as u8;
+                match ((v - 0.65) * 9.) as u32 {
+                    0 => [level, level, level],
+                    1 => [level, 80, 255 - level],
+                    _ => [255 - level, level, 100],
+                }
+            };
+            // Fine grid, central circle, diagonal, asymmetric corner targets.
+            let dx = (u - 0.5) * size.width as f32 / size.height.max(1) as f32;
+            let radius = (dx * dx + (v - 0.5).powi(2)).sqrt();
+            if x % 32 == 0 || y % 32 == 0 {
+                color = color.map(|c| c / 2);
+            }
+            if (radius - 0.25).abs() < 0.008 || (u - v).abs() < 0.006 {
+                color = [255, 255, 255];
+            }
+            if x < 5 || y < 5 || x + 5 >= w || y + 5 >= h {
+                color = [245, 245, 245];
+            }
+            if (u < 0.12 && v < 0.12) || (u > 0.88 && v > 0.88) {
+                color = if (x / 4 + y / 4) % 2 == 0 {
+                    [20, 20, 20]
+                } else {
+                    [255, 255, 255]
+                };
+            }
+            image::Rgb(color)
+        });
+        Self {
+            image: Arc::new(image),
+            size: size.clone(),
+        }
+    }
+}
 #[derive(Clone)]
 pub struct SceneFrame {
     pub scene: MediaScene,

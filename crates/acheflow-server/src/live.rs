@@ -431,11 +431,15 @@ pub async fn source_preview(
         return StatusCode::NOT_FOUND.into_response();
     }
     let frame = runtime.inputs.lock().unwrap().get(&id).and_then(|input| {
+        if !input.connected.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
         input
             .frame
             .read()
             .unwrap()
             .as_ref()
+            .filter(|f| f.received.elapsed() < std::time::Duration::from_secs(2))
             .map(|f| f.image.clone())
     });
     image_response(frame).await
@@ -474,6 +478,43 @@ async fn image_response(frame: Option<Arc<image::RgbImage>>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn source_snapshots_disappear_on_disconnect_and_stall_and_return_on_reconnect() {
+        let runtime = Runtime::new(
+            Arc::new(AsyncMutex::new(MediaCapabilities::default())),
+            "127.0.0.1:0".into(),
+        );
+        let mut workspace = Workspace::default();
+        workspace.add_source();
+        let input = Arc::new(Input::new(workspace.sources[0].clone()));
+        runtime
+            .inputs
+            .lock()
+            .unwrap()
+            .insert(input.config.id, input.clone());
+        let snapshot = || {
+            source_preview(
+                State(runtime.clone()),
+                Path(input.config.id),
+                Query(HashMap::new()),
+            )
+        };
+        let image = Arc::new(image::RgbImage::new(16, 16));
+        *input.frame.write().unwrap() = Some(crate::ingest::VideoFrame {
+            received: std::time::Instant::now(),
+            image: image.clone(),
+        });
+        assert_eq!(snapshot().await.status(), StatusCode::NOT_FOUND);
+        input.connected.store(true, Ordering::Release);
+        assert_eq!(snapshot().await.status(), StatusCode::OK);
+        input.frame.write().unwrap().as_mut().unwrap().received =
+            std::time::Instant::now() - std::time::Duration::from_secs(3);
+        assert_eq!(snapshot().await.status(), StatusCode::NOT_FOUND);
+        input.frame.write().unwrap().as_mut().unwrap().received = std::time::Instant::now();
+        assert_eq!(snapshot().await.status(), StatusCode::OK);
+        input.connected.store(false, Ordering::Release);
+        assert_eq!(snapshot().await.status(), StatusCode::NOT_FOUND);
+    }
     #[test]
     fn source_registration_rejects_shared_tokens_and_non_rtmp_urls() {
         let mut w = Workspace::default();

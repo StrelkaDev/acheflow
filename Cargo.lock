@@ -1264,6 +1264,7 @@ dependencies = [
  "anyrender_vello_hybrid",
  "blitz-dom",
  "blitz-net",
+ "blitz-paint",
  "blitz-shell",
  "blitz-traits",
  "cfg-if",

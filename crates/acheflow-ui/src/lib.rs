@@ -40,3 +40,6 @@ pub fn start() {
     tracing_wasm::set_as_global_default_with_config(config);
     launch();
 }
+
+#[cfg(test)]
+mod layer_editor_tests;

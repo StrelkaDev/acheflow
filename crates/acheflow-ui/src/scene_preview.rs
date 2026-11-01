@@ -17,6 +17,7 @@ struct Snapshot {
     owner: String,
     frame: Option<SceneFrame>,
     sizes: HashMap<u32, crate::project::Resolution>,
+    patterns: HashMap<u32, SourceFrame>,
     anchor: Instant,
     boxes: Vec<LayerBox>,
     error: Option<String>,
@@ -28,6 +29,8 @@ pub fn ScenePreview(
     project: Signal<Workspace>,
     scene_id: u32,
     orientation: Orientation,
+    mut diagnostic: Signal<Option<String>>,
+    #[props(default = false)] placeholders: bool,
     #[props(default)] metrics: Option<Signal<Vec<LayerBox>>>,
 ) -> Element {
     let client = use_context::<LiveClient>();
@@ -37,6 +40,7 @@ pub fn ScenePreview(
             owner: String::new(),
             frame: None,
             sizes: HashMap::new(),
+            patterns: HashMap::new(),
             anchor: Instant::now(),
             boxes: vec![],
             error: None,
@@ -44,7 +48,6 @@ pub fn ScenePreview(
         }))
     });
     let mut version = use_signal(|| 0u64);
-    let mut error = use_signal(|| None::<String>);
     let widget_shared = shared.clone();
     let widget = use_hook(move || {
         CustomWidgetAttr::new(SceneWidget {
@@ -71,23 +74,45 @@ pub fn ScenePreview(
             state.frame = None;
             state.owner = workspace.id.clone();
             state.boxes.clear();
+            state.patterns.clear();
         }
-        let inputs = state
+        state.sizes = workspace
+            .sources
+            .iter()
+            .map(|s| (s.id, s.resolution.clone()))
+            .collect();
+        if placeholders {
+            for source in &workspace.sources {
+                if state
+                    .patterns
+                    .get(&source.id)
+                    .is_none_or(|p| p.size != source.resolution)
+                {
+                    state
+                        .patterns
+                        .insert(source.id, SourceFrame::test_pattern(&source.resolution));
+                }
+            }
+            state
+                .patterns
+                .retain(|id, _| workspace.sources.iter().any(|s| s.id == *id));
+        }
+        let mut inputs = state
             .frame
             .as_ref()
             .map(|f| f.inputs.clone())
             .unwrap_or_default();
+        if placeholders {
+            for (id, pattern) in &state.patterns {
+                inputs.entry(*id).or_insert_with(|| pattern.clone());
+            }
+        }
         state.frame = Some(SceneFrame {
             scene: scene.clone(),
             size: workspace.stream(orientation).base.clone(),
             inputs,
             time,
         });
-        state.sizes = workspace
-            .sources
-            .iter()
-            .map(|s| (s.id, s.resolution.clone()))
-            .collect();
         state.anchor = Instant::now();
         state.revision += 1;
         version.set(state.revision);
@@ -128,6 +153,11 @@ pub fn ScenePreview(
                     .await;
                     let mut state = shared.lock().unwrap();
                     if state.owner == owner {
+                        let patterns = if placeholders {
+                            state.patterns.clone()
+                        } else {
+                            HashMap::new()
+                        };
                         if let Some(frame) = state.frame.as_mut() {
                             frame.inputs = downloaded
                                 .into_iter()
@@ -144,6 +174,9 @@ pub fn ScenePreview(
                                     })
                                 })
                                 .collect();
+                            for (id, pattern) in patterns {
+                                frame.inputs.entry(id).or_insert(pattern);
+                            }
                         }
                         state.revision += 1;
                         version.set(state.revision);
@@ -166,15 +199,14 @@ pub fn ScenePreview(
                 {
                     metrics.set(boxes);
                 }
-                if *error.peek() != next_error {
-                    error.set(next_error);
+                if *diagnostic.peek() != next_error {
+                    diagnostic.set(next_error);
                 }
                 pause(100).await;
             }
         }
     });
     rsx! {object {class:"scene-gpu-preview","data":widget,"data-frame":"{version}",role:"img","aria-label":"GPU scene preview"}
-        if let Some(error)=error.read().as_ref(){pre {class:"scene-gpu-error",role:"alert","{error}"}}
     }
 }
 async fn pause(ms: u32) {

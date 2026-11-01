@@ -14,7 +14,7 @@ acheflow-composition = { path = "../acheflow-composition" }
 acheflow-extension-api = { path = "../acheflow-extension-api" }
 acheflow-media-api = { path = "../acheflow-media-api" }
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
-dioxus-native = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false, features = ["prelude", "vello-hybrid", "woff", "net"] }
+dioxus-native = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false, features = ["prelude", "vello-hybrid", "woff", "net", "scrollbars"] }
 blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false }
 blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false, features = ["custom-widget"] }
 blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false, features = ["custom-widget"] }
