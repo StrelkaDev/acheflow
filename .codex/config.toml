@@ -1,3 +1,6 @@
+# Keep routine tool results compact; request larger excerpts when diagnosing failures.
+tool_output_token_limit = 6000
+
 [mcp_servers.repowise]
 command = "repowise"
 args = ["mcp"]
@@ -6,3 +9,21 @@ startup_timeout_sec = 20
 
 [features]
 hooks = true
+
+# Avoid broad workflow triggers in Acheflow; testing, review and Repowise stay enabled.
+
+[[skills.config]]
+path = "/Users/achedev/.codex/plugins/cache/agent-skills/agent-skills/0.6.15/skills/using-agent-skills"
+enabled = false
+
+[[skills.config]]
+path = "/Users/achedev/.codex/plugins/cache/agent-skills/agent-skills/0.6.15/skills/doubt-driven-development"
+enabled = false
+
+[[skills.config]]
+path = "/Users/achedev/.codex/plugins/cache/agent-skills/agent-skills/0.6.15/skills/constraint-driven-development"
+enabled = false
+
+[[skills.config]]
+path = "/Users/achedev/.codex/plugins/cache/agent-skills/agent-skills/0.6.15/skills/interview-me"
+enabled = false
