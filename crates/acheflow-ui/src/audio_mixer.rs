@@ -1,6 +1,6 @@
 use crate::{
     live_client::{Action, LiveClient},
-    project::{Orientation, Workspace},
+    project::Workspace,
     slider::Slider,
 };
 use acheflow_media_api::audio::{AudioBus, AudioMeter, AudioStrip, TrackKey};
@@ -155,33 +155,6 @@ pub fn AudioMixer(mut project: Signal<Workspace>) -> Element {
         }else{div {class:"panel empty-state",h3 {"Create a scene first"}p {"Each scene has an independent audio mixer."}}}
     }
 }
-#[component]
-pub fn DestinationAudio(
-    mut project: Signal<Workspace>,
-    orientation: Orientation,
-    index: usize,
-) -> Element {
-    let workspace = project.read().clone();
-    let Some(output) = workspace.stream(orientation).outputs.get(index) else {
-        return rsx! {};
-    };
-    let client = use_context::<LiveClient>();
-    rsx! {div {class:"destination-audio",
-        h3 {"Audio routing"}
-        p {class:"form-help","Select a mixer bus for each scene. These routes change live after Apply."}
-        div {class:"form-grid",
-            Slider {label:"Destination gain",unit:"%",value:output.audio.gain as i32,min:0,max:200,reset:Some(100),change:move |v:i32|project.write().stream_mut(orientation).outputs[index].audio.gain=v as u32}
-            div {class:"field",span {"Destination audio"}button {class:if output.audio.muted{"selected"}else{""},"aria-pressed":output.audio.muted.to_string(),onclick:move |_|{let mut w=project.write();let out=&mut w.stream_mut(orientation).outputs[index];out.audio.muted= !out.audio.muted;},if output.audio.muted{"Muted"}else{"Audio on"}}}
-        }
-        for scene in workspace.scenes.iter().filter(|s|s.orientation==orientation) {
-            div {class:"field audio-route",span {"{scene.name}"}div {class:"row",role:"group","aria-label":format!("Audio bus for {}",scene.name),for bus in &scene.audio.buses {
-                button {class:if output.audio.bus(scene.id)==bus.id{"selected"}else{""},"aria-pressed":(output.audio.bus(scene.id)==bus.id).to_string(),onclick:{let scene=scene.id;let bus=bus.id;move |_|{project.write().stream_mut(orientation).outputs[index].audio.scene_buses.insert(scene,bus);}},"{bus.name}"}
-            }}}
-        }
-        button {disabled:(client.busy)(),onclick:move |_|client.command(Action::Apply),"Apply audio routes"}
-    }}
-}
-
 #[component]
 pub(crate) fn StripControls(
     project: Signal<Workspace>,

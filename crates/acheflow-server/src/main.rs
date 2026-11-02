@@ -10,15 +10,22 @@ mod audio_packet;
 mod audio_pipeline_tests;
 mod browser_access;
 mod compositor;
+mod control;
+mod extension_host;
+mod extension_registry;
 mod ffmpeg;
+mod guest_host;
 mod ingest;
 mod live;
+mod mcp;
 mod output;
 #[cfg(test)]
 mod pipeline_tests;
 mod rtmp;
 mod settings;
 mod tls;
+mod traffic;
+mod twitch_auth;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -54,6 +61,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let media_state: ffmpeg::CapabilityState =
         std::sync::Arc::new(tokio::sync::Mutex::new(capabilities));
     let runtime = live::Runtime::new(media_state.clone(), rtmp_listener.local_addr()?.to_string());
+    let control_host = control::ControlHost::new(runtime.clone());
+    let mcp_host = control_host.clone();
+    let mcp_task = tokio::spawn(async move {
+        if let Err(error) = mcp::serve(mcp_host).await {
+            eprintln!("MCP: {error}");
+        }
+    });
+    let control_routes = Router::new()
+        .route("/api/control/state", get(control::snapshot))
+        .route(
+            "/api/control/commands",
+            axum::routing::post(control::command),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
+        .with_state(control_host);
     runtime
         .rtmp_tls
         .store(rtmp_tls.is_some(), std::sync::atomic::Ordering::Relaxed);
@@ -71,6 +93,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .route("/api/live/start", axum::routing::post(live::start))
         .route("/api/live/stop", axum::routing::post(live::stop))
+        .route(
+            "/api/live/output/restart",
+            axum::routing::post(live::restart_output),
+        )
         .route("/api/live/preview/{format}", get(live::preview))
         .route("/api/live/source/{id}", get(live::source_preview))
         .with_state(runtime.clone());
@@ -82,6 +108,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .with_state(media_state)
         .merge(live_routes)
+        .merge(control_routes)
         .layer(cors)
         .merge(settings_routes)
         .fallback_service(ServeDir::new(web_root).append_index_html_on_directories(true));
@@ -114,6 +141,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     shutdown_task.abort();
     runtime.close().await;
+    let _ = mcp_task.await;
     let _ = rtmp_task.await;
     result?;
     Ok(())

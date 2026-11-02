@@ -46,6 +46,21 @@ pub struct Resolution {
     pub width: u32,
     pub height: u32,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BitrateMode {
+    Cbr,
+    #[default]
+    Vbr,
+}
+impl BitrateMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Cbr => "CBR",
+            Self::Vbr => "VBR",
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Output {
@@ -58,6 +73,8 @@ pub struct Output {
     #[serde(default)]
     pub encoder: Option<String>,
     pub bitrate_kbps: u32,
+    #[serde(default)]
+    pub bitrate_mode: BitrateMode,
     pub enabled: bool,
     #[serde(default)]
     pub audio: crate::audio::OutputAudio,
@@ -121,10 +138,27 @@ pub struct Scene {
     pub layers: Vec<Layer>,
     #[serde(default)]
     pub audio: crate::audio::SceneAudio,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spatial: Option<crate::spatial::SpatialScene>,
+}
+impl Scene {
+    pub fn visual_layers(&self) -> impl Iterator<Item = &Layer> {
+        self.layers.iter().chain(
+            self.spatial
+                .iter()
+                .flat_map(|s| s.objects.iter())
+                .flat_map(|o| match &o.kind {
+                    crate::spatial::ObjectKind::Viewport { layers, .. } => layers.as_slice(),
+                    _ => &[],
+                }),
+        )
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Workspace {
+    #[serde(default)]
+    pub edit_revision: u64,
     #[serde(default = "new_token")]
     pub id: String,
     pub version: u32,
@@ -142,6 +176,7 @@ pub struct Workspace {
 impl Default for Workspace {
     fn default() -> Self {
         Self {
+            edit_revision: 0,
             id: new_token(),
             version: 1,
             name: "My workspace".into(),
@@ -170,6 +205,19 @@ impl Default for Workspace {
     }
 }
 impl Workspace {
+    /// Upgrade legacy composition containers without changing layer identities,
+    /// image geometry, orientation selection or scene-scoped audio routing.
+    pub fn migrate_spatial(&mut self) {
+        for scene in &mut self.scenes {
+            if scene.spatial.is_none() {
+                let size = match scene.orientation {
+                    Orientation::Horizontal => &self.horizontal.base,
+                    Orientation::Vertical => &self.vertical.base,
+                };
+                scene.spatial = Some(crate::spatial::SpatialScene::from_canvas(size));
+            }
+        }
+    }
     pub fn stream(&self, o: Orientation) -> &Stream {
         match o {
             Orientation::Horizontal => &self.horizontal,
@@ -210,6 +258,13 @@ impl Workspace {
         self.sources.retain(|s| s.id != id);
         for scene in &mut self.scenes {
             scene.layers.retain(|l| l.source_id != id);
+            if let Some(spatial) = &mut scene.spatial {
+                for object in &mut spatial.objects {
+                    if let crate::spatial::ObjectKind::Viewport { layers, .. } = &mut object.kind {
+                        layers.retain(|l| l.source_id != id);
+                    }
+                }
+            }
             scene.audio.strips.retain(|strip| strip.source_id != id);
         }
     }
@@ -223,6 +278,7 @@ impl Workspace {
             orientation: o,
             layers: vec![],
             audio: crate::audio::SceneAudio::default(),
+            spatial: None,
         });
         if self.active(o).is_none() {
             self.set_active(o, Some(id));
@@ -317,6 +373,9 @@ impl Workspace {
     pub fn validate_audio(&self) -> Result<(), String> {
         let sources = self.sources.iter().map(|s| s.id).collect::<Vec<_>>();
         for scene in &self.scenes {
+            if let Some(spatial) = &scene.spatial {
+                spatial.validate(&self.sources.iter().map(|s| s.id).collect::<Vec<_>>())?;
+            }
             scene.audio.validate(&sources)?;
         }
         for orientation in Orientation::ALL {
@@ -693,6 +752,7 @@ mod tests {
             codec: "h264".into(),
             encoder: None,
             bitrate_kbps: 4500,
+            bitrate_mode: Default::default(),
             enabled: true,
             audio: Default::default(),
         });
@@ -766,6 +826,7 @@ mod tests {
             codec: "h264".into(),
             encoder: None,
             bitrate_kbps: 6000,
+            bitrate_mode: Default::default(),
             enabled: true,
             audio: Default::default(),
         });
@@ -831,6 +892,7 @@ mod tests {
             codec: "hevc".into(),
             encoder: Some("hevc_videotoolbox".into()),
             bitrate_kbps: 4500,
+            bitrate_mode: Default::default(),
             enabled: true,
             audio: Default::default(),
         });
@@ -843,7 +905,22 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("encoder");
+        legacy["horizontal"]["outputs"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("bitrate_mode");
         let restored = Workspace::from_json(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(
+            restored.horizontal.outputs[0].bitrate_mode,
+            BitrateMode::Vbr
+        );
+        let mut cbr = restored.clone();
+        cbr.horizontal.outputs[0].bitrate_mode = BitrateMode::Cbr;
+        assert!(!cbr.same_output_profile(&restored, Orientation::Horizontal));
+        assert_eq!(
+            Workspace::from_json(cbr.json().unwrap().as_bytes()).unwrap(),
+            cbr
+        );
         assert_eq!(restored.horizontal.outputs[0].encoder, None);
         assert_eq!(restored.horizontal.fps, 60);
         assert_eq!(restored.vertical.fps, 24);

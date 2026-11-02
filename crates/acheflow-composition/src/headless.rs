@@ -21,6 +21,7 @@ pub struct Headless {
     size: Resolution,
     bindings: FxHashMap<ResourceId, wgpu::TextureView>,
     images: FxHashMap<u64, vello_common::paint::ImageId>,
+    spatial: Option<crate::spatial::SpatialRenderer>,
 }
 impl Headless {
     pub fn new(size: Resolution) -> Result<Self, String> {
@@ -71,6 +72,7 @@ impl Headless {
             size,
             bindings: FxHashMap::default(),
             images: FxHashMap::default(),
+            spatial: None,
         })
     }
     pub fn backend(&self) -> String {
@@ -80,56 +82,74 @@ impl Headless {
         if frame.size != self.size {
             return Err("GPU canvas size changed; restart the format".into());
         }
-        self.scene.reset();
+        let composed = if frame.scene.spatial.is_some() {
+            if self.spatial.is_none() {
+                self.spatial = Some(crate::spatial::SpatialRenderer::new(
+                    self.handle.clone(),
+                    self.size.clone(),
+                ));
+            }
+            self.spatial.as_mut().unwrap().render(frame)?
+        } else {
+            self.scene.reset();
+            let mut encoder =
+                self.handle
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Headless HTML/CSS composition"),
+                    });
+            {
+                let images = ImageManager::new(
+                    &mut self.renderer,
+                    &mut self.resources,
+                    &self.handle.device,
+                    &self.handle.queue,
+                    &mut encoder,
+                    &mut self.images,
+                );
+                let mut painter = VelloHybridScenePainter::new(
+                    &mut self.scene,
+                    images,
+                    &mut self.bindings,
+                    &self.handle,
+                );
+                self.core.prepare(&mut painter, frame)?;
+                self.core.draw(&mut painter, &self.size);
+            }
+            let mut bindings = TextureBindings::new();
+            for (id, view) in &self.bindings {
+                bindings.insert(vello_common::TextureId(id.into_ffi()), view.clone());
+            }
+            self.renderer
+                .render(
+                    &self.scene,
+                    &mut self.resources,
+                    &self.handle.device,
+                    &self.handle.queue,
+                    &mut encoder,
+                    &RenderSize {
+                        width: self.size.width as u16,
+                        height: self.size.height as u16,
+                    },
+                    &self.texture.create_view(&Default::default()),
+                    None,
+                    &bindings,
+                    TargetInit::Clear(ClearSettings::default()),
+                )
+                .map_err(|e| format!("GPU composition: {e}"))?;
+            self.handle.queue.submit([encoder.finish()]);
+            self.texture.clone()
+        };
         let mut encoder =
             self.handle
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Headless HTML/CSS composition"),
+                    label: Some("Final frame readback"),
                 });
-        {
-            let images = ImageManager::new(
-                &mut self.renderer,
-                &mut self.resources,
-                &self.handle.device,
-                &self.handle.queue,
-                &mut encoder,
-                &mut self.images,
-            );
-            let mut painter = VelloHybridScenePainter::new(
-                &mut self.scene,
-                images,
-                &mut self.bindings,
-                &self.handle,
-            );
-            self.core.prepare(&mut painter, frame)?;
-            self.core.draw(&mut painter, &self.size);
-        }
-        let mut bindings = TextureBindings::new();
-        for (id, view) in &self.bindings {
-            bindings.insert(vello_common::TextureId(id.into_ffi()), view.clone());
-        }
-        self.renderer
-            .render(
-                &self.scene,
-                &mut self.resources,
-                &self.handle.device,
-                &self.handle.queue,
-                &mut encoder,
-                &RenderSize {
-                    width: self.size.width as u16,
-                    height: self.size.height as u16,
-                },
-                &self.texture.create_view(&Default::default()),
-                None,
-                &bindings,
-                TargetInit::Clear(ClearSettings::default()),
-            )
-            .map_err(|e| format!("GPU composition: {e}"))?;
         let stride = (self.size.width * 4).next_multiple_of(256);
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &self.texture,
+                texture: &composed,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -183,6 +203,109 @@ mod tests {
     use crate::gpu::SourceFrame;
     use acheflow_media_api::workspace::{EffectKind, LayerEffect, Orientation, Workspace};
     use std::{collections::HashMap, sync::Arc};
+    #[test]
+    #[ignore = "requires an actual GPU adapter"]
+    fn spatial_default_viewport_matches_legacy_and_depth_occludes() {
+        use acheflow_media_api::spatial::*;
+        let size = Resolution {
+            width: 64,
+            height: 32,
+        };
+        let mut workspace = Workspace::default();
+        workspace.horizontal.base = size.clone();
+        workspace.add_source();
+        let id = workspace.add_scene(Orientation::Horizontal);
+        workspace.add_layer(id, 1);
+        workspace.scenes[0].layers[0].width = 64;
+        workspace.scenes[0].layers[0].height = 32;
+        let image = Arc::new(RgbImage::from_fn(64, 32, |x, _| {
+            if x < 32 {
+                image::Rgb([255, 0, 0])
+            } else {
+                image::Rgb([0, 0, 255])
+            }
+        }));
+        let mut frame = SceneFrame {
+            scene: workspace.scenes[0].clone(),
+            size: size.clone(),
+            inputs: HashMap::from([(
+                1,
+                SourceFrame {
+                    image,
+                    size: size.clone(),
+                },
+            )]),
+            time: 0.,
+        };
+        let mut renderer = super::Headless::new(size.clone()).unwrap();
+        let flat = renderer.render(&frame).unwrap();
+        frame.scene.spatial = Some(SpatialScene::from_canvas(&size));
+        let spatial = renderer.render(&frame).unwrap();
+        assert!(
+            flat.as_raw()
+                .iter()
+                .zip(spatial.as_raw())
+                .all(|(a, b)| a.abs_diff(*b) <= 2),
+            "default viewport must preserve legacy pixels"
+        );
+        frame
+            .scene
+            .spatial
+            .as_mut()
+            .unwrap()
+            .objects
+            .push(SceneObject {
+                id: 2,
+                name: "Cube".into(),
+                visible: true,
+                transform: Transform {
+                    position: [0., 0., 100.],
+                    scale: [16., 16., 16.],
+                    ..Default::default()
+                },
+                kind: ObjectKind::Cube {
+                    color: [0., 1., 0., 1.],
+                },
+            });
+        let occluded = renderer.render(&frame).unwrap();
+        assert_eq!(occluded.get_pixel(32, 16).0, [0, 255, 0]);
+        frame.scene.spatial.as_mut().unwrap().objects[1]
+            .transform
+            .position[2] = -100.;
+        assert_eq!(
+            renderer.render(&frame).unwrap().get_pixel(32, 16),
+            spatial.get_pixel(32, 16)
+        );
+        let content = frame.scene.layers.clone();
+        frame
+            .scene
+            .spatial
+            .as_mut()
+            .unwrap()
+            .objects
+            .push(SceneObject {
+                id: 3,
+                name: "Second viewport".into(),
+                visible: true,
+                transform: Transform {
+                    position: [16., 0., 200.],
+                    scale: [32., 16., 1.],
+                    ..Default::default()
+                },
+                kind: ObjectKind::Viewport {
+                    primary: false,
+                    canvas: size,
+                    layers: content,
+                },
+            });
+        let second = renderer.render(&frame).unwrap();
+        assert_eq!(
+            second.get_pixel(40, 16).0,
+            [255, 0, 0],
+            "a second viewport has its own content texture and world transform"
+        );
+        assert_eq!(spatial.get_pixel(40, 16).0, [0, 0, 255]);
+    }
     #[test]
     #[ignore = "requires an actual GPU adapter; run explicitly on the integration host"]
     fn gpu_css_crop_fit_shader_animation_and_bounded_textures() {

@@ -1,8 +1,10 @@
 mod audio_mixer;
 mod code_editor;
+mod control_client;
 mod dashboard;
 pub mod extension_panel;
 mod fps;
+mod interaction;
 mod layer_editor;
 mod live;
 mod live_client;
@@ -15,7 +17,14 @@ mod slider;
 #[cfg(test)]
 mod slider_tests;
 mod sparks;
+mod spatial_editor;
+mod spatial_overlay;
+mod spatial_view;
+mod spatial_viewport;
+#[cfg(test)]
+mod spatial_viewport_tests;
 mod studio_mixer;
+mod traffic;
 mod video_preview;
 mod workspaces;
 

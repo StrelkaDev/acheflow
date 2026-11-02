@@ -10,16 +10,18 @@ The previous egui prototype has been removed from the workspace.
 - `crates/acheflow-server`: Tokio/Axum HTTP server, static UI assets and `/healthz`.
 - `crates/acheflow-ui`: shared Dioxus RSX components, CSS and Rust logic; native
   executable plus browser WASM library. Blitz paints into a GPU canvas.
-- `crates/acheflow-extension-api`: draft serializable manifest and panel contract.
+- `crates/acheflow-extension-api`: guest events, audience/chat contracts and host-rendered panels.
+- `crates/acheflow-control`: bounded interaction/analytics services and metered WASM execution.
 - `crates/acheflow-composition`: shared wgpu/Blitz scene rendering, CSS layout/animation, WGSL effects and native frame readback.
 - `crates/acheflow-media-api`: shared workspace/scene model, validation, FFmpeg capabilities and live-control types.
 
 Token-authenticated RTMP ingest, native-resolution video decoding, multitrack
 audio, scene mixing, per-destination audio routing, GPU scene composition,
-RTMP outputs and snapshot previews are implemented. WASM plugin execution and
-chat providers are not connected. Workspace configuration is saved locally;
+RTMP outputs and snapshot previews are implemented. Server WASM extensions,
+Twitch interaction, audience metrics, 3D viewport scenes and authenticated local
+MCP control are implemented. Workspace configuration is saved locally;
 see workspace management below. The shared extension panel renderer is in
-`crates/acheflow-ui/src/extension_panel.rs`; no guest modules are loaded.
+`crates/acheflow-ui/src/extension_panel.rs`; server guests execute separately in wasmi.
 
 ## Documentation
 
@@ -27,7 +29,8 @@ see workspace management below. The shared extension panel renderer is in
 - [Audio capabilities](docs/audio-capabilities.md): track discovery, scene buses, output routing and verification.
 - [FFmpeg integration](docs/ffmpeg.md): discovery, codecs and hardware encoder selection.
 - [UI integration notes](docs/blitz-prototype.md) and [measured browser performance](docs/blitz-performance.md).
-- [Extension boundary](docs/extensions.md): draft contract and remaining runtime work.
+- [Extensions and WASM ABI](docs/extensions.md): installation, capabilities and guest lifecycle.
+- [Interaction, 3D and MCP](docs/controls.md): setup, workflows, API and verification qualifications.
 
 ## Run
 
@@ -141,7 +144,7 @@ such as `0.0.0.0` are not used as public ingest hostnames.
 
 Each workspace owns its expected RTMP sources, scenes/layers, selected Studio
 scenes, horizontal/vertical base resolutions and FPS, and per-format RTMP outputs
-(URL, key, resolution, quality, bitrate, video codec/encoder and enabled state). The current output
+(URL, key, resolution, quality, CBR/VBR bitrate mode, video codec/encoder and enabled state). The current output
 profile uses AAC audio. Video codecs and encoder implementations come from the
 server FFmpeg capability API: H.264, and HEVC/AV1/VP9 with Enhanced RTMP on FFmpeg
 7+. A destination must support the chosen Enhanced RTMP codec. Scenes inherit the base resolution for their
@@ -175,16 +178,30 @@ outputs publish RTMP, and a format with no outputs runs preview only. Use
 Resolution/FPS/encoding changes require Stop/Start. **Stop live** retains inputs
 for editing; **Deactivate sources** stops inputs as well. Studio shows output
 errors and real server-composited JPEG previews at 2 Hz. Analytics uses actual
-worker counters. The output itself runs at the configured FPS, independently
+worker counters and rolling bitrate charts for receiving/sending, with totals and
+individual sources/destinations over the last two minutes. Incoming rates count
+compressed media payload; outgoing rates count encoded FLV bytes, including audio.
+Network overhead and GUI preview requests are excluded.
+
+Destination cards in Settings expand/collapse independently of their saved profile;
+opening one closes the previous card, and Remove deletes that destination.
+CBR fixes the video target; VBR varies with image complexity up to the configured
+limit. Old workspaces without `bitrate_mode` retain the previous capped VBR behavior.
+Encoder rate control follows [FFmpeg codec options](https://ffmpeg.org/ffmpeg-codecs.html).
+**Restart output** in Studio restarts only that destination using its applied
+profile; the compositor, input publishers and other destinations keep running.
+JPEG snapshots retain native dimensions at quality 95 (no forced reduction to
+480 pixels). Snapshot refresh remains 2 Hz. The output itself runs at the configured FPS, independently
 of the snapshot refresh rate. See [live pipeline](docs/live-pipeline.md).
 
 In **Live / Mixer**, select a scene, configure source/track strips and sends, and
 add or adjust stereo buses. Track zero of each distinct video-layer source starts
 on Program; additional tracks start unrouted. Gain, sends and bus/destination
 gain span 0–200%; balance spans −100 to +100. Solo applies across the scene.
-In **Live / Settings / Audio routing**, select each destination's bus for each
-scene and adjust destination gain/mute. Apply mixer/routes to update running
-audio without restarting video. Each output encodes one AAC stereo track.
+Destination cards use Program audio by default and omit routing controls. Existing
+destination bus/gain/mute settings remain compatible in workspace JSON. Apply
+mixer edits to update running audio without restarting video. Each output encodes
+one AAC stereo track.
 
 Studio also has a horizontally scrollable row of vertical channel strips below
 each format preview, with L/R meters, gain faders, mute/solo/balance and bus
@@ -289,8 +306,8 @@ Blitz/Dioxus currently bring beta/alpha APIs: adopting the stack does not imply
 all browser behaviors are qualified. Known input, accessibility, DPI and
 performance qualifications are recorded in [integration notes](docs/blitz-prototype.md).
 
-WASM extensions are separate from compiling the UI to WASM. Intended scope is
-server logic and GUI panels; see [extension boundary](docs/extensions.md).
+WASM extensions are separate from compiling the UI to WASM. Server logic runs in
+wasmi and panels are host-rendered; see [extension boundary](docs/extensions.md).
 The bundled DejaVu font has its license under `crates/acheflow-ui/assets/`.
 
 ## Repowise

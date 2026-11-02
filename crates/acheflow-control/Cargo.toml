@@ -1,0 +1,14 @@
+[package]
+name = "acheflow-control"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+acheflow-extension-api = { path = "../acheflow-extension-api" }
+serde.workspace = true
+serde_json = "1"
+wasmi = "=2.0.0"
+
+[lints]
+workspace = true

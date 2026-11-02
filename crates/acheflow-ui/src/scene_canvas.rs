@@ -65,7 +65,7 @@ pub fn Canvas(
         onmouseup:move |_|finish_drag(dragging,client),
         onmouseleave:move |_|finish_drag(dragging,client),
         if let Some(scene)=scene {
-        if live_images {ScenePreview {project,scene_id:scene.id,orientation,metrics:Some(metrics),diagnostic,placeholders:editable}}
+        if live_images {ScenePreview {project,scene_id:scene.id,orientation,metrics:Some(metrics),diagnostic,placeholders:editable,viewport_content:editable}}
         if editable {for (index,layer) in scene.layers.iter().enumerate(){
             div {key:"{layer.id}",class:format!("scene-layer {} {} {}",if editable {"editable"}else{""},if editable && selection()==Some(layer.id){"selected-layer"}else{""},if live_images {"has-video"}else{""}),
                 style:{let b=layer_bounds(layer,metrics.read().get(index).copied());format!("left:{}%;top:{}%;width:{}%;height:{}%;",b.x as f64/base.width as f64*100.,b.y as f64/base.height as f64*100.,b.width as f64/base.width as f64*100.,b.height as f64/base.height as f64*100.)},

@@ -1,0 +1,1 @@
+{"id":"twitch","name":"Twitch","api_version":1,"module":"twitch.wat","capabilities":["http","websocket","chat","audience","delete","delivery","failure","heartbeat"],"services":["https://api.twitch.tv","wss://eventsub.wss.twitch.tv"],"unique_viewers":false}

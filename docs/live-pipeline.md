@@ -22,11 +22,16 @@ workspace at a time and does not auto-start after a restart.
    Rotation is not implemented.
 3. In Mixer select a scene and configure source/track sends and stereo buses.
    Track zero of each distinct video-layer source defaults to Program; additional
-   tracks need explicit sends. In Settings / Audio routing choose each output's
-   bus per scene and destination gain/mute. See [audio capabilities](audio-capabilities.md).
+   tracks need explicit sends. Destination cards omit routing controls; new outputs
+   use Program. Existing JSON routes are preserved. See [audio capabilities](audio-capabilities.md).
 4. In Studio choose a horizontal and/or vertical scene and start live. With no
    outputs a format renders preview only. Each enabled output gets an independent
-   FFmpeg process with its configured codec, encoder, resolution and bitrate.
+   FFmpeg process with its configured codec, encoder, resolution, bitrate and CBR/VBR
+   mode. Settings cards expand/collapse and support removal. CBR uses matching
+   min/target/max rates plus encoder-specific CBR switches (including x264 HRD
+   and VideoToolbox constant bitrate); VBR retains a capped variable rate. Legacy
+   JSON without `bitrate_mode` defaults to VBR. Studio can restart one destination
+   independently with **Restart output**.
 5. Apply scene/source/mixer/route edits while running. Drag release applies live
    placement; audio-only changes keep the video encoder running. Changing an
    active format's base, FPS, output transport or video profile is rejected until
@@ -128,7 +133,8 @@ Editor source snapshots arrive at 2 Hz. Without a fresh decoded frame, only the
 scene editor substitutes a cached detailed test-pattern SourceFrame before GPU
 processing. Real snapshots carry their original dimensions in `X-Frame-Width`
 and `X-Frame-Height` headers, so px crop, object-fit and shader parameters use
-native dimensions even though the JPEG is reduced. The saved source `resolution`
+native dimensions. JPEG snapshots now retain those dimensions at quality 95;
+there is no preview-only downscale or upscale. The saved source `resolution`
 only sizes the offline pattern; it never resizes incoming video. Disconnects/stalls restore the pattern; real
 frames replace it on the next snapshot. Studio and broadcast missing inputs
 remain black/silent. Studio editor overlays are never painted over composition;
@@ -137,7 +143,7 @@ CSS/WGSL animation can redraw between
 snapshots; the server renders at configured FPS independently of any open GUI.
 Server time/renderer/errors are exposed in format status. GPU readback produces
 RGB24 for FFmpeg; zero-copy hardware-encoder integration is not implemented.
-The GUI's reduced-resolution snapshots can differ slightly from output sampling.
+JPEG compression and the 2 Hz refresh can still differ from the full-rate output.
 
 ## Media path
 
@@ -185,7 +191,7 @@ a claim of qualified end-to-end A/V synchronization.
 
 Every destination stores its scene→bus map (default Program), so two destinations
 can share one mix or use isolated mixes. Live / Mixer edits scene controls;
-Live / Settings / Audio routing selects buses for each output. Studio also shows a single row of vertical channel strips with horizontal scrolling under each format preview, following the applied scene during streaming and the selected scene while offline. It includes source levels/gain/mute/solo/balance, bus master controls and destination names. Apply updates
+Destination cards omit routing controls; existing JSON routes remain supported. Studio also shows a single row of vertical channel strips with horizontal scrolling under each format preview, following the applied scene during streaming and the selected scene while offline. It includes source levels/gain/mute/solo/balance, bus master controls and destination names. Apply updates
 mixers/routes without restarting video; video/transport changes still require
 stopping. Status reports source tracks, stereo peak/RMS, bus levels, clipping,
 and the actual applied destination scene/bus. UI meters show block peaks at the
@@ -208,9 +214,10 @@ their failures are shown in Studio.
 
 ## API and local access
 
-- `GET /api/live/status`: owner workspace id, RTMP bind address, source and format/output state; no tokens or destination URLs/keys.
+- `GET /api/live/status`: owner workspace id, RTMP bind address, source and format/output state; no tokens or destination URLs/keys. Sources report cumulative `received_bytes` and rolling `bitrate_kbps`; outputs report their workspace `index`, `sent_bytes` and `bitrate_kbps`. Input bytes count compressed audio/video payload, output bytes count FFmpeg FLV mux bytes. Rates use a two-second rolling window; transport overhead and GUI preview traffic are excluded. Output counters reset on individual restart; input byte counters span publisher reconnects.
 - `PUT /api/live/config`: apply a workspace. Layout/source validation is independent of unfinished output drafts. Running encoding profiles cannot be changed.
 - `POST /api/live/start`: `{ "workspace": <workspace>, "formats": ["horizontal", "vertical"] }`. Starts only the requested formats; validates enabled outputs for those formats.
+- `POST /api/live/output/restart`: `{ "workspace_id": "...", "orientation": "horizontal", "index": 0 }`. Restarts one enabled destination with its applied profile. Index is the original workspace output index, including disabled entries. Owner mismatches return 409; inactive formats or absent/disabled destinations return 422. Other encoders, the compositor and audio mixer continue running.
 - `POST /api/live/stop`: `{ "workspace_id": "..." }`. Idempotent for the matching workspace.
 - `DELETE /api/live/config`: same control body; stop and unregister inputs.
 - `GET /api/live/preview/horizontal.jpg` and `vertical.jpg`: composed previews.

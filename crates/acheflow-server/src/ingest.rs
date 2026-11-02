@@ -23,6 +23,7 @@ pub struct Input {
     pub config: Source,
     pub connected: AtomicBool,
     pub frames: AtomicU64,
+    pub traffic: Mutex<crate::traffic::Traffic>,
     pub frame: RwLock<Option<VideoFrame>>,
     pub audio: broadcast::Sender<Arc<Vec<i16>>>,
     pub audio_tracks: Mutex<std::collections::BTreeMap<u8, Arc<crate::audio_input::AudioTrack>>>,
@@ -39,6 +40,7 @@ impl Input {
             config,
             connected: AtomicBool::new(false),
             frames: AtomicU64::new(0),
+            traffic: Mutex::new(Default::default()),
             frame: RwLock::new(None),
             audio,
             audio_tracks: Mutex::new(std::collections::BTreeMap::new()),
@@ -54,7 +56,14 @@ impl Input {
             width = Some(frame.image.width());
             height = Some(frame.image.height());
         }
+        let (received_bytes, bitrate_kbps) = self.traffic.lock().unwrap().snapshot();
         SourceStatus {
+            received_bytes,
+            bitrate_kbps: if self.connected.load(Ordering::Relaxed) {
+                bitrate_kbps
+            } else {
+                0.
+            },
             id: self.config.id,
             connected: self.connected.load(Ordering::Relaxed),
             frames: self.frames.load(Ordering::Relaxed),
@@ -117,6 +126,7 @@ impl Publisher {
         if data.len() > 2 * 1024 * 1024 {
             return Err("RTMP packet exceeds 2 MiB".into());
         }
+        self.input.traffic.lock().unwrap().record(data.len() as u64);
         if kind == 8 {
             return self
                 .audio

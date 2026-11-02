@@ -107,7 +107,7 @@ async fn incoming_frames_keep_native_size_across_reconnects() {
     };
     let token = workspace.sources[0].key.clone();
     let caps = Arc::new(tokio::sync::Mutex::new(Default::default()));
-    let (runtime, task, url) = server(workspace, caps).await;
+    let (runtime, task, url) = server(workspace, caps.clone()).await;
     let input = runtime.inputs.lock().unwrap()[&1].clone();
     for (size, expected) in [("160x90", (160, 90)), ("90x160", (90, 160))] {
         let mut publisher = sized_publisher(&url, &token, "red", 440, size);
@@ -171,6 +171,73 @@ async fn real_rtmp_tokens_scene_audio_reposition_reconnect_and_independent_outpu
 #[ignore = "requires FFmpeg, VideoToolbox hardware, Metal and local TCP; run explicitly"]
 async fn real_rtmp_videotoolbox_output_reports_hardware_and_delivers_media() {
     output_pipeline("h264_videotoolbox").await;
+}
+
+async fn restart_failed_output(
+    runtime: &RuntimeState,
+    workspace: &Workspace,
+    caps: crate::ffmpeg::CapabilityState,
+    refused_port: u16,
+) -> (RuntimeState, tokio::task::JoinHandle<()>) {
+    let status = runtime.status().await;
+    let before = runtime.formats.lock().await[0].frames.clone();
+    assert_eq!(status.formats[0].outputs[1].index, 2);
+    let restart = |id: String, index| {
+        live::restart_output(
+            State(runtime.clone()),
+            Json(acheflow_media_api::live::RestartOutputRequest {
+                workspace_id: id,
+                orientation: Orientation::Horizontal,
+                index,
+            }),
+        )
+    };
+    assert_eq!(
+        restart("wrong-owner".into(), 2).await.unwrap_err().0,
+        axum::http::StatusCode::CONFLICT
+    );
+    assert!(restart(workspace.id.clone(), 1).await.is_err()); // disabled destination
+    assert!(restart(workspace.id.clone(), 100).await.is_err());
+    let listener = TcpListener::bind(("127.0.0.1", refused_port))
+        .await
+        .unwrap();
+    let mut recovered_workspace = Workspace::default();
+    recovered_workspace.add_source();
+    recovered_workspace.sources[0].url = workspace.horizontal.outputs[2].url.clone();
+    recovered_workspace.sources[0].key = workspace.horizontal.outputs[2].key.clone();
+    let recovered = Runtime::new(caps.clone(), listener.local_addr().unwrap().to_string());
+    let _ = live::configure(State(recovered.clone()), Json(recovered_workspace))
+        .await
+        .unwrap();
+    let recovered_runtime = recovered.clone();
+    let recovered_task = tokio::spawn(async move {
+        rtmp::serve(listener, recovered_runtime, None)
+            .await
+            .unwrap();
+    });
+    let working_before = status.formats[0].outputs[0].frames;
+    let restarted = restart(workspace.id.clone(), 2).await.unwrap().0;
+    assert_eq!(
+        restarted.formats[0].outputs[0].state,
+        acheflow_media_api::live::OutputState::Streaming
+    );
+    until(|| colors(&recovered, "blue", "red")).await;
+    let output_status = runtime.formats.lock().await[0].outputs[1].clone();
+    until(|| {
+        output_status.lock().unwrap().state == acheflow_media_api::live::OutputState::Streaming
+    })
+    .await;
+    let recovered_status = runtime.status().await;
+    assert_eq!(
+        recovered_status.formats[0].outputs[1].state,
+        acheflow_media_api::live::OutputState::Streaming
+    );
+    assert!(recovered_status.formats[0].outputs[0].frames > working_before);
+    assert!(Arc::ptr_eq(
+        &before,
+        &runtime.formats.lock().await[0].frames
+    ));
+    (recovered, recovered_task)
 }
 
 async fn output_pipeline(encoder: &str) {
@@ -271,6 +338,7 @@ async fn output_pipeline(encoder: &str) {
         codec: "h264".into(),
         encoder: Some(encoder.into()),
         bitrate_kbps: 500,
+        bitrate_mode: acheflow_media_api::workspace::BitrateMode::Cbr,
         enabled: true,
         audio: Default::default(),
     });
@@ -279,9 +347,13 @@ async fn output_pipeline(encoder: &str) {
     drop(refused);
     let mut failing = workspace.horizontal.outputs[0].clone();
     failing.name = "Refused sink".into();
+    failing.bitrate_mode = acheflow_media_api::workspace::BitrateMode::Vbr;
     failing.url = format!("rtmp://127.0.0.1:{refused_port}/live");
+    let mut disabled = failing.clone();
+    disabled.enabled = false;
+    workspace.horizontal.outputs.push(disabled);
     workspace.horizontal.outputs.push(failing);
-    let (runtime, task, url) = server(workspace, caps).await;
+    let (runtime, task, url) = server(workspace, caps.clone()).await;
     let mut workspace = runtime.workspace.read().unwrap().clone().unwrap();
     assert!(
         runtime
@@ -328,6 +400,7 @@ async fn output_pipeline(encoder: &str) {
     .await
     .unwrap();
     until(|| colors(&sink, "red", "blue")).await;
+    spatial_chat_roundtrip(&runtime, &sink, scene).await;
     let portrait = runtime.formats.lock().await[1].frame.clone();
     until(|| {
         let image = portrait.borrow();
@@ -442,6 +515,16 @@ async fn output_pipeline(encoder: &str) {
         status.formats[0].outputs[1].state,
         acheflow_media_api::live::OutputState::Failed
     );
+    assert!(
+        status
+            .sources
+            .iter()
+            .all(|s| s.received_bytes > 0 && s.bitrate_kbps > 0.)
+    );
+    assert!(status.formats[0].outputs[0].sent_bytes > 0);
+    assert!(status.formats[0].outputs[0].bitrate_kbps > 0.);
+    let (recovered, recovered_task) =
+        restart_failed_output(&runtime, &workspace, caps.clone(), refused_port).await;
     let mut changed_profile = workspace.clone();
     changed_profile.horizontal.fps = 30;
     assert!(
@@ -489,7 +572,7 @@ async fn output_pipeline(encoder: &str) {
     let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
         .await
         .unwrap();
-    assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 480);
+    assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 320);
     let _ = live::stop(
         State(runtime.clone()),
         Json(acheflow_media_api::live::ControlRequest {
@@ -504,6 +587,111 @@ async fn output_pipeline(encoder: &str) {
     let _ = blue.wait().await;
     runtime.close().await;
     sink.close().await;
+    recovered.close().await;
+    recovered_task.await.unwrap();
     task.await.unwrap();
     sink_task.await.unwrap();
+}
+
+async fn spatial_chat_roundtrip(runtime: &RuntimeState, sink: &RuntimeState, scene_id: u32) {
+    use acheflow_extension_api::interaction::CommandRule;
+    use acheflow_media_api::{
+        control::{ControlAction, ControlRequest},
+        spatial::*,
+    };
+    use serde_json::json;
+    let host = crate::control::ControlHost::new(runtime.clone());
+    let workspace = runtime.workspace.read().unwrap().clone().unwrap();
+    let mut spatial = SpatialScene::from_canvas(&workspace.horizontal.base);
+    spatial.objects.push(SceneObject {
+        id: 2,
+        name: "Interactive cube".into(),
+        visible: true,
+        transform: Transform {
+            position: [0., 0., 100.],
+            scale: [64.; 3],
+            ..Default::default()
+        },
+        kind: ObjectKind::Cube {
+            color: [0., 1., 0., 1.],
+        },
+    });
+    let request = |action, suffix| ControlRequest {
+        workspace_id: workspace.id.clone(),
+        request_id: format!("{}:{suffix}", crate::control::now_ms()),
+        expected_revision: host.snapshot(0, 1).revision,
+        action,
+    };
+    host.execute(request(
+        ControlAction::SetScene { scene_id, spatial },
+        "scene-3d",
+    ))
+    .await
+    .unwrap();
+    host.execute(request(
+        ControlAction::SetCommand {
+            command: CommandRule {
+                name: "turn".into(),
+                channel: "twitch:fixture".into(),
+                roles: vec!["moderator".into()],
+                cooldown_ms: 5000,
+                scene_id,
+                object_id: 2,
+                rotation: [0., 45., 0.],
+                enabled: true,
+            },
+        },
+        "chat-command",
+    ))
+    .await
+    .unwrap();
+    let manifest: acheflow_control::extensions::GuestManifest =
+        serde_json::from_str(include_str!("../../../extensions/twitch/manifest.json")).unwrap();
+    let mut guest = acheflow_control::extensions::Guest::load(
+        include_bytes!("../../../extensions/twitch/twitch.wat"),
+        manifest.capabilities,
+    )
+    .unwrap();
+    let effects=guest.call(json!({"type":"websocket","now_ms":crate::control::now_ms(),"payload":{"metadata":{"message_type":"notification","subscription_type":"channel.chat.message"},"payload":{"event":{"broadcaster_user_id":"fixture","message_id":"turn-once","chatter_user_id":"moderator","chatter_user_name":"Moderator","message":{"text":"!turn"},"badges":[{"set_id":"moderator"}]}}}})).unwrap();
+    for effect in effects {
+        host.publish(&workspace.id, effect).await.unwrap();
+    }
+    let actual = host.snapshot(0, 1);
+    assert_eq!(
+        actual
+            .scenes
+            .iter()
+            .find(|s| s.id == scene_id)
+            .unwrap()
+            .spatial
+            .as_ref()
+            .unwrap()
+            .objects[1]
+            .transform
+            .rotation,
+        [0., 45., 0.]
+    );
+    until(|| {
+        sink.inputs.lock().unwrap()[&1]
+            .frame
+            .read()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|f| {
+                let pixel = f.image.get_pixel(160, 90).0;
+                pixel[1] > 160 && pixel[0] < 50 && pixel[2] < 50
+            })
+    })
+    .await;
+    let mut restored = runtime.workspace.read().unwrap().clone().unwrap();
+    restored
+        .scenes
+        .iter_mut()
+        .find(|s| s.id == scene_id)
+        .unwrap()
+        .spatial = None;
+    let _ = live::configure(State(runtime.clone()), Json(restored))
+        .await
+        .unwrap();
+    until(|| colors(sink, "red", "blue")).await;
 }

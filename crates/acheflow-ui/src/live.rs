@@ -5,19 +5,19 @@ use crate::media::{EncoderPicker, FfmpegStatus, use_capabilities};
 use crate::project::{Orientation, Output, Resolution, Workspace};
 use crate::scene_canvas::Canvas;
 use crate::video_preview::VideoPreview;
-use acheflow_media_api::MediaCapabilities;
 use acheflow_media_api::live::OutputState;
+use acheflow_media_api::{MediaCapabilities, workspace::BitrateMode};
 use dioxus_native::prelude::*;
 
 #[component]
 pub fn Live(project: Signal<Workspace>, visible: bool) -> Element {
     let mut tab = use_signal(|| "Studio");
     rsx! {div {class:"live-root",
-        nav {class:"subnav",for name in ["Analytics","Sources","Scenes","Mixer","Studio","Settings"] {
+        nav {class:"subnav",for name in ["Analytics","Sources","Scenes","Mixer","Studio","Interactive","Settings"] {
             button {class:if tab()==name {"selected"}else{""},onclick:move |_|tab.set(name),"{name}"}
         }}
         LiveNotice {}
-        div {class:"live-pages",for name in ["Analytics","Sources","Scenes","Mixer","Studio","Settings"] {
+        div {class:"live-pages",for name in ["Analytics","Sources","Scenes","Mixer","Studio","Interactive","Settings"] {
             div {key:"{name}",class:if visible && tab()==name {"tab-scroll active"}else{"tab-scroll"},"aria-hidden":if visible && tab()==name {"false"}else{"true"},
                 div {class:"live-content",
                     if name=="Analytics" {Analytics {}}
@@ -25,6 +25,7 @@ pub fn Live(project: Signal<Workspace>, visible: bool) -> Element {
                     if name=="Scenes" {Scenes {project,visible:visible && tab()==name}}
                     if name=="Mixer" {crate::audio_mixer::AudioMixer {project}}
                     if name=="Studio" {Studio {project,visible:visible && tab()==name}}
+                    if name=="Interactive" {crate::interaction::InteractivePage {}}
                     if name=="Settings" {Settings {project}}
                 }
             }
@@ -68,11 +69,13 @@ fn Analytics() -> Element {
         })
         .unwrap_or(0);
     rsx! {
+        crate::interaction::Notice {}
+        crate::interaction::Audience {}
         div {class:"page-heading",div {h1 {"Analytics"}p {"Server media worker counters"}}span {class:"badge",if client.running(){"Running"}else{"Idle"}}}
         div {class:"stats",for (label,value) in [("CONNECTED SOURCES",sources.to_string()),("RENDERED FRAMES",rendered.to_string()),("STREAMING OUTPUTS",outputs.to_string()),("ENCODED FRAMES",encoded.to_string())] {
             div {class:"stat",span {class:"stat-label","{label}"}strong {"{value}"}span {class:"stat-detail","Reported by server"}}
         }}
-        section {class:"panel",div {class:"panel-heading",h2 {"Media activity"}}div {class:"empty-state",h3 {if client.running(){"Scene compositor is running"}else{"Waiting for a live session"}}p {"Input frame counts come from decoders; output frame counts come from FFmpeg progress reports."}}}
+        crate::traffic::TrafficCharts {}
     }
 }
 #[component]
@@ -139,6 +142,7 @@ fn StreamSettings(
     capabilities: Option<MediaCapabilities>,
 ) -> Element {
     let stream = project.read().stream(orientation).clone();
+    let mut expanded = use_signal(|| None::<usize>);
     let sizes = if orientation == Orientation::Horizontal {
         ["1280x720", "1920x1080", "2560x1440", "3840x2160"]
     } else {
@@ -152,22 +156,31 @@ fn StreamSettings(
             NumberField {label:"Base height",value:stream.base.height,change:move |v:u32|{if (16..=7680).contains(&v) && v.is_multiple_of(2){let mut r=project.read().stream(orientation).base.clone();r.height=v;project.write().resize_base(orientation,r);}}}
             FrameRateInput {value:stream.fps,change:move |v|project.write().stream_mut(orientation).fps=v}
         }
-        div {class:"panel-heading",h2 {"Restream outputs"}button {class:"primary",onclick:move |_|{let size=project.read().stream(orientation).base.clone();project.write().stream_mut(orientation).outputs.push(Output{name:"New destination".into(),url:String::new(),key:String::new(),resolution:size,quality:"Standard".into(),codec:"h264".into(),encoder:None,bitrate_kbps:4500,enabled:true,audio:Default::default()});},"+ Output"}}
+        div {class:"panel-heading",h2 {"Restream outputs"}button {class:"primary",onclick:move |_|{let size=project.read().stream(orientation).base.clone();project.write().stream_mut(orientation).outputs.push(Output{name:"New destination".into(),url:String::new(),key:String::new(),resolution:size,quality:"Standard".into(),codec:"h264".into(),encoder:None,bitrate_kbps:4500, bitrate_mode: Default::default(),enabled:true,audio:Default::default()});expanded.set(Some(project.peek().stream(orientation).outputs.len()-1));},"+ Output"}}
         for (index,out) in stream.outputs.iter().enumerate() {
             div {key:"{index}",class:"output-config",
-                div {class:"panel-heading",h3 {"{out.name}"}button {onclick:move |_|{project.write().stream_mut(orientation).outputs.remove(index);},"Remove"}}
-                div {class:"form-grid",
+                div {class:"panel-heading destination-heading",
+                    button {class:"destination-toggle","aria-expanded":(expanded()==Some(index)).to_string(),onclick:move |_|expanded.set(if expanded()==Some(index){None}else{Some(index)}),
+                        span {if expanded()==Some(index){"▾"}else{"▸"}} strong {"{out.name}"}
+                    }
+                    span {class:"destination-summary","{out.resolution.width} × {out.resolution.height} · {out.bitrate_mode.label()} · {out.bitrate_kbps} kbps"}
+                    span {class:"badge",if out.enabled {"Enabled"}else{"Disabled"}}
+                    button {onclick:move |_|{project.write().stream_mut(orientation).outputs.remove(index);expanded.set(expanded().and_then(|selected|if selected==index{None}else{Some(if selected>index{selected-1}else{selected})}));},"Remove"}
+                }
+                if expanded()==Some(index) {div {class:"form-grid",
                     Field {label:"Destination",value:out.name.clone(),change:move |v|project.write().stream_mut(orientation).outputs[index].name=v}
                     Field {label:"RTMP URL",value:out.url.clone(),change:move |v|project.write().stream_mut(orientation).outputs[index].url=v}
                     Field {label:"Stream key",secret:true,value:out.key.clone(),change:move |v|project.write().stream_mut(orientation).outputs[index].key=v}
                     NumberField {label:"Output width",value:out.resolution.width,change:move |v|project.write().stream_mut(orientation).outputs[index].resolution.width=v}
                     NumberField {label:"Output height",value:out.resolution.height,change:move |v|project.write().stream_mut(orientation).outputs[index].resolution.height=v}
                     Choice {label:"Quality",value:out.quality.clone(),choices:["Low","Standard","High","Custom"].into_iter().map(String::from).collect(),change:move |q:String|{let mut p=project.write();let out=&mut p.stream_mut(orientation).outputs[index];out.bitrate_kbps=match q.as_str(){"Low"=>2500,"High"=>8000,"Standard"=>4500,_=>out.bitrate_kbps};out.quality=q;}}
-                    NumberField {label:"Video bitrate (kbps)",value:out.bitrate_kbps,change:move |v|{let mut p=project.write();let out=&mut p.stream_mut(orientation).outputs[index];out.bitrate_kbps=v;out.quality="Custom".into();}}
+                    Choice {label:"Bitrate mode",value:out.bitrate_mode.label(),choices:vec!["CBR".into(),"VBR".into()],change:move |v:String|project.write().stream_mut(orientation).outputs[index].bitrate_mode=if v=="CBR"{BitrateMode::Cbr}else{BitrateMode::Vbr}}
+                    NumberField {label:"Video bitrate / limit (kbps)",value:out.bitrate_kbps,min:100,max:100000,change:move |v|{let mut p=project.write();let out=&mut p.stream_mut(orientation).outputs[index];out.bitrate_kbps=v;out.quality="Custom".into();}}
                     EncoderPicker {project,orientation,index,capabilities:capabilities.clone()}
                     Choice {label:"Output",value:if out.enabled {"Enabled"}else{"Disabled"},choices:vec!["Enabled".into(),"Disabled".into()],change:move |v:String|project.write().stream_mut(orientation).outputs[index].enabled=v=="Enabled"}
                 }
-                crate::audio_mixer::DestinationAudio {project,orientation,index}
+                p {class:"form-help padded","CBR keeps a fixed video rate. VBR varies with image complexity up to the configured limit. Audio uses the scene mixer."}
+                }
             }
         }
         if stream.outputs.is_empty(){div {class:"empty-state",p {"No RTMP outputs configured for this format."}}}
@@ -187,18 +200,23 @@ fn Scenes(mut project: Signal<Workspace>, visible: bool) -> Element {
         .cloned()
         .or_else(|| project.read().scenes.first().cloned());
     rsx! {
-        div {class:"page-heading",div {h1 {"Scenes"}p {"Build compositions from your registered RTMP sources."}}div {class:"row",for o in Orientation::ALL{button {onclick:move |_|{let id=project.write().add_scene(o);selected.set(Some(id));},"+ {o.label()} scene"}}}}
+        div {class:"page-heading scene-page-heading",div {h1 {"Scenes"}}div {class:"row",for o in Orientation::ALL{button {onclick:move |_|{let id=project.write().add_scene(o);project.write().migrate_spatial();selected.set(Some(id));},"+ {o.label()} scene"}}}}
         div {class:"scene-list",for s in project.read().scenes.clone(){button {class:if current.as_ref().is_some_and(|c|c.id==s.id){"selected"}else{""},onclick:move |_|{selected.set(Some(s.id));selected_layer.set(None);},"{s.name} / {s.orientation.label()}"}}}
         if let Some(scene)=current {
-            section {class:"panel",div {class:"panel-heading",h2 {"Scene settings"}button {onclick:move |_|project.write().remove_scene(scene.id),"Delete scene"}}
-                div {class:"form-grid",Field {label:"Scene name",value:scene.name.clone(),change:move |v|{if let Some(s)=project.write().scenes.iter_mut().find(|s|s.id==scene.id){s.name=v;}}}
-                    div {class:"field",span {"Canvas (from base resolution)"}strong {"{project.read().stream(scene.orientation).base.width} × {project.read().stream(scene.orientation).base.height}"}}
+            section {class:"panel scene-editor-panel",div {class:"scene-metadata",
+                    Field {label:"Scene name",value:scene.name.clone(),change:move |v|{if let Some(s)=project.write().scenes.iter_mut().find(|s|s.id==scene.id){s.name=v;}}}
+                    span {class:"form-help","{project.read().stream(scene.orientation).base.width} × {project.read().stream(scene.orientation).base.height} / {scene.orientation.label()}"}
+                    button {onclick:move |_|project.write().remove_scene(scene.id),"Delete scene"}
                 }
+                crate::spatial_editor::SpatialEditor {key:"spatial-{project.read().id}-{scene.id}",project,scene_id:scene.id,
+                div {class:"panel-heading",h3 {"Primary viewport content"}}
                 Canvas {project,scene_id:Some(scene.id),orientation:scene.orientation,editable:true,live_images:visible,selection:Some(selected_layer)}
                 div {class:"row padded",button {disabled:(client.busy)(),onclick:move |_|client.command(Action::Apply),"Apply scene & sources"}span {class:"form-help","Select a layer, drag to move, or drag its corners to resize. Releasing applies live changes. CSS layout, crop and effects are in the layer inspector."}}
                 div {class:"panel-heading",h3 {"Add a source layer"}}
                 div {class:"row padded",for source in project.read().sources.clone(){button {onclick:move |_|project.write().add_layer(scene.id,source.id),"+ {source.name}"}}if project.read().sources.is_empty(){p {"Register an RTMP source in Live / Sources first."}}}
-                LayerEditor {key:"{project.read().id}-{scene.id}",project,scene_id:scene.id,selection:selected_layer}
+                div {class:"panel-heading",h3 {"Primary viewport layers"}}
+                LayerEditor {project,scene_id:scene.id,selection:selected_layer}
+                }
 
             }
         }else{div {class:"panel empty-state",h3 {"Create your first scene"}p {"Horizontal and vertical scenes inherit their respective base canvas size."}}}
@@ -243,7 +261,8 @@ fn Studio(mut project: Signal<Workspace>, visible: bool) -> Element {
                     }
 
                     for out in &format.outputs {
-                        div {class:"output-status",strong {"{out.name}"}span {class:"badge","{out.state:?}"}span {"{out.frames} frames"}
+                        div {class:"output-status",strong {"{out.name}"}span {class:"badge","{out.state:?}"}span {"{out.frames} frames · {out.bitrate_kbps:.0} kbps"}
+                            button {disabled:(client.busy)(),onclick:{let index=out.index;move |_|client.command(Action::RestartOutput(o,index))},"Restart output"}
                             if let Some(encoder)=out.encoder.as_ref(){span {"{encoder} · ",if out.hardware {"Hardware"}else{"Software"}}}
                             if let Some(bus)=out.audio_bus {span {"Audio: scene {out.audio_scene.unwrap_or(0)} → bus {bus}"}crate::audio_mixer::Meters {meter:out.audio_meter.clone()}}
                             if let Some(error)=out.error.as_ref(){p {class:"field-error","{error}"}}
@@ -253,7 +272,7 @@ fn Studio(mut project: Signal<Workspace>, visible: bool) -> Element {
                 crate::studio_mixer::StudioMixer {project,orientation:o}
             }
         }}
-        section {class:"panel",div {class:"panel-heading",h2 {"Chat"}span {class:"badge","Not connected"}}div {class:"empty-state",h3 {"No chat providers connected"}p {"RTMP carries media only. Chat integration is separate."}}}
+        if !client.running(){crate::interaction::ChatPanel {}}
     }
 }
 #[component]
@@ -372,13 +391,26 @@ fn resolution(s: &str) -> Option<Resolution> {
 }
 
 #[component]
-fn Choice(
+pub(crate) fn Choice(
     label: &'static str,
     value: String,
     choices: Vec<String>,
+    #[props(default)] values: Option<Vec<String>>,
     change: EventHandler<String>,
 ) -> Element {
+    let choices = choices
+        .into_iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let key = values
+                .as_ref()
+                .and_then(|v| v.get(i))
+                .cloned()
+                .unwrap_or_else(|| label.clone());
+            (key, label)
+        })
+        .collect::<Vec<_>>();
     rsx! {div {class:"field",span {"{label}"}div {class:"row",role:"group","aria-label":label,
-        for choice in choices {button {class:if value==choice {"selected"}else{""},"aria-pressed":(value==choice).to_string(),onclick:{let choice=choice.clone();move |_|change.call(choice.clone())},"{choice}"}}
+        for (key,label) in choices {button {class:if value==key {"selected"}else{""},"aria-pressed":(value==key).to_string(),onclick:{let key=key.clone();move |_|change.call(key.clone())},"{label}"}}
     }}}
 }

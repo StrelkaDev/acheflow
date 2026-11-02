@@ -2,6 +2,7 @@ mod filters;
 pub mod gpu;
 #[cfg(all(feature = "headless", not(target_arch = "wasm32")))]
 pub mod headless;
+pub mod spatial;
 // Reference CPU processing for fixed-effect regression tests.
 use acheflow_media_api::workspace::{EffectKind, LayerEffect, Resolution, SourceCrop};
 use image::{GenericImageView, RgbImage, Rgba, RgbaImage, imageops};

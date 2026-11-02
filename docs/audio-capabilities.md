@@ -60,8 +60,8 @@ bus creation/name/master controls and meters. Gain/send/master/destination contr
 span 0–200%; stereo balance spans −100 to +100. Program cannot be removed;
 removing another bus resets affected destination routes to Program.
 
-Live / Settings / Audio routing chooses a bus for each destination and scene,
-plus destination gain/mute. Studio places a scrollable row of vertical strips
+Destination cards omit audio routing controls and use Program by default.
+Existing per-destination scene/bus and gain/mute settings remain supported in JSON. Studio places a scrollable row of vertical strips
 under each format preview, following the applied scene during streaming and the
 selected scene offline. It shows source L/R levels, gain/mute/solo/balance,
 bus masters and destination names; sends are configured in Live / Mixer.

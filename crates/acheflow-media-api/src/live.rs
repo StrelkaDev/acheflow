@@ -13,8 +13,18 @@ pub struct ControlRequest {
     pub workspace_id: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestartOutputRequest {
+    pub workspace_id: String,
+    pub orientation: Orientation,
+    pub index: usize,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LiveStatus {
+    #[serde(default)]
+    pub edit_revision: u64,
     pub workspace_id: Option<String>,
     pub rtmp_address: String,
     #[serde(default)]
@@ -26,6 +36,10 @@ pub struct LiveStatus {
 pub struct SourceStatus {
     pub id: u32,
     pub connected: bool,
+    #[serde(default)]
+    pub received_bytes: u64,
+    #[serde(default)]
+    pub bitrate_kbps: f64,
     pub frames: u64,
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -51,6 +65,12 @@ pub struct FormatStatus {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OutputStatus {
+    #[serde(default)]
+    pub index: usize,
+    #[serde(default)]
+    pub sent_bytes: u64,
+    #[serde(default)]
+    pub bitrate_kbps: f64,
     pub name: String,
     #[serde(default)]
     pub encoder: Option<String>,

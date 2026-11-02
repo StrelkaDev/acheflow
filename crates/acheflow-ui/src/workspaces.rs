@@ -51,7 +51,8 @@ impl Catalog {
             .config = config;
     }
 
-    fn add(&mut self, config: Workspace) {
+    fn add(&mut self, mut config: Workspace) {
+        config.migrate_spatial();
         let id = (1..=u32::MAX)
             .find(|id| !self.workspaces.iter().any(|w| w.id == *id))
             .expect("workspace IDs exhausted");
@@ -60,7 +61,7 @@ impl Catalog {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, String> {
-        let catalog: Self = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let mut catalog: Self = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         let mut ids = std::collections::HashSet::new();
         if catalog.version != 1
             || catalog.workspaces.is_empty()
@@ -71,6 +72,9 @@ impl Catalog {
                 .any(|w| w.id == 0 || !ids.insert(w.id) || w.config.version != 1)
         {
             return Err("Invalid workspace catalog".into());
+        }
+        for record in &mut catalog.workspaces {
+            record.config.migrate_spatial();
         }
         Ok(catalog)
     }
@@ -299,6 +303,7 @@ mod tests {
         first.server_url = "https://first.example:8443".into();
         first.add_source();
         first.add_scene(crate::project::Orientation::Vertical);
+        first.migrate_spatial();
         c.update(first.clone());
         c.add(new_workspace("Second", "http://second.example:21296/").unwrap());
         assert!(c.current().sources.is_empty());

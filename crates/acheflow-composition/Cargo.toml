@@ -5,7 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [features]
-headless = ["dep:anyrender_vello_hybrid", "dep:vello_gpu", "dep:vello_common", "dep:rustc-hash", "dep:pollster"]
+headless = ["dep:pollster"]
 
 [dependencies]
 style = { package="stylo", git="https://github.com/nicoburns/stylo",rev="78734bf554bb40af9dc11c0eedbe724f6055697c",default-features=false }
@@ -17,10 +17,11 @@ blitz-dom = { git="https://github.com/DioxusLabs/blitz",rev="e42ee1f2577f968e29e
 blitz-html = { git="https://github.com/DioxusLabs/blitz",rev="e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc",default-features=false }
 blitz-paint = { git="https://github.com/DioxusLabs/blitz",rev="e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc",default-features=false,features=["custom-widget"] }
 blitz-traits = { git="https://github.com/DioxusLabs/blitz",rev="e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc",default-features=false }
-anyrender_vello_hybrid = {version="0.11",optional=true}
-vello_gpu = {version="0.3",optional=true}
-vello_common = {version="0.3",optional=true}
-rustc-hash = {version="2",optional=true}
+anyrender_vello_hybrid = "0.11"
+vello_gpu = "0.3"
+vello_common = "0.3"
+rustc-hash = "2"
+glam = "0.30"
 pollster = {version="0.4",optional=true}
 
 acheflow-media-api = { path = "../acheflow-media-api" }

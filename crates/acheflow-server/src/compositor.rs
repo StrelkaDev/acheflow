@@ -25,13 +25,80 @@ pub struct RunningFormat {
     pub frame: watch::Receiver<Arc<RgbImage>>,
     pub frames: Arc<AtomicU64>,
     pub outputs: Vec<Arc<Mutex<OutputStatus>>>,
+    output_workers: Vec<OutputWorker>,
+    spec: crate::output::VideoSpec,
     audio_buses: Arc<Mutex<Vec<acheflow_media_api::audio::AudioBusStatus>>>,
     tasks: Vec<JoinHandle<()>>,
     started: Instant,
     renderer: String,
     error: Arc<Mutex<Option<String>>>,
 }
+struct OutputWorker {
+    index: usize,
+    config: acheflow_media_api::workspace::Output,
+    audio: broadcast::Sender<Arc<Vec<u8>>>,
+    status: Arc<Mutex<OutputStatus>>,
+    cancel: CancellationToken,
+    task: Option<JoinHandle<()>>,
+}
+impl OutputWorker {
+    async fn stop(&mut self) {
+        self.cancel.cancel();
+        if let Some(mut task) = self.task.take()
+            && tokio::time::timeout(Duration::from_secs(3), &mut task)
+                .await
+                .is_err()
+        {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+}
 impl RunningFormat {
+    pub async fn restart_output(
+        &mut self,
+        index: usize,
+        capabilities: &MediaCapabilities,
+    ) -> Result<(), String> {
+        let worker = self
+            .output_workers
+            .iter_mut()
+            .find(|w| w.index == index)
+            .ok_or("This destination is not running or is disabled")?;
+        worker.stop().await;
+        {
+            let mut status = worker.status.lock().unwrap();
+            status.state = OutputState::Starting;
+            status.error = None;
+            status.frames = 0;
+            status.sent_bytes = 0;
+            status.bitrate_kbps = 0.;
+        }
+        worker.cancel = self.cancel.child_token();
+        match crate::output::start(
+            worker.config.clone(),
+            self.spec.clone(),
+            capabilities,
+            self.frame.clone(),
+            worker.audio.subscribe(),
+            worker.status.clone(),
+            worker.cancel.clone(),
+        )
+        .await
+        {
+            Ok(task) => {
+                worker.task = Some(task);
+                Ok(())
+            }
+            Err(error) => {
+                let mut status = worker.status.lock().unwrap();
+                status.state = OutputState::Failed;
+                status.error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
     pub fn status(&self) -> FormatStatus {
         FormatStatus {
             audio_buses: self.audio_buses.lock().unwrap().clone(),
@@ -47,7 +114,10 @@ impl RunningFormat {
                 .collect(),
         }
     }
-    pub async fn join(self) {
+    pub async fn join(mut self) {
+        for worker in &mut self.output_workers {
+            worker.stop().await;
+        }
         for mut task in self.tasks {
             if tokio::time::timeout(Duration::from_secs(3), &mut task)
                 .await
@@ -145,6 +215,11 @@ pub async fn start(
         frame: video_rx.clone(),
         frames,
         outputs: vec![],
+        output_workers: vec![],
+        spec: crate::output::VideoSpec {
+            base: stream.base.clone(),
+            fps,
+        },
         audio_buses: audio_buses.clone(),
         tasks: vec![video],
         started,
@@ -160,6 +235,9 @@ pub async fn start(
     {
         let (audio_tx, audio_rx) = broadcast::channel(8);
         let status = Arc::new(Mutex::new(OutputStatus {
+            index,
+            sent_bytes: 0,
+            bitrate_kbps: 0.,
             name: output.name.clone(),
             encoder: None,
             hardware: false,
@@ -170,8 +248,9 @@ pub async fn start(
             frames: 0,
             error: None,
         }));
+        let output_cancel = running.cancel.child_token();
         match crate::output::start(
-            output,
+            output.clone(),
             crate::output::VideoSpec {
                 base: stream.base.clone(),
                 fps,
@@ -180,18 +259,25 @@ pub async fn start(
             video_rx.clone(),
             audio_rx,
             status.clone(),
-            running.cancel.child_token(),
+            output_cancel.clone(),
         )
         .await
         {
             Ok(task) => {
                 destinations.push(crate::audio_mixer::Destination {
                     index,
-                    sender: audio_tx,
+                    sender: audio_tx.clone(),
                     status: status.clone(),
                 });
-                running.outputs.push(status);
-                running.tasks.push(task);
+                running.outputs.push(status.clone());
+                running.output_workers.push(OutputWorker {
+                    index,
+                    config: output,
+                    audio: audio_tx,
+                    status,
+                    cancel: output_cancel,
+                    task: Some(task),
+                });
             }
             Err(error) => {
                 running.cancel.cancel();
@@ -229,6 +315,7 @@ fn gpu_frame(
                 orientation,
                 layers: vec![],
                 audio: Default::default(),
+                spatial: None,
             }),
         size: workspace.stream(orientation).base.clone(),
         time,
@@ -487,6 +574,7 @@ mod tests {
             id: 1,
             name: "Test".into(),
             audio: Default::default(),
+            spatial: None,
             orientation: Orientation::Horizontal,
             layers: vec![Layer {
                 source_id: 1,

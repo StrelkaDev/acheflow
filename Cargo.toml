@@ -1,9 +1,9 @@
 [workspace]
-members = ["crates/acheflow-composition", "crates/acheflow-server", "crates/acheflow-ui", "crates/acheflow-extension-api", "crates/acheflow-media-api"]
+members = ["crates/acheflow-composition", "crates/acheflow-server", "crates/acheflow-ui", "crates/acheflow-extension-api", "crates/acheflow-media-api", "crates/acheflow-control"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 publish = false
 

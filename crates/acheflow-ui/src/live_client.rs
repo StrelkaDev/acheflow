@@ -1,5 +1,7 @@
 use crate::project::{Orientation, Workspace};
-use acheflow_media_api::live::{ApiError, ControlRequest, LiveStatus, StartRequest};
+use acheflow_media_api::live::{
+    ApiError, ControlRequest, LiveStatus, RestartOutputRequest, StartRequest,
+};
 use dioxus_native::prelude::*;
 
 #[derive(Clone, Copy)]
@@ -9,12 +11,14 @@ pub struct LiveClient {
     pub busy: Signal<bool>,
     pub error: Signal<Option<String>>,
     pub connection: Signal<Option<String>>,
+    pub traffic: Signal<crate::traffic::History>,
     generation: Signal<u64>,
 }
 #[derive(Clone, Copy)]
 pub enum Action {
     Apply,
     Start,
+    RestartOutput(Orientation, usize),
     Stop,
     Deactivate,
     DeactivateActive,
@@ -27,6 +31,7 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
         busy: use_signal(|| false),
         error: use_signal(|| None),
         connection: use_signal(|| None),
+        traffic: use_signal(crate::traffic::History::default),
         generation: use_signal(|| 0),
     };
     use_context_provider(|| client);
@@ -37,6 +42,7 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
     use_resource(move || {
         let owner = identity();
         client.status.set(None);
+        client.traffic.set(Default::default());
         client.error.set(None);
         client
             .connection
@@ -56,6 +62,7 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
                     {
                         match response {
                             Ok(status) => {
+                                client.traffic.write().record(&status, &workspace);
                                 client.status.set(Some(status));
                                 client.connection.set(None);
                             }
@@ -116,6 +123,15 @@ impl LiveClient {
                         serde_json::to_value(StartRequest { workspace, formats }),
                     )
                 }
+                Action::RestartOutput(orientation, index) => (
+                    reqwest::Method::POST,
+                    "/api/live/output/restart",
+                    serde_json::to_value(RestartOutputRequest {
+                        workspace_id: workspace.id,
+                        orientation,
+                        index,
+                    }),
+                ),
                 Action::Stop => (
                     reqwest::Method::POST,
                     "/api/live/stop",
@@ -155,6 +171,9 @@ impl LiveClient {
             }
             match result {
                 Ok(status) => {
+                    if status.workspace_id.as_deref() == Some(target.id.as_str()) {
+                        self.project.write().edit_revision = status.edit_revision;
+                    }
                     self.status.set(Some(status));
                     self.connection.set(None);
                 }
@@ -281,6 +300,7 @@ mod tests {
             ..Workspace::default()
         };
         let mut status = LiveStatus {
+            edit_revision: 0,
             rtmp_address: "0.0.0.0:1940".into(),
             rtmp_tls: true,
             ..LiveStatus::default()

@@ -4,7 +4,6 @@ use crate::{
     sparks::SparksWidget,
     workspaces::{WorkspaceSwitcher, Workspaces, use_workspaces},
 };
-use acheflow_extension_api::ExtensionPanel;
 use base64::Engine;
 use dioxus_native::{CustomWidgetAttr, prelude::*};
 
@@ -24,7 +23,8 @@ pub fn dashboard() -> Element {
     let (project, catalog, storage_status) = use_workspaces();
     let workspace_open = use_signal(|| false);
     let live = use_live_client(project);
-    let extension_panels = use_signal(Vec::<ExtensionPanel>::new);
+    let _control = crate::control_client::use_control_client(project);
+    crate::interaction::use_chat_draft(project);
     rsx! {
         style {{include_str!("dashboard.css")}}
         div {class:"app",
@@ -46,6 +46,7 @@ pub fn dashboard() -> Element {
             div {class:"workspace",
                 if effects(){SparksBackground {backend}}
                 Workspaces {project,catalog,storage_status,open:workspace_open}
+                div {class:if live.running(){"workspace-body with-live-chat"}else{"workspace-body"},
                 div {class:"tab-viewport",for tab in ["Overview","Live","Extensions","Settings"] {
                     div {key:"{tab}",class:if page()==tab{"tab-scroll active"}else{"tab-scroll"},"aria-hidden":if page()==tab{"false"}else{"true"},
                         if tab=="Live"{Live {key:"{catalog.read().active_id()}",project,visible:page()=="Live"}}else{
@@ -62,9 +63,7 @@ pub fn dashboard() -> Element {
                                 }
 
                                 if tab=="Extensions"{
-                                    div {class:"page-heading",h1 {"Extensions"}}
-                                    if extension_panels.read().is_empty(){section {class:"panel empty-state",h3 {"No extensions loaded"}p {"The WASM plugin runtime is not connected yet."}}}
-                                    for panel in extension_panels.read().iter(){{crate::extension_panel::render(panel)}}
+                                    crate::interaction::ExtensionsPage {}
                                 }
                                 if tab=="Settings"{GeneralSettings {effects}}
                                 footer {class:"content-footer",span {"ACHEFLOW / STREAM CONTROL"}}
@@ -72,6 +71,8 @@ pub fn dashboard() -> Element {
                         }
                     }
                 }}
+                if live.running(){aside {class:"live-chat-sidebar","aria-label":"Live chat",crate::interaction::ChatPanel {}}}
+                }
             }
         }
     }

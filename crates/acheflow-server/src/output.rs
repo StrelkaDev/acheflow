@@ -1,7 +1,7 @@
 use acheflow_media_api::{
     MediaCapabilities,
     live::{OutputState, OutputStatus},
-    workspace::{Output, Resolution},
+    workspace::{BitrateMode, Output, Resolution},
 };
 use image::RgbImage;
 use std::{
@@ -17,6 +17,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[derive(Clone)]
 pub struct VideoSpec {
     pub base: Resolution,
     pub fps: u32,
@@ -84,12 +85,12 @@ pub async fn start(
             "scale={}:{}",
             output.resolution.width, output.resolution.height
         ))
-        .args(["-c:v", &encoder, "-pix_fmt", "yuv420p", "-b:v"])
-        .arg(format!("{}k", output.bitrate_kbps))
-        .arg("-maxrate")
-        .arg(format!("{}k", output.bitrate_kbps))
-        .arg("-bufsize")
-        .arg(format!("{}k", output.bitrate_kbps * 2))
+        .args(["-c:v", &encoder, "-pix_fmt", "yuv420p"])
+        .args(rate_control(
+            &encoder,
+            output.bitrate_mode,
+            output.bitrate_kbps,
+        ))
         .arg("-g")
         .arg((fps * 2).to_string());
     command.args(encoder_options(&encoder));
@@ -172,23 +173,7 @@ pub async fn start(
                 }
             }
         });
-        let progress_status = status.clone();
-        let progress = tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if let Some(frames) = line
-                    .strip_prefix("frame=")
-                    .and_then(|s| s.trim().parse::<u64>().ok())
-                {
-                    let mut status = progress_status.lock().unwrap();
-                    status.frames = frames;
-                    if frames > 0 && status.state != OutputState::Failed {
-                        status.state = OutputState::Streaming;
-                        status.error = None;
-                    }
-                }
-            }
-        });
+        let progress = tokio::spawn(report_progress(stdout, status.clone()));
         let error_status = status.clone();
         let errors = tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
@@ -214,13 +199,92 @@ pub async fn start(
         let _ = audio_writer.await;
         let _ = progress.await;
         let _ = errors.await;
+        let mut status = status.lock().unwrap();
+        status.bitrate_kbps = 0.;
+        if status.state != OutputState::Failed {
+            status.state = OutputState::Stopped;
+        }
     }))
+}
+
+async fn report_progress(
+    stdout: impl tokio::io::AsyncRead + Unpin,
+    status: Arc<Mutex<OutputStatus>>,
+) {
+    let mut lines = BufReader::new(stdout).lines();
+    let mut traffic = crate::traffic::Traffic::default();
+    let mut previous_bytes = 0;
+    while let Ok(Some(line)) = lines.next_line().await {
+        if let Some(bytes) = line
+            .strip_prefix("total_size=")
+            .and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            traffic.record(bytes.saturating_sub(previous_bytes));
+            previous_bytes = bytes;
+            let (sent_bytes, bitrate_kbps) = traffic.snapshot();
+            let mut status = status.lock().unwrap();
+            status.sent_bytes = sent_bytes;
+            status.bitrate_kbps = bitrate_kbps;
+        }
+        if let Some(frames) = line
+            .strip_prefix("frame=")
+            .and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            let mut status = status.lock().unwrap();
+            status.frames = frames;
+            if frames > 0 && status.state != OutputState::Failed {
+                status.state = OutputState::Streaming;
+                status.error = None;
+            }
+        }
+    }
+}
+
+// Encoder-specific switches select actual rate control rather than only a ceiling.
+fn rate_control(encoder: &str, mode: BitrateMode, kbps: u32) -> Vec<String> {
+    let mut args = vec![
+        "-b:v".into(),
+        format!("{kbps}k"),
+        "-maxrate".into(),
+        format!("{kbps}k"),
+        "-bufsize".into(),
+        format!("{}k", kbps * 2),
+    ];
+    if mode == BitrateMode::Cbr {
+        args.extend(["-minrate".into(), format!("{kbps}k")]);
+    }
+    let cbr = mode == BitrateMode::Cbr;
+    match encoder {
+        "libx264" | "libx264rgb" if cbr => {
+            args.extend(["-x264-params".into(), "nal-hrd=cbr:force-cfr=1".into()])
+        }
+        "libx265" => args.extend([
+            "-x265-params".into(),
+            if cbr {
+                "log-level=error:strict-cbr=1:hrd=1"
+            } else {
+                "log-level=error"
+            }
+            .into(),
+        ]),
+        name if name.ends_with("_videotoolbox") => {
+            args.extend(["-constant_bit_rate".into(), u8::from(cbr).to_string()])
+        }
+        name if name.ends_with("_nvenc") => {
+            args.extend(["-rc".into(), if cbr { "cbr" } else { "vbr" }.into()])
+        }
+        name if name.ends_with("_amf") => {
+            args.extend(["-rc".into(), if cbr { "cbr" } else { "vbr_peak" }.into()])
+        }
+        _ => {}
+    }
+    args
 }
 
 fn encoder_options(encoder: &str) -> &'static [&'static str] {
     match encoder {
         "libx264" | "libx264rgb" => &["-preset", "veryfast", "-tune", "zerolatency"],
-        "libx265" => &["-preset", "ultrafast", "-x265-params", "log-level=error"],
+        "libx265" => &["-preset", "ultrafast"],
         "libsvtav1" => &["-preset", "12"],
         "libvpx-vp9" => &["-deadline", "realtime", "-cpu-used", "8"],
         // FFmpeg VideoToolbox can use a software implementation. Require hardware.

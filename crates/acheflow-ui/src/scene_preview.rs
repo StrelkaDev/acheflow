@@ -22,6 +22,7 @@ struct Snapshot {
     boxes: Vec<LayerBox>,
     error: Option<String>,
     revision: u64,
+    editor: Option<crate::spatial_view::EditorView>,
 }
 type Shared = Arc<Mutex<Snapshot>>;
 #[component]
@@ -32,6 +33,8 @@ pub fn ScenePreview(
     mut diagnostic: Signal<Option<String>>,
     #[props(default = false)] placeholders: bool,
     #[props(default)] metrics: Option<Signal<Vec<LayerBox>>>,
+    #[props(default = false)] viewport_content: bool,
+    #[props(default)] editor: Option<Signal<crate::spatial_view::EditorView>>,
 ) -> Element {
     let client = use_context::<LiveClient>();
     let start = use_hook(Instant::now);
@@ -45,6 +48,7 @@ pub fn ScenePreview(
             boxes: vec![],
             error: None,
             revision: 0,
+            editor: None,
         }))
     });
     let mut version = use_signal(|| 0u64);
@@ -53,6 +57,9 @@ pub fn ScenePreview(
         CustomWidgetAttr::new(SceneWidget {
             shared: widget_shared,
             gpu: None,
+            handle: None,
+            spatial: None,
+            spatial_resource: None,
             painted: 0,
         })
     });
@@ -103,8 +110,13 @@ pub fn ScenePreview(
                 inputs.entry(*id).or_insert_with(|| pattern.clone());
             }
         }
+        let mut contents = scene.clone();
+        if viewport_content {
+            contents.spatial = None;
+        }
+        state.editor = editor.map(|view| view.read().clone());
         state.frame = Some(SceneFrame {
-            scene: scene.clone(),
+            scene: contents,
             size: workspace.stream(orientation).base.clone(),
             inputs,
             time,
@@ -126,8 +138,7 @@ pub fn ScenePreview(
                             state.owner.clone(),
                             state.server.clone(),
                             f.scene
-                                .layers
-                                .iter()
+                                .visual_layers()
                                 .map(|l| l.source_id)
                                 .collect::<std::collections::BTreeSet<_>>(),
                         )
@@ -201,7 +212,7 @@ pub fn ScenePreview(
     rsx! {object {class:"scene-gpu-preview","data":widget,"data-frame":"{version}",role:"img","aria-label":"GPU scene preview"}
     }
 }
-async fn pause(ms: u32) {
+pub(crate) async fn pause(ms: u32) {
     #[cfg(target_arch = "wasm32")]
     gloo_timers::future::TimeoutFuture::new(ms).await;
     #[cfg(not(target_arch = "wasm32"))]
@@ -210,6 +221,9 @@ async fn pause(ms: u32) {
 struct SceneWidget {
     shared: Shared,
     gpu: Option<GpuScene>,
+    handle: Option<wgpu_context::DeviceHandle>,
+    spatial: Option<acheflow_composition::spatial::SpatialRenderer>,
+    spatial_resource: Option<(crate::project::Resolution, anyrender::ResourceId)>,
     painted: u64,
 }
 impl Widget for SceneWidget {
@@ -219,16 +233,20 @@ impl Widget for SceneWidget {
             .and_then(|c| c.downcast::<wgpu_context::DeviceHandle>().ok())
         {
             self.gpu = Some(GpuScene::new(handle.device.clone(), handle.queue.clone()));
+            self.handle = Some(*handle);
         }
     }
     fn destroy_surfaces(&mut self) {
         self.gpu = None;
+        self.handle = None;
+        self.spatial = None;
+        self.spatial_resource = None;
     }
     fn requires_redraw(&self) -> bool {
         let state = self.shared.lock().unwrap();
         state.revision != self.painted
             || state.frame.as_ref().is_some_and(|f| {
-                f.scene.layers.iter().any(|l| {
+                f.scene.visual_layers().any(|l| {
                     l.css.contains("animation")
                         || l.css.contains("transition")
                         || l.effects
@@ -243,9 +261,9 @@ impl Widget for SceneWidget {
         _styles: &ComputedStyles,
         width: u32,
         height: u32,
-        _scale: f64,
+        scale: f64,
     ) -> Scene {
-        let (frame, revision) = {
+        let (frame, revision, editor) = {
             let state = self.shared.lock().unwrap();
             (
                 state.frame.clone().map(|mut f| {
@@ -253,11 +271,22 @@ impl Widget for SceneWidget {
                     f
                 }),
                 state.revision,
+                state.editor.clone(),
             )
         };
-        let Some(frame) = frame else {
+        let Some(mut frame) = frame else {
             return Scene::new();
         };
+        let original_spatial = frame.scene.spatial.clone();
+        if let Some(editor) = &editor {
+            frame.size = crate::project::Resolution {
+                width: width.clamp(16, 7680),
+                height: height.clamp(16, 4320),
+            };
+            if let Some(spatial) = &mut frame.scene.spatial {
+                spatial.camera = editor.camera();
+            }
+        }
         if self.gpu.is_none() {
             self.can_create_surfaces(ctx);
         }
@@ -265,15 +294,89 @@ impl Widget for SceneWidget {
             return Scene::new();
         };
         let mut scene = Scene::new();
-        match gpu.prepare(ctx, &frame) {
-            Ok(boxes) => {
-                self.shared.lock().unwrap().boxes = boxes;
-                self.shared.lock().unwrap().error = None;
-                gpu.draw(&mut scene, &frame.size);
+        if let Some(editor) = &editor {
+            let mut grid = Scene::new();
+            crate::spatial_overlay::paint_grid(
+                &mut grid,
+                editor,
+                glam::Vec2::new(
+                    frame.size.width as f32 / scale as f32,
+                    frame.size.height as f32 / scale as f32,
+                ),
+            );
+            scene.append_scene(grid, Affine::scale(scale));
+        }
+        if frame.scene.spatial.is_some() {
+            let result = (|| -> Result<(), String> {
+                if self
+                    .spatial
+                    .as_ref()
+                    .is_none_or(|s| s.size() != &frame.size)
+                {
+                    if let Some((_, id)) = self.spatial_resource.take() {
+                        ctx.unregister_resource(id);
+                    }
+                    self.spatial = Some(acheflow_composition::spatial::SpatialRenderer::new(
+                        self.handle.as_ref().ok_or("GPU device is missing")?.clone(),
+                        frame.size.clone(),
+                    ));
+                }
+                let renderer = self.spatial.as_mut().unwrap();
+                let texture = if editor.is_some() {
+                    renderer.render_editor(&frame)?
+                } else {
+                    renderer.render(&frame)?
+                };
+                if self.spatial_resource.is_none() {
+                    let id = ctx
+                        .try_register_custom_resource(Box::new(texture))
+                        .map_err(|e| format!("3D texture: {e:?}"))?;
+                    self.spatial_resource = Some((frame.size.clone(), id));
+                }
+                let id = self.spatial_resource.as_ref().unwrap().1;
+                scene.fill(
+                    peniko::Fill::NonZero,
+                    Affine::IDENTITY,
+                    anyrender::PaintRef::Resource(peniko::ImageBrush {
+                        image: id,
+                        sampler: peniko::ImageSampler::default(),
+                    }),
+                    None,
+                    &peniko::kurbo::Rect::new(
+                        0.,
+                        0.,
+                        frame.size.width as f64,
+                        frame.size.height as f64,
+                    ),
+                );
+                Ok(())
+            })();
+            self.shared.lock().unwrap().error = result.err();
+            self.shared.lock().unwrap().boxes.clear();
+        } else {
+            match gpu.prepare(ctx, &frame) {
+                Ok(boxes) => {
+                    self.shared.lock().unwrap().boxes = boxes;
+                    self.shared.lock().unwrap().error = None;
+                    gpu.draw(&mut scene, &frame.size);
+                }
+                Err(error) => {
+                    self.shared.lock().unwrap().error = Some(error);
+                }
             }
-            Err(error) => {
-                self.shared.lock().unwrap().error = Some(error);
-            }
+        }
+        if let (Some(editor), Some(spatial)) = (&editor, &original_spatial) {
+            let mut overlay = Scene::new();
+            crate::spatial_overlay::paint(
+                &mut overlay,
+                editor,
+                spatial,
+                glam::Vec2::new(
+                    frame.size.width as f32 / scale as f32,
+                    frame.size.height as f32 / scale as f32,
+                ),
+            );
+            scene.append_scene(overlay, Affine::scale(scale));
         }
         self.painted = revision;
         let mut scaled = Scene::new();

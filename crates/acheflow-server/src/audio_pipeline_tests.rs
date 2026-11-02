@@ -189,6 +189,7 @@ async fn real_scene_mixer_multitrack_sources_and_live_destination_routes() {
             codec: "h264".into(),
             encoder: Some("libx264".into()),
             bitrate_kbps: 500,
+            bitrate_mode: Default::default(),
             enabled: true,
             audio: OutputAudio {
                 scene_buses: BTreeMap::from([(scene, index as u32 + 1)]),

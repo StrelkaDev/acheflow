@@ -4,7 +4,7 @@ use crate::{
 };
 use acheflow_media_api::{
     MediaCapabilities,
-    live::{ApiError, ControlRequest, LiveStatus, StartRequest},
+    live::{ApiError, ControlRequest, LiveStatus, RestartOutputRequest, StartRequest},
     workspace::Workspace,
 };
 use axum::{
@@ -25,6 +25,7 @@ pub type RuntimeState = Arc<Runtime>;
 pub type ApiResult = Result<Json<LiveStatus>, (StatusCode, Json<ApiError>)>;
 
 pub struct Runtime {
+    pub control_revision: std::sync::atomic::AtomicU64,
     pub workspace: RwLock<Option<Workspace>>,
     pub inputs: Mutex<HashMap<u32, Arc<Input>>>,
     pub formats: AsyncMutex<Vec<RunningFormat>>,
@@ -38,6 +39,7 @@ pub struct Runtime {
 impl Runtime {
     pub fn new(capabilities: crate::ffmpeg::CapabilityState, rtmp_address: String) -> Arc<Self> {
         Arc::new(Self {
+            control_revision: std::sync::atomic::AtomicU64::new(0),
             workspace: RwLock::new(None),
             inputs: Mutex::new(HashMap::new()),
             formats: AsyncMutex::new(vec![]),
@@ -71,6 +73,13 @@ impl Runtime {
             .map(RunningFormat::status)
             .collect();
         LiveStatus {
+            edit_revision: self
+                .workspace
+                .read()
+                .unwrap()
+                .as_ref()
+                .map(|w| w.edit_revision)
+                .unwrap_or(0),
             workspace_id,
             rtmp_address: self.rtmp_address.clone(),
             rtmp_tls: self.rtmp_tls.load(Ordering::Relaxed),
@@ -79,8 +88,24 @@ impl Runtime {
         }
     }
 
-    async fn apply(&self, workspace: Workspace) -> Result<(), String> {
+    async fn apply(&self, mut workspace: Workspace) -> Result<(), String> {
+        workspace.migrate_spatial();
         validate(&workspace)?;
+        if let Some(old) = self.workspace.read().unwrap().as_ref()
+            && old.id == workspace.id
+            && old.edit_revision != workspace.edit_revision
+            && old.scenes.iter().any(|before| {
+                workspace
+                    .scenes
+                    .iter()
+                    .find(|s| s.id == before.id)
+                    .is_none_or(|after| after.spatial != before.spatial)
+            })
+        {
+            return Err(
+                "The 3D scene changed remotely. Refresh before applying this workspace.".into(),
+            );
+        }
         {
             let formats = self.formats.lock().await;
             if !formats.is_empty() {
@@ -133,6 +158,7 @@ impl Runtime {
                 .entry(source.id)
                 .or_insert_with(|| Arc::new(Input::new(source.clone())));
         }
+        workspace.edit_revision = self.control_revision.fetch_add(1, Ordering::AcqRel) + 1;
         *self.workspace.write().unwrap() = Some(workspace);
         Ok(())
     }
@@ -364,6 +390,26 @@ pub async fn stop(
     runtime.stop().await;
     Ok(Json(runtime.status().await))
 }
+pub async fn restart_output(
+    State(runtime): State<RuntimeState>,
+    Json(request): Json<RestartOutputRequest>,
+) -> ApiResult {
+    let _guard = runtime.control.lock().await;
+    check_owner(&runtime, &request.workspace_id)?;
+    let capabilities = runtime.capabilities.lock().await.clone();
+    {
+        let mut formats = runtime.formats.lock().await;
+        let format = formats
+            .iter_mut()
+            .find(|f| f.orientation == request.orientation)
+            .ok_or_else(|| invalid("This format is not running".into()))?;
+        format
+            .restart_output(request.index, &capabilities)
+            .await
+            .map_err(invalid)?;
+    }
+    Ok(Json(runtime.status().await))
+}
 pub async fn deactivate(
     State(runtime): State<RuntimeState>,
     Json(request): Json<ControlRequest>,
@@ -446,16 +492,9 @@ async fn image_response(frame: Option<Arc<image::RgbImage>>) -> Response {
     };
     let (width, height) = frame.dimensions();
     let result = tokio::task::spawn_blocking(move || {
-        let scale = (480.0 / frame.width() as f64).min(854.0 / frame.height() as f64);
-        let preview = image::imageops::resize(
-            frame.as_ref(),
-            (frame.width() as f64 * scale).round().max(1.) as u32,
-            (frame.height() as f64 * scale).round().max(1.) as u32,
-            image::imageops::FilterType::Triangle,
-        );
         let mut bytes = Vec::new();
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 75)
-            .encode_image(&preview)
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 95)
+            .encode_image(frame.as_ref())
             .map(|()| bytes)
     })
     .await;
@@ -469,7 +508,7 @@ async fn image_response(frame: Option<Arc<image::RgbImage>>) -> Response {
                 bytes,
             )
                 .into_response();
-            // Dimensions of this exact frame, before reducing the JPEG preview.
+            // Dimensions of this exact frame, without rescaling the JPEG preview.
             response.headers_mut().insert("x-frame-width", width.into());
             response
                 .headers_mut()
@@ -483,6 +522,30 @@ async fn image_response(frame: Option<Arc<image::RgbImage>>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn jpeg_preview_preserves_native_detail_and_never_upscales() {
+        for (width, height) in [(1920, 1080), (1080, 1920), (64, 32)] {
+            let image = image::RgbImage::from_fn(width, height, |x, y| {
+                let value = if (x / 3 + y / 3) % 2 == 0 { 32 } else { 224 };
+                image::Rgb([value; 3])
+            });
+            let response = image_response(Some(Arc::new(image.clone()))).await;
+            assert_eq!(response.headers()["x-frame-width"], width.to_string());
+            let bytes = axum::body::to_bytes(response.into_body(), 16 * 1024 * 1024)
+                .await
+                .unwrap();
+            let decoded = image::load_from_memory(&bytes).unwrap().to_rgb8();
+            assert_eq!(decoded.dimensions(), (width, height));
+            let error: f64 = image
+                .as_raw()
+                .iter()
+                .zip(decoded.as_raw())
+                .map(|(&a, &b)| (f64::from(a) - f64::from(b)).powi(2))
+                .sum::<f64>()
+                / image.as_raw().len() as f64;
+            assert!(error < 25., "fine detail lost: MSE={error}");
+        }
+    }
     #[test]
     fn secure_ingest_urls_are_validated_like_plain_rtmp() {
         let mut workspace = Workspace::default();
