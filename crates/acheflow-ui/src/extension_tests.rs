@@ -11,6 +11,12 @@ struct Harness {
     client: Cell<Option<ControlClient>>,
 }
 fn app() -> Element {
+    test_app(false)
+}
+fn mixed_app() -> Element {
+    test_app(true)
+}
+fn test_app(include_clients: bool) -> Element {
     let harness = consume_context::<Rc<Harness>>();
     let project = use_signal(Workspace::default);
     crate::live_client::use_live_client(project);
@@ -38,7 +44,13 @@ fn app() -> Element {
         busy: use_signal(|| false),
         sync_conflict: use_signal(|| false),
     };
-    use_context_provider(|| Rc::new(acheflow_client::catalog::ClientCatalog::default()));
+    use_context_provider(|| {
+        Rc::new(if include_clients {
+            acheflow_client::catalog::ClientCatalog::bundled()
+        } else {
+            acheflow_client::catalog::ClientCatalog::default()
+        })
+    });
     use_context_provider(|| client);
     harness.client.set(Some(client));
     rsx! {crate::interaction::ExtensionsPage {}}
@@ -56,7 +68,7 @@ fn toggle(doc: &mut DioxusDocument) {
     let id = doc
         .inner
         .borrow()
-        .query_selector("button[role='switch']")
+        .query_selector("[role='tabpanel']:not([hidden]) button[role='switch']")
         .unwrap()
         .unwrap();
     doc.inner.borrow_mut().set_focus_to(id);
@@ -477,4 +489,218 @@ async fn client_installations_are_editable_offline_and_never_mutate_server_setti
         client.project.read().client_extensions[id].config[field],
         "local-public-app"
     );
+}
+
+fn press_tab_key(doc: &mut DioxusDocument, key: NamedKey, code: Code) {
+    let mut event = BlitzKeyEvent {
+        key: Key::Named(key),
+        code,
+        modifiers: Modifiers::empty(),
+        location: Location::Standard,
+        is_auto_repeating: false,
+        is_composing: false,
+        state: KeyState::Pressed,
+        text: None,
+    };
+    doc.handle_ui_event(UiEvent::KeyDown(event.clone()));
+    event.state = KeyState::Released;
+    doc.handle_ui_event(UiEvent::KeyUp(event));
+    settle(doc);
+}
+fn select_scope(doc: &mut DioxusDocument, scope: &str) {
+    let id = doc
+        .inner
+        .borrow()
+        .query_selector(&format!("#extensions-tab-{scope}"))
+        .unwrap()
+        .unwrap();
+    doc.inner.borrow_mut().set_focus_to(id);
+    press_tab_key(doc, NamedKey::Enter, Code::Enter);
+}
+#[tokio::test]
+async fn extension_scope_tabs_keep_drafts_separate_and_follow_keyboard_focus() {
+    let harness = Rc::new(Harness::default());
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(mixed_app).with_root_context(harness.clone()),
+        DocumentConfig::default(),
+    );
+    doc.initial_build();
+    settle(&mut doc);
+    let client = harness.client.get().unwrap();
+    assert!(exists(&doc, "#extensions-tab-client[aria-selected='true']"));
+    assert!(exists(&doc, "#extensions-panel-client:not([hidden])"));
+    assert!(exists(&doc, "#extensions-panel-server[hidden]"));
+    toggle(&mut doc);
+    let catalog = acheflow_client::catalog::ClientCatalog::bundled();
+    let local = catalog.installed.keys().next().unwrap();
+    let input = doc
+        .inner
+        .borrow()
+        .query_selector(&format!("#client-extension-{local} input"))
+        .unwrap()
+        .unwrap();
+    doc.inner.borrow_mut().set_focus_to(input);
+    doc.handle_ui_event(UiEvent::Paste("retained-local-app".into()));
+    settle(&mut doc);
+    select_scope(&mut doc, "server");
+    assert!(exists(
+        &doc,
+        "#extensions-panel-server:not([hidden]) .workspace-capabilities"
+    ));
+    assert!(exists(&doc, "#extensions-panel-client[hidden]"));
+    toggle(&mut doc);
+    assert!(client.project.read().extensions["logic"].enabled);
+    select_scope(&mut doc, "client");
+    assert_eq!(
+        client.project.read().client_extensions[local].config
+            [&catalog.installed[local].manifest.settings[0].id],
+        "retained-local-app"
+    );
+    assert!(client.project.read().extensions["logic"].enabled);
+    let client_tab = doc
+        .inner
+        .borrow()
+        .query_selector("#extensions-tab-client")
+        .unwrap()
+        .unwrap();
+    doc.inner.borrow_mut().set_focus_to(client_tab);
+    press_tab_key(&mut doc, NamedKey::ArrowRight, Code::ArrowRight);
+    assert!(exists(
+        &doc,
+        "#extensions-tab-server[aria-selected='true'][tabindex='0']"
+    ));
+    // No manual refocus: ArrowLeft must be handled by the newly focused server tab.
+    press_tab_key(&mut doc, NamedKey::ArrowLeft, Code::ArrowLeft);
+    assert!(exists(&doc, "#extensions-tab-client[aria-selected='true']"));
+    press_tab_key(&mut doc, NamedKey::End, Code::End);
+    assert!(exists(&doc, "#extensions-tab-server[aria-selected='true']"));
+    press_tab_key(&mut doc, NamedKey::Home, Code::Home);
+    assert!(exists(&doc, "#extensions-tab-client[aria-selected='true']"));
+    assert_eq!(
+        doc.inner
+            .borrow()
+            .query_selector_all("[role='tab'][tabindex='0']")
+            .unwrap()
+            .len(),
+        1
+    );
+}
+#[tokio::test]
+async fn server_tab_labels_the_selected_server_and_hides_its_notices_from_local_integrations() {
+    let harness = Rc::new(Harness::default());
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(mixed_app).with_root_context(harness.clone()),
+        DocumentConfig::default(),
+    );
+    doc.initial_build();
+    settle(&mut doc);
+    let mut client = harness.client.get().unwrap();
+    client.project.write().server_url = "http://127.0.0.1:12341".into();
+    client.error.set(Some("Selected server is offline".into()));
+    settle(&mut doc);
+    assert!(!exists(&doc, "#extensions-panel-client [role='alert']"));
+    assert!(exists(
+        &doc,
+        "#extensions-panel-server[hidden] [role='alert']"
+    ));
+    select_scope(&mut doc, "server");
+    let context = doc
+        .inner
+        .borrow()
+        .query_selector("#extensions-panel-server .extension-scope-context")
+        .unwrap()
+        .unwrap();
+    // Rendered text comes from the workspace's selected endpoint, not a provider installation.
+    assert!(
+        doc.inner
+            .borrow()
+            .get_node(context)
+            .unwrap()
+            .text_content()
+            .contains("12341")
+    );
+    client.project.write().server_url = "http://127.0.0.1:12342".into();
+    settle(&mut doc);
+    let context = doc
+        .inner
+        .borrow()
+        .query_selector("#extensions-panel-server .extension-scope-context")
+        .unwrap()
+        .unwrap();
+    assert!(
+        doc.inner
+            .borrow()
+            .get_node(context)
+            .unwrap()
+            .text_content()
+            .contains("12342")
+    );
+}
+
+fn styled_scope_app() -> Element {
+    let content = mixed_app();
+    const CSS: &str = include_str!("dashboard.css");
+    rsx! {style{"{CSS}"}{content}}
+}
+#[tokio::test]
+async fn clicking_an_inactive_scope_tab_moves_focus_before_the_next_arrow_key() {
+    use blitz_traits::{
+        events::{
+            BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, PointerCoords,
+        },
+        shell::Viewport,
+    };
+    let harness = Rc::new(Harness::default());
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(styled_scope_app).with_root_context(harness),
+        DocumentConfig {
+            font_ctx: Some(dioxus_native::build_single_font_ctx(include_bytes!(
+                "../assets/DejaVuSans.woff2"
+            ))),
+            ..Default::default()
+        },
+    );
+    doc.initial_build();
+    doc.inner.borrow_mut().set_viewport(Viewport {
+        window_size: (1000, 800),
+        ..Default::default()
+    });
+    settle(&mut doc);
+    let point = {
+        let document = doc.inner.borrow();
+        let id = document
+            .query_selector("#extensions-tab-server")
+            .unwrap()
+            .unwrap();
+        document.get_node(id).unwrap().absolute_position(4., 4.)
+    };
+    let pointer = |pressed| BlitzPointerEvent {
+        id: BlitzPointerId::Mouse,
+        is_primary: true,
+        coords: PointerCoords {
+            page_x: point.x,
+            page_y: point.y,
+            screen_x: point.x,
+            screen_y: point.y,
+            client_x: point.x,
+            client_y: point.y,
+        },
+        button: MouseEventButton::Main,
+        buttons: if pressed {
+            MouseEventButtons::Primary
+        } else {
+            MouseEventButtons::None
+        },
+        mods: Modifiers::empty(),
+        details: Default::default(),
+        element: Default::default(),
+        active_pointers: Default::default(),
+    };
+    doc.handle_ui_event(UiEvent::PointerMove(pointer(false)));
+    doc.handle_ui_event(UiEvent::PointerDown(pointer(true)));
+    doc.handle_ui_event(UiEvent::PointerUp(pointer(false)));
+    settle(&mut doc);
+    assert!(exists(&doc, "#extensions-tab-server[aria-selected='true']"));
+    press_tab_key(&mut doc, NamedKey::ArrowLeft, Code::ArrowLeft);
+    assert!(exists(&doc, "#extensions-tab-client[aria-selected='true']"));
 }

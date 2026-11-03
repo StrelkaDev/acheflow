@@ -5,8 +5,11 @@ separate credential-free server logic from client-owned provider execution.
 The server has no provider credential store, secret-write API or HTTP/WebSocket
 handler. Provider manifests are `execution_side: "client"` and are skipped by server
 discovery. Their cards come from the client catalog, independently of server status.
-The shared browser/native page separates **Client integrations**, **Server logic**
-and **Workspace capabilities**. The webpage served from a server address is itself
+The shared browser/native page uses **Client** and **Server** tabs. Client contains
+local integrations and identifies the current client/workspace. Server identifies
+the selected endpoint and contains server logic plus workspace capabilities. Panels
+stay mounted so switching tabs preserves drafts; keyboard arrows and Home/End move
+selection and focus. If no local integrations are installed, Server opens initially. The webpage served from a server address is itself
 a browser client: seeing its bundled local integrations does not install providers
 in the logic-server process.
 `acheflow-client` contains the native reactor and typed MCP adapter. See

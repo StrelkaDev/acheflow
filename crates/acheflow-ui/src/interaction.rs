@@ -5,7 +5,7 @@ use crate::{
 use acheflow_client::catalog::ClientCatalog;
 use acheflow_extension_api::interaction::{CommandRule, PollRequest};
 use acheflow_media_api::control::ControlAction;
-use dioxus_native::prelude::*;
+use dioxus_native::{NodeHandle, prelude::*};
 use std::rc::Rc;
 
 #[component]
@@ -254,24 +254,78 @@ pub fn ExtensionsPage() -> Element {
     let snapshot = client.state.read().clone().unwrap_or_default();
     let extensions = snapshot.extensions.clone();
     let local = use_context::<Rc<ClientCatalog>>();
+    let scope = use_signal(|| {
+        if local.installed.is_empty() && local.errors.is_empty() {
+            1
+        } else {
+            0
+        }
+    });
+    let mut handles: Signal<[Option<NodeHandle>; 2]> = use_signal(|| [None, None]);
+    let client_label = if cfg!(target_arch = "wasm32") {
+        "Browser client"
+    } else {
+        "Desktop client"
+    };
+    let server = crate::media::server_url(&workspace, "").unwrap_or_else(|e| e);
     rsx! {
         div {class:"page-heading",div {h1 {"Extensions"}p {"Client integrations and server logic for this workspace."}}}
-        Notice {}
-        h2 {"Client integrations"}
-        p{class:"form-help","Installed in this client. Accounts and credentials stay on the executor."}
-        for error in &local.errors {p{class:"field-error","{error}"}}
-        if local.installed.is_empty() {p{class:"form-help","No integrations are installed in this client."}}
-        for (id,installed) in &local.installed {
-            ClientIntegrationCard {key:"client:{workspace.id}:{id}",id:id.clone(),name:installed.manifest.name.clone()}
+        nav{class:"subnav extension-scope-tabs",role:"tablist","aria-label":"Extension scope",
+            for (index,label) in [(0,"Client"),(1,"Server")] {
+                button{class:if scope()==index{"selected"}else{""},role:"tab",id:if index==0{"extensions-tab-client"}else{"extensions-tab-server"},
+                    "aria-selected":(scope()==index).to_string(),"aria-controls":if index==0{"extensions-panel-client"}else{"extensions-panel-server"},tabindex:if scope()==index{0}else{-1},
+                    onmounted:move |e|handles.write()[index]=e.data().downcast::<NodeHandle>().cloned(),
+                    onclick:move |_|select_extension_scope(scope,handles,index),
+                    onkeydown:move |event|{
+                        let next=match event.key(){
+                            Key::Named(NamedKey::ArrowLeft|NamedKey::ArrowRight)=>1-index,
+                            Key::Named(NamedKey::Home)=>0,
+                            Key::Named(NamedKey::End)=>1,
+                            Key::Named(NamedKey::Enter)=>index,
+                            Key::Character(value) if value==" "=>index,
+                            _=>return,
+                        };
+                        event.prevent_default();select_extension_scope(scope,handles,next);
+                    },
+                    "{label}"
+                }
+            }
         }
-        h2 {"Server logic"}
-        if client.state.read().is_some() && extensions.is_empty() {p{class:"form-help","No logic extensions are installed on this server."}}
-        for status in extensions {
-            ExtensionCard {key:"server:{workspace.id}:{status.id}", id:status.id, name:status.name, busy:(live.busy)()}
+        section{class:"extension-scope-panel",id:"extensions-panel-client",role:"tabpanel","aria-labelledby":"extensions-tab-client",hidden:scope()!=0,tabindex:0,
+            p{class:"form-help extension-scope-context","{client_label} · {workspace.name}"}
+            p{class:"form-help","Installed in this client. Accounts and credentials stay on the executor."}
+            for error in &local.errors {p{class:"field-error","{error}"}}
+            if local.installed.is_empty() {p{class:"form-help","No integrations are installed in this client."}}
+            for (id,installed) in &local.installed {
+                ClientIntegrationCard {key:"client:{workspace.id}:{id}",id:id.clone(),name:installed.manifest.name.clone()}
+            }
         }
-        WorkspaceCapabilities {}
-
+        section{class:"extension-scope-panel",id:"extensions-panel-server",role:"tabpanel","aria-labelledby":"extensions-tab-server",hidden:scope()!=1,tabindex:0,
+            p{class:"form-help extension-scope-context","Server: {server}"}
+            Notice {}
+            if client.state.read().is_none(){p{class:"form-help","Connecting to the selected server…"}}
+            if client.state.read().is_some() && extensions.is_empty() {p{class:"form-help","No logic extensions are installed on this server."}}
+            for status in extensions {
+                ExtensionCard {key:"server:{server}:{workspace.id}:{status.id}", id:status.id, name:status.name, busy:(live.busy)()}
+            }
+            WorkspaceCapabilities {}
+        }
     }
+}
+
+fn select_extension_scope(
+    mut selected: Signal<usize>,
+    handles: Signal<[Option<NodeHandle>; 2]>,
+    index: usize,
+) {
+    selected.set(index);
+    let handle = handles.peek()[index].clone();
+    // Defer focus until event dispatch releases Blitz's document borrow.
+    spawn(async move {
+        if let Some(handle) = handle {
+            handle.doc_mut().set_focus_to(handle.node_id());
+        }
+    });
 }
 
 #[component]

@@ -223,8 +223,9 @@ and desktop. Concurrent windows use the most recent local catalog write.
 
 Client integrations are discovered locally (bundled in browser builds); server
 snapshots list only server logic. Their public workspace settings live separately
-in `client_extensions` and are excluded from Apply/Start. The Extensions page shows
-client integrations, server logic and workspace capabilities in separate sections.
+in `client_extensions` and are excluded from Apply/Start. The Extensions page has Client/Server tabs: local integrations belong to Client,
+while server logic, permissions and connected executors belong to Server. Each tab
+identifies its current client/workspace or selected server endpoint.
 
 The server's active workspace and public policy remain in memory: after a server
 restart, apply the saved client workspace again. Server listener/TLS path settings

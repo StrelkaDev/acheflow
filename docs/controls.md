@@ -5,8 +5,12 @@ Client account UI, model import, lighting and authored animations are later mile
 
 ## Extensions and interaction
 
-The shared browser/native interface separates **Client integrations**, **Server logic**
-and **Workspace capabilities**. Client cards come from local installations, including
+The shared browser/native Extensions page has **Client** and **Server** tabs.
+Client shows the current browser/desktop client and workspace; Server identifies the
+selected server endpoint and contains server logic, saved permissions and connected
+executors. Connection/Apply/conflict notices are confined to Server. Arrow keys and
+Home/End switch tabs with keyboard focus; switching preserves card drafts. Client
+cards come from local installations, including
 the browser's build-time bundle, and remain configurable while the server is offline.
 Their enablement/public config are workspace-local `client_extensions` values;
 Apply/Start never send them to the server. Server logic cards come from server

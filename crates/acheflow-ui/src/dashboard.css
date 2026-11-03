@@ -396,3 +396,8 @@ button.selected { background:var(--accent-surface); color:var(--accent-text); bo
 .spatial-header { padding-top:9px; padding-bottom:9px; }
 .editor-stage { height:360px; }
 @media (min-height:1000px) { .editor-stage { height:440px; } }
+
+/* Extension scope is UI navigation; settings keep their client/server ownership. */
+.extension-scope-tabs { padding:0 0 12px; margin-bottom:20px; background:transparent; }
+.extension-scope-panel[hidden] { display:none; }
+.extension-scope-context { margin:0 0 18px; overflow-wrap:anywhere; }
