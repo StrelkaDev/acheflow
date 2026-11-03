@@ -29,8 +29,9 @@ server workspace database: the active server copy is in memory and must be appli
 again after restart. [Persistence and conflict behavior](settings-persistence.md)
 records the verified boundary. `set_client_capabilities` updates it through the common revision-checked
 control API. Snapshots expose policy and only the active workspace's live executors.
-Switching workspace, disabling a provider, policy revocation, disconnect and heartbeat
-expiry withdraw live authority. One executor owns each provider/channel at a time.
+Switching workspace, policy revocation, executor disconnect and heartbeat expiry
+withdraw live authority. A local provider toggle is a client preference; the owning
+executor must withdraw its registration when it stops. One executor owns each provider/channel at a time.
 
 `/mcp/executor/<id>` authenticates a distinct Acheflow transport token pinned to an
 actor/workspace. Its only tool, `acheflow_executor`, implements `register`, `unregister`,
@@ -43,8 +44,11 @@ Operator/read credentials cannot be reused as executor credentials.
 
 Manifests declare `execution_side: server|client`. Server is the safe default and
 rejects origins, HTTP/WebSocket capabilities and credential declarations. Client
-installations retain public discovery metadata on the server; their modules are never
-loaded there. There is no `legacy_server` mode, server credential store, secret-write
+installations are discovered on the client and omitted from the server catalog.
+Client settings persist in `client_extensions` and are stripped by the server
+configuration projection on Apply/Start; server logic settings remain in `extensions`.
+The UI has distinct local-integration, server-logic and workspace-capability sections.
+Client registration requires saved permission, not a server provider installation. There is no `legacy_server` mode, server credential store, secret-write
 control action or server provider transport.
 
 `acheflow-client` supplies a native WASM runtime, local captured credentials, bounded
@@ -57,8 +61,9 @@ a finished account-connection UI or always-on executor application.
 Still pending: native/browser `Connect account` integration, application-registration
 setup, platform-specific OAuth completion/renewal, durable local credential/intent
 storage, browser transport, arbitrary MCP tool descriptors and native poll instructions.
-The bridge currently accepts implemented chat/audience capabilities; moderation policy
-and action DTOs exist but provider handlers are not advertised until implemented.
+The server intersects saved policy with requested capabilities and reserves host/server
+logic identities. The executor is responsible for advertising only implemented handlers;
+unsupported moderation actions remain rejected by the built-in native provider runtime.
 There is no fallback to server-held keys. For setup see [client-executor.md](client-executor.md).
 
 ## Objective

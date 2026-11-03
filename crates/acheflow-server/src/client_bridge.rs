@@ -1,9 +1,6 @@
 //! Credential-free adapter from authenticated executor MCP calls to domain services.
 use crate::control::{ControlHost, now_ms};
-use acheflow_extension_api::{
-    client_execution::*,
-    integration::{Channel, ExecutionSide},
-};
+use acheflow_extension_api::{client_execution::*, integration::Channel};
 use acheflow_media_api::control::ControlRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -33,29 +30,8 @@ pub async fn call(
     match request {
         ExecutorRequest::Register { registration } => {
             for connection in &registration.connections {
-                let extension = host
-                    .installed
-                    .get(&connection.provider)
-                    .filter(|e| e.manifest.execution_side == ExecutionSide::Client)
-                    .ok_or("forbidden: provider is not a client extension")?;
-                if connection.capabilities.iter().any(|cap| match cap {
-                    Capability::ChatRead => {
-                        !extension.manifest.capabilities.iter().any(|c| c == "chat")
-                    }
-                    Capability::AudienceRead => !extension
-                        .manifest
-                        .capabilities
-                        .iter()
-                        .any(|c| c == "audience"),
-                    Capability::ChatSend => !extension
-                        .manifest
-                        .subscriptions
-                        .iter()
-                        .any(|c| c == "chat.send"),
-                    // Guests have not declared these command handlers yet.
-                    Capability::ChatDelete | Capability::UserTimeout => true,
-                }) {
-                    return Err("forbidden: capability is not implemented by provider".into());
+                if host.installed.contains_key(&connection.provider) {
+                    return Err("conflict: provider identity is reserved by server logic".into());
                 }
             }
             let status = host.client_execution.lock().unwrap().register(
@@ -95,12 +71,13 @@ pub async fn call(
             connection_id,
             event,
         } => {
+            let _control = host.runtime.control.lock().await;
             let connection = host.client_execution.lock().unwrap().connection(
                 workspace,
                 &actor.id,
                 generation,
                 &connection_id,
-                now,
+                now_ms(),
             )?;
             if !connection.capabilities.contains(&event.capability()) {
                 return Err("forbidden: event capability is not granted".into());
@@ -132,7 +109,6 @@ pub async fn call(
                     json!({"type":"delete","platform":connection.provider,"channel_id":connection.channel_id,"message_id":message_id,"all":false})
                 }
             };
-            let _control = host.runtime.control.lock().await;
             host.publish_inner(workspace, &connection.provider, "", effect, 0, true)?;
             Ok(json!({"ok":true}))
         }
@@ -202,27 +178,24 @@ pub fn refresh(
         .as_deref()
         .map(|owner| {
             let mut registry = host.client_execution.lock().unwrap();
-            let policy = workspace
-                .unwrap()
-                .client_capabilities
-                .iter()
-                .filter(|g| {
-                    workspace
-                        .unwrap()
-                        .extensions
-                        .get(&g.provider)
-                        .is_some_and(|s| s.enabled)
-                })
-                .cloned()
-                .collect();
-            let _ = registry.set_policy(owner, policy, now);
+            let policy = workspace.unwrap().client_capabilities.clone();
+            if registry.set_policy(owner, policy, now).is_err() {
+                registry.withdraw_workspace(owner, now);
+            }
             registry.connections(owner, now)
         })
         .unwrap_or_default();
-    for installed in host.installed.values().filter(|e| {
-        e.manifest.execution_side == acheflow_extension_api::integration::ExecutionSide::Client
-    }) {
-        let id = &installed.manifest.id;
+    let live_providers: std::collections::BTreeSet<_> = executors
+        .iter()
+        .flat_map(|e| e.connections.iter().map(|c| c.provider.clone()))
+        .collect();
+    let providers: std::collections::BTreeSet<_> = state
+        .client_providers
+        .union(&live_providers)
+        .cloned()
+        .collect();
+    state.client_providers = live_providers;
+    for id in &providers {
         state.integrations.disconnect(id);
         let connections: Vec<_> = executors
             .iter()
@@ -267,21 +240,6 @@ pub fn refresh(
                     constraints: Default::default(),
                 },
             );
-        }
-        if let Some(status) = state.extensions.iter_mut().find(|s| &s.id == id) {
-            status.state = if workspace
-                .as_ref()
-                .is_some_and(|w| w.extensions.get(id).is_some_and(|s| s.enabled))
-            {
-                if connections.is_empty() {
-                    "waiting_for_client"
-                } else {
-                    "running"
-                }
-            } else {
-                "stopped"
-            }
-            .into();
         }
     }
     if let Some(owner) = &owner {
@@ -348,7 +306,6 @@ mod tests {
                     Capability::AudienceRead,
                 ]),
             };
-            workspace.extensions.entry(id.into()).or_default().enabled = true;
             workspace.client_capabilities.push(CapabilityGrant {
                 provider: id.into(),
                 account_id: "bot".into(),
@@ -372,13 +329,6 @@ mod tests {
                 Default::default(),
             )
             .unwrap();
-            inner.installed.insert(
-                id.into(),
-                crate::extension_registry::Installed {
-                    manifest,
-                    module: vec![],
-                },
-            );
             clients.push((actor, runtime));
         }
         *inner.runtime.workspace.write().unwrap() = Some(workspace);
@@ -389,6 +339,11 @@ mod tests {
     #[tokio::test]
     async fn real_mcp_and_two_wasm_executors_complete_chat_without_server_provider_io() {
         let (host, mut clients) = setup();
+        assert!(
+            host.installed.is_empty(),
+            "client providers must not need server installations"
+        );
+        assert!(host.snapshot(0, 1).extensions.is_empty());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let app = crate::mcp::router_with_executors(
@@ -504,7 +459,7 @@ mod tests {
         server.abort();
     }
     #[tokio::test]
-    async fn workspace_disable_policy_revocation_and_actor_binding_reject_late_events() {
+    async fn policy_revocation_and_actor_binding_reject_late_events() {
         let (host, clients) = setup();
         let (actor, runtime) = &clients[0];
         call(
@@ -586,10 +541,8 @@ mod tests {
             .unwrap()
             .as_mut()
             .unwrap()
-            .extensions
-            .get_mut("alpha")
-            .unwrap()
-            .enabled = false;
+            .client_capabilities
+            .retain(|g| g.provider != "alpha");
         assert!(
             call(
                 &host,
@@ -608,10 +561,13 @@ mod tests {
             .unwrap()
             .as_mut()
             .unwrap()
-            .extensions
-            .get_mut("alpha")
-            .unwrap()
-            .enabled = true;
+            .client_capabilities
+            .push(CapabilityGrant {
+                provider: "alpha".into(),
+                account_id: "bot".into(),
+                channel_id: "channel".into(),
+                capabilities: runtime.identity().connection.capabilities.clone(),
+            });
         assert!(
             call(
                 &host,

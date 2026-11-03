@@ -198,6 +198,9 @@ pub struct Workspace {
     pub server_url: String,
     #[serde(default)]
     pub extensions: std::collections::BTreeMap<String, ExtensionSettings>,
+    /// Local client integrations. Excluded from Apply/Start by server_configuration().
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub client_extensions: std::collections::BTreeMap<String, ExtensionSettings>,
     #[serde(default)]
     pub client_capabilities: Vec<acheflow_extension_api::client_execution::CapabilityGrant>,
     pub horizontal: Stream,
@@ -216,6 +219,7 @@ impl Default for Workspace {
             name: "My workspace".into(),
             server_url: String::new(),
             extensions: Default::default(),
+            client_extensions: Default::default(),
             client_capabilities: Default::default(),
             horizontal: Stream {
                 base: Resolution {
@@ -454,18 +458,23 @@ impl Workspace {
     }
     fn validate_extensions(&self) -> Result<(), String> {
         if self.extensions.len() > 8
-            || self.extensions.iter().any(|(id, settings)| {
-                id.is_empty()
-                    || id.len() > 64
-                    || !id
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
-                    || settings.config.len() > 32
-                    || settings.config.iter().any(|(key, value)| {
-                        !acheflow_extension_api::integration::valid_id(key, 64)
-                            || value.len() > 8192
-                    })
-            })
+            || self.client_extensions.len() > 8
+            || self
+                .extensions
+                .iter()
+                .chain(&self.client_extensions)
+                .any(|(id, settings)| {
+                    id.is_empty()
+                        || id.len() > 64
+                        || !id
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+                        || settings.config.len() > 32
+                        || settings.config.iter().any(|(key, value)| {
+                            !acheflow_extension_api::integration::valid_id(key, 64)
+                                || value.len() > 8192
+                        })
+                })
         {
             return Err("Invalid workspace extension settings".into());
         }
@@ -615,6 +624,18 @@ impl Workspace {
             }
         }
         Ok(())
+    }
+    pub fn server_configuration(&self) -> Self {
+        let mut server = self.clone();
+        server.client_extensions.clear();
+        server
+    }
+    pub fn migrate_client_extensions<'a>(&mut self, ids: impl IntoIterator<Item = &'a str>) {
+        for id in ids {
+            if let Some(saved) = self.extensions.remove(id) {
+                self.client_extensions.entry(id.into()).or_insert(saved);
+            }
+        }
     }
     pub fn json(&self) -> Result<String, String> {
         self.validate()?;
@@ -1005,5 +1026,55 @@ mod tests {
         assert_eq!(restored.horizontal.outputs[0].encoder, None);
         assert_eq!(restored.horizontal.fps, 60);
         assert_eq!(restored.vertical.fps, 24);
+    }
+}
+
+#[cfg(test)]
+mod client_extension_tests {
+    use super::*;
+    #[test]
+    fn local_provider_settings_migrate_and_persist_but_never_enter_server_configuration() {
+        let mut workspace = Workspace::default();
+        workspace.extensions.insert(
+            "sample".into(),
+            ExtensionSettings {
+                enabled: true,
+                ..Default::default()
+            },
+        );
+        workspace.extensions.insert(
+            "alpha".into(),
+            ExtensionSettings {
+                enabled: true,
+                config: std::collections::BTreeMap::from([(
+                    "application".into(),
+                    "local-app".into(),
+                )]),
+            },
+        );
+        workspace.migrate_client_extensions(["alpha"]);
+        assert!(!workspace.extensions.contains_key("alpha"));
+        assert!(workspace.client_extensions["alpha"].enabled);
+        let local = Workspace::from_json(workspace.json().unwrap().as_bytes()).unwrap();
+        assert_eq!(local.client_extensions, workspace.client_extensions);
+        let server = local.server_configuration();
+        let payload = serde_json::to_value(&server).unwrap();
+        assert!(server.client_extensions.is_empty());
+        assert!(payload.get("client_extensions").is_none());
+        assert!(!payload.to_string().contains("local-app"));
+        assert!(server.extensions["sample"].enabled);
+        workspace.extensions.insert(
+            "alpha".into(),
+            ExtensionSettings {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        workspace.migrate_client_extensions(["alpha"]);
+        assert!(
+            workspace.client_extensions["alpha"].enabled,
+            "new local settings take precedence over old-format entries"
+        );
+        assert!(!workspace.extensions.contains_key("alpha"));
     }
 }

@@ -68,6 +68,9 @@ fn configure_public_settings(
 }
 
 fn validate_public_settings(host: &ControlHost, workspace: &Workspace) -> Result<(), String> {
+    if !workspace.client_extensions.is_empty() {
+        return Err("client integration settings must stay in the client catalog".into());
+    }
     acheflow_control::client_execution::ExecutionRegistry::default().set_policy(
         &workspace.id,
         workspace.client_capabilities.clone(),
@@ -320,7 +323,19 @@ mod persistence_revision_tests {
     use acheflow_media_api::control::{ControlAction, ControlRequest};
     #[tokio::test]
     async fn stale_workspace_apply_cannot_erase_remote_capability_policy_or_extension_settings() {
-        let (host, mut stale) = crate::control::tests::host();
+        let (mut host, mut stale) = crate::control::tests::host();
+        std::sync::Arc::get_mut(&mut host)
+            .unwrap()
+            .installed
+            .get_mut("sample")
+            .unwrap()
+            .manifest
+            .settings
+            .push(acheflow_extension_api::integration::Setting {
+                id: "application".into(),
+                label: "Application".into(),
+                ..Default::default()
+            });
         stale.migrate_spatial();
         *host.runtime.workspace.write().unwrap() = Some(stale.clone());
         let grants = vec![CapabilityGrant {
@@ -362,10 +377,10 @@ mod persistence_revision_tests {
             request_id: format!("{}:settings", crate::control::now_ms()),
             expected_revision: revision,
             action: ControlAction::SetExtension {
-                id: "youtube".into(),
+                id: "sample".into(),
                 enabled: true,
                 config: Some(std::collections::BTreeMap::from([(
-                    "video_id".into(),
+                    "application".into(),
                     "publicvideo".into(),
                 )])),
             },
@@ -378,13 +393,67 @@ mod persistence_revision_tests {
         );
         let current = host.runtime.workspace.read().unwrap().clone().unwrap();
         assert_eq!(
-            current.extensions["youtube"].config["video_id"],
+            current.extensions["sample"].config["application"],
             "publicvideo"
         );
         let _ = configure(State(host.clone()), Json(current)).await.unwrap();
         assert_eq!(
-            host.snapshot(0, 1).extension_settings["youtube"].config["video_id"],
+            host.snapshot(0, 1).extension_settings["sample"].config["application"],
             "publicvideo"
+        );
+    }
+}
+
+#[cfg(test)]
+mod client_setting_boundary_tests {
+    use super::*;
+    #[tokio::test]
+    async fn server_rejects_local_client_settings_instead_of_storing_them() {
+        let (host, mut local) = crate::control::tests::host();
+        local.migrate_spatial();
+        local.client_extensions.insert(
+            "client-only".into(),
+            acheflow_media_api::workspace::ExtensionSettings {
+                enabled: true,
+                config: std::collections::BTreeMap::from([(
+                    "application".into(),
+                    "local-only-app".into(),
+                )]),
+            },
+        );
+        assert!(
+            configure(State(host.clone()), Json(local.clone()))
+                .await
+                .is_err()
+        );
+        assert!(
+            host.runtime
+                .workspace
+                .read()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .client_extensions
+                .is_empty()
+        );
+        let _ = configure(State(host.clone()), Json(local.server_configuration()))
+            .await
+            .unwrap();
+        assert!(
+            host.runtime
+                .workspace
+                .read()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .client_extensions
+                .is_empty()
+        );
+        assert!(
+            !host
+                .snapshot(0, 1)
+                .extension_settings
+                .contains_key("client-only")
         );
     }
 }

@@ -20,11 +20,11 @@ fn app() -> Element {
             Some(ControlSnapshot {
                 workspace_id: Some("other-workspace".into()),
                 extensions: vec![ExtensionStatus {
-                    id: "twitch".into(),
-                    name: "Twitch".into(),
+                    id: "logic".into(),
+                    name: "Logic".into(),
                     account: Some("other-account".into()),
                     settings: vec![acheflow_extension_api::integration::Setting {
-                        id: "client_id".into(),
+                        id: "application".into(),
                         label: "Application ID".into(),
                         ..Default::default()
                     }],
@@ -38,6 +38,7 @@ fn app() -> Element {
         busy: use_signal(|| false),
         sync_conflict: use_signal(|| false),
     };
+    use_context_provider(|| Rc::new(acheflow_client::catalog::ClientCatalog::default()));
     use_context_provider(|| client);
     harness.client.set(Some(client));
     rsx! {crate::interaction::ExtensionsPage {}}
@@ -92,7 +93,7 @@ async fn extension_command_errors_stay_in_the_owning_card_including_when_collaps
     settle(&mut doc);
     let client = harness.client.get().unwrap();
     client.command(acheflow_media_api::control::ControlAction::ExtensionEvent {
-        id: "twitch".into(),
+        id: "logic".into(),
         action_id: "connect".into(),
         value: String::new(),
         config: None,
@@ -110,7 +111,7 @@ async fn extension_command_errors_stay_in_the_owning_card_including_when_collaps
         "retrying clears the previous error"
     );
     client.command(acheflow_media_api::control::ControlAction::ExtensionEvent {
-        id: "twitch".into(),
+        id: "logic".into(),
         action_id: "connect".into(),
         value: String::new(),
         config: None,
@@ -142,19 +143,19 @@ async fn disabled_cards_hide_settings_and_toggling_or_switching_keeps_workspace_
     let mut client = harness.client.get().unwrap();
     assert!(!exists(&doc, ".extension-settings"));
     toggle(&mut doc);
-    assert!(client.project.read().extensions["twitch"].enabled);
-    assert!(exists(&doc, ".extension-card #extension-twitch input"));
+    assert!(client.project.read().extensions["logic"].enabled);
+    assert!(exists(&doc, ".extension-card #extension-logic input"));
     let input = doc
         .inner
         .borrow()
-        .query_selector("#extension-twitch input")
+        .query_selector("#extension-logic input")
         .unwrap()
         .unwrap();
     doc.inner.borrow_mut().set_focus_to(input);
     doc.handle_ui_event(UiEvent::Paste("firstpublicapp".into()));
     settle(&mut doc);
     assert_eq!(
-        client.project.read().extensions["twitch"].config["client_id"],
+        client.project.read().extensions["logic"].config["application"],
         "firstpublicapp"
     );
     for character in "1234".chars() {
@@ -171,7 +172,7 @@ async fn disabled_cards_hide_settings_and_toggling_or_switching_keeps_workspace_
     }
     settle(&mut doc);
     assert_eq!(
-        client.project.read().extensions["twitch"].config["client_id"],
+        client.project.read().extensions["logic"].config["application"],
         "firstpublicapp1234"
     );
     toggle(&mut doc);
@@ -179,7 +180,7 @@ async fn disabled_cards_hide_settings_and_toggling_or_switching_keeps_workspace_
     toggle(&mut doc);
     let first = client.project.read().clone();
     assert_eq!(
-        first.extensions["twitch"].config["client_id"],
+        first.extensions["logic"].config["application"],
         "firstpublicapp1234"
     );
     client.project.set(Workspace::default());
@@ -187,16 +188,16 @@ async fn disabled_cards_hide_settings_and_toggling_or_switching_keeps_workspace_
     assert!(!exists(&doc, ".extension-settings"));
     client.project.set(first.clone());
     settle(&mut doc);
-    assert!(exists(&doc, ".extension-card #extension-twitch input"));
+    assert!(exists(&doc, ".extension-card #extension-logic input"));
     assert_eq!(
-        client.project.read().extensions["twitch"].config["client_id"],
+        client.project.read().extensions["logic"].config["application"],
         "firstpublicapp1234"
     );
 
     let mut snapshot = client.state.read().clone().unwrap();
     snapshot.workspace_id = Some(first.id);
     snapshot.panels = vec![acheflow_extension_api::ExtensionPanel {
-        extension_id: "twitch".into(),
+        extension_id: "logic".into(),
         title: "Twitch controls".into(),
         widgets: vec![acheflow_extension_api::PanelWidget::Label {
             text: "Workspace panel".into(),
@@ -206,14 +207,14 @@ async fn disabled_cards_hide_settings_and_toggling_or_switching_keeps_workspace_
     settle(&mut doc);
     assert!(exists(
         &doc,
-        ".extension-card #extension-twitch .extension-panel"
+        ".extension-card #extension-logic .extension-panel"
     ));
     assert!(!exists(&doc, ".extension-card .panel"));
     client
         .project
         .write()
         .extensions
-        .get_mut("twitch")
+        .get_mut("logic")
         .unwrap()
         .enabled = false;
     settle(&mut doc);
@@ -221,7 +222,7 @@ async fn disabled_cards_hide_settings_and_toggling_or_switching_keeps_workspace_
 }
 
 #[tokio::test]
-async fn client_waiting_card_keeps_public_settings_and_never_renders_credential_fields() {
+async fn server_logic_card_keeps_public_settings_and_never_renders_credential_fields() {
     let harness = Rc::new(Harness::default());
     let mut doc = DioxusDocument::new(
         VirtualDom::new(app).with_root_context(harness.clone()),
@@ -233,7 +234,7 @@ async fn client_waiting_card_keeps_public_settings_and_never_renders_credential_
     let mut client = harness.client.get().unwrap();
     let mut snapshot = client.state.read().clone().unwrap();
     snapshot.workspace_id = Some(client.project.read().id.clone());
-    snapshot.extensions[0].state = "waiting_for_client".into();
+    snapshot.extensions[0].state = "running".into();
     snapshot.extensions[0]
         .settings
         .push(acheflow_extension_api::integration::Setting {
@@ -246,19 +247,14 @@ async fn client_waiting_card_keeps_public_settings_and_never_renders_credential_
     settle(&mut doc);
     let document = doc.inner.borrow();
     let count = document
-        .query_selector_all("#extension-twitch input")
+        .query_selector_all("#extension-logic input")
         .unwrap()
         .len();
     assert_eq!(
         count, 1,
         "only the public Application ID field should remain"
     );
-    assert!(
-        document
-            .query_selector(".extension-card .badge")
-            .unwrap()
-            .is_some()
-    );
+
     assert!(
         document
             .query_selector("input[type='password']")
@@ -284,16 +280,16 @@ async fn first_snapshot_cannot_acknowledge_remote_settings_over_an_unsynced_loca
         .project
         .write()
         .extensions
-        .entry("twitch".into())
+        .entry("logic".into())
         .or_default()
         .config
-        .insert("client_id".into(), "localdraft".into());
+        .insert("application".into(), "localdraft".into());
     let snapshot = ControlSnapshot {
         workspace_id: Some(client.project.read().id.clone()),
         edit_revision: 2,
         revision: 2,
         client_capabilities: vec![CapabilityGrant {
-            provider: "twitch".into(),
+            provider: "logic".into(),
             account_id: "bot".into(),
             channel_id: "channel".into(),
             capabilities: [Capability::ChatRead].into(),
@@ -308,7 +304,7 @@ async fn first_snapshot_cannot_acknowledge_remote_settings_over_an_unsynced_loca
         "unreconciled settings must keep their old revision"
     );
     assert_eq!(
-        client.project.read().extensions["twitch"].config["client_id"],
+        client.project.read().extensions["logic"].config["application"],
         "localdraft"
     );
     assert!(client.error.read().is_some());
@@ -332,22 +328,30 @@ async fn resolving_settings_conflicts_is_explicit_and_does_not_send_an_apply() {
     doc.initial_build();
     settle(&mut doc);
     let mut client = harness.client.get().unwrap();
+    client
+        .project
+        .write()
+        .client_extensions
+        .entry("client-only".into())
+        .or_default()
+        .config
+        .insert("application".into(), "keep-local".into());
     client.state.set(None);
     client.project.write().edit_revision = 1;
     client
         .project
         .write()
         .extensions
-        .entry("twitch".into())
+        .entry("logic".into())
         .or_default()
         .config
-        .insert("client_id".into(), "localdraft".into());
+        .insert("application".into(), "localdraft".into());
     let snapshot = ControlSnapshot {
         workspace_id: Some(client.project.read().id.clone()),
         edit_revision: 2,
         revision: 2,
         client_capabilities: vec![CapabilityGrant {
-            provider: "twitch".into(),
+            provider: "logic".into(),
             account_id: "bot".into(),
             channel_id: "channel".into(),
             capabilities: [Capability::ChatRead].into(),
@@ -370,7 +374,7 @@ async fn resolving_settings_conflicts_is_explicit_and_does_not_send_an_apply() {
     assert!(!(client.sync_conflict)());
     assert_eq!(client.project.read().edit_revision, 2);
     assert_eq!(
-        client.project.read().extensions["twitch"].config["client_id"],
+        client.project.read().extensions["logic"].config["application"],
         "localdraft"
     );
     assert!(client.project.read().client_capabilities.is_empty());
@@ -393,6 +397,84 @@ async fn resolving_settings_conflicts_is_explicit_and_does_not_send_an_apply() {
         snapshot.extension_settings
     );
     assert_eq!(client.project.read().edit_revision, 2);
+    assert_eq!(
+        client.project.read().client_extensions["client-only"].config["application"],
+        "keep-local"
+    );
     assert!(client.error.read().is_none());
     assert!(!(client.busy)());
+}
+
+fn local_client_app() -> Element {
+    let harness = consume_context::<Rc<Harness>>();
+    let project = use_signal(|| Workspace {
+        server_url: "http://127.0.0.1:9".into(),
+        ..Default::default()
+    });
+    crate::live_client::use_live_client(project);
+    let client = ControlClient {
+        project,
+        state: use_signal(|| None),
+        error: use_signal(|| None),
+        extension_errors: use_signal(Default::default),
+        busy: use_signal(|| false),
+        sync_conflict: use_signal(|| false),
+    };
+    use_context_provider(|| Rc::new(acheflow_client::catalog::ClientCatalog::bundled()));
+    use_context_provider(|| client);
+    harness.client.set(Some(client));
+    rsx! {crate::interaction::ExtensionsPage{}}
+}
+#[tokio::test]
+async fn client_installations_are_editable_offline_and_never_mutate_server_settings() {
+    let harness = Rc::new(Harness::default());
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(local_client_app).with_root_context(harness.clone()),
+        DocumentConfig::default(),
+    );
+    doc.initial_build();
+    settle(&mut doc);
+    let mut client = harness.client.get().unwrap();
+    assert!(exists(&doc, ".client-integration"));
+    assert!(client.state.read().is_none());
+    toggle(&mut doc);
+    let catalog = acheflow_client::catalog::ClientCatalog::bundled();
+    let id = catalog.installed.keys().next().unwrap();
+    assert!(client.project.read().client_extensions[id].enabled);
+    assert!(client.project.read().extensions.is_empty());
+    assert!(!(client.busy)());
+    let input = doc
+        .inner
+        .borrow()
+        .query_selector(&format!("#client-extension-{id} input"))
+        .unwrap()
+        .unwrap();
+    doc.inner.borrow_mut().set_focus_to(input);
+    doc.handle_ui_event(UiEvent::Paste("local-public-app".into()));
+    settle(&mut doc);
+    let field = &catalog.installed[id].manifest.settings[0].id;
+    assert_eq!(
+        client.project.read().client_extensions[id].config[field],
+        "local-public-app"
+    );
+    let first = client.project.read().clone();
+    assert!(first.server_configuration().client_extensions.is_empty());
+    assert!(
+        !serde_json::to_string(&first.server_configuration())
+            .unwrap()
+            .contains("local-public-app")
+    );
+    client.project.set(Workspace {
+        server_url: "http://127.0.0.1:9".into(),
+        ..Default::default()
+    });
+    settle(&mut doc);
+    assert!(!exists(&doc, &format!("#client-extension-{id} input")));
+    client.project.set(first);
+    settle(&mut doc);
+    assert!(exists(&doc, &format!("#client-extension-{id} input")));
+    assert_eq!(
+        client.project.read().client_extensions[id].config[field],
+        "local-public-app"
+    );
 }

@@ -360,47 +360,30 @@ async fn server_rejects_provider_transport_before_starting_a_guest() {
 }
 
 #[tokio::test]
-async fn client_provider_discovery_never_loads_or_starts_a_server_guest() {
+async fn server_discovery_lists_only_logic_and_never_publishes_client_provider_metadata() {
     let (host, workspace) = crate::control::tests::host();
+    assert!(host.installed.contains_key("sample"));
     for id in ["twitch", "youtube", "vklive"] {
-        assert!(host.installed[id].module.is_empty());
-        execute(
-            &host,
-            ControlAction::SetExtension {
-                id: id.into(),
-                enabled: true,
-                config: None,
-            },
-        )
-        .await;
+        assert!(!host.installed.contains_key(id));
+        let snapshot = host.snapshot(0, 1);
+        assert!(!snapshot.extensions.iter().any(|e| e.id == id));
+        assert!(
+            host.execute(ControlRequest {
+                workspace_id: workspace.id.clone(),
+                request_id: format!("{}:enable-{id}", now_ms()),
+                expected_revision: snapshot.revision,
+                action: ControlAction::SetExtension {
+                    id: id.into(),
+                    enabled: true,
+                    config: None
+                }
+            })
+            .await
+            .unwrap_err()
+            .contains("not_found")
+        );
     }
-    let state = host.snapshot(0, 1);
-    assert_eq!(
-        state
-            .extensions
-            .iter()
-            .filter(|e| e.state == "waiting_for_client")
-            .count(),
-        3
-    );
     assert!(host.guests.lock().await.is_empty());
-    assert!(state.panels.is_empty());
-    assert!(
-        host.execute(ControlRequest {
-            workspace_id: workspace.id,
-            request_id: format!("{}:connect", now_ms()),
-            expected_revision: state.revision,
-            action: ControlAction::ExtensionEvent {
-                id: "twitch".into(),
-                action_id: "connect".into(),
-                value: String::new(),
-                config: None
-            }
-        })
-        .await
-        .unwrap_err()
-        .contains("not running")
-    );
     assert!(serde_json::from_value::<ControlAction>(json!({"type":"set_extension_secret","id":"twitch","key":"access_token","value":"never-on-server"})).is_err());
 }
 

@@ -1,6 +1,9 @@
 //! Pure registry/outbox. The caller supplies authenticated actor IDs and server time.
 //! No platform requests, credentials, MCP transport or executable payloads live here.
-use acheflow_extension_api::{client_execution::*, integration::valid_id};
+use acheflow_extension_api::{
+    client_execution::*,
+    integration::{valid_id, valid_provider_id},
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_CLIENTS: usize = 64;
@@ -71,7 +74,7 @@ fn validate_registration(request: &ClientRegistration) -> Result<(), String> {
         if !identity(&connection.id) || !ids.insert(&connection.id) {
             return Err("invalid_argument: duplicate or invalid connection identity".into());
         }
-        if !identity(&connection.provider)
+        if !valid_provider_id(&connection.provider)
             || !identity(&connection.account_id)
             || !identity(&connection.channel_id)
         {
@@ -107,7 +110,9 @@ impl ExecutionRegistry {
         if !identity(workspace)
             || policy.len() > 64
             || policy.iter().any(|p| {
-                !identity(&p.provider) || !identity(&p.account_id) || !identity(&p.channel_id)
+                !valid_provider_id(&p.provider)
+                    || !identity(&p.account_id)
+                    || !identity(&p.channel_id)
             })
         {
             return Err("invalid_argument: capability policy".into());

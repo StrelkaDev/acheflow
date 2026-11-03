@@ -172,6 +172,9 @@ impl GuestManifest {
         Ok(())
     }
 }
+pub fn valid_provider_id(id: &str) -> bool {
+    valid_id(id, 64) && !id.contains([':', '.']) && !matches!(id, "acheflow" | "ui")
+}
 pub fn valid_id(id: &str, max: usize) -> bool {
     !id.is_empty()
         && id.len() <= max

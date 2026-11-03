@@ -2,9 +2,11 @@ use crate::{
     control_client::ControlClient,
     live_client::{Action, LiveClient},
 };
+use acheflow_client::catalog::ClientCatalog;
 use acheflow_extension_api::interaction::{CommandRule, PollRequest};
 use acheflow_media_api::control::ControlAction;
 use dioxus_native::prelude::*;
+use std::rc::Rc;
 
 #[component]
 pub fn Notice() -> Element {
@@ -251,13 +253,24 @@ pub fn ExtensionsPage() -> Element {
     let workspace = client.project.read().clone();
     let snapshot = client.state.read().clone().unwrap_or_default();
     let extensions = snapshot.extensions.clone();
+    let local = use_context::<Rc<ClientCatalog>>();
     rsx! {
-        div {class:"page-heading",div {h1 {"Extensions"}p {"Enable extensions for this workspace and configure them in their cards."}}}
+        div {class:"page-heading",div {h1 {"Extensions"}p {"Client integrations and server logic for this workspace."}}}
         Notice {}
-        if client.state.read().is_some() && extensions.is_empty() {p{class:"form-help","No extensions are installed on this server."}}
-        for status in extensions {
-            ExtensionCard {key:"{workspace.id}:{status.id}", id:status.id, name:status.name, busy:(live.busy)()}
+        h2 {"Client integrations"}
+        p{class:"form-help","Installed in this client. Accounts and credentials stay on the executor."}
+        for error in &local.errors {p{class:"field-error","{error}"}}
+        if local.installed.is_empty() {p{class:"form-help","No integrations are installed in this client."}}
+        for (id,installed) in &local.installed {
+            ClientIntegrationCard {key:"client:{workspace.id}:{id}",id:id.clone(),name:installed.manifest.name.clone()}
         }
+        h2 {"Server logic"}
+        if client.state.read().is_some() && extensions.is_empty() {p{class:"form-help","No logic extensions are installed on this server."}}
+        for status in extensions {
+            ExtensionCard {key:"server:{workspace.id}:{status.id}", id:status.id, name:status.name, busy:(live.busy)()}
+        }
+        WorkspaceCapabilities {}
+
     }
 }
 
@@ -332,7 +345,7 @@ fn ExtensionCard(id: String, name: String, busy: bool) -> Element {
             if enabled {
                 div {class:"padded extension-settings",id:body_id.clone(),
                     for setting in status.settings.iter().filter(|s|!s.secret).cloned() {
-                        ExtensionSetting {key:"{setting.id}",extension:id.clone(),setting}
+                        ExtensionSetting {key:"{setting.id}",extension:id.clone(),setting,local:false}
                     }
                     if active {
                         if let Some(account) = status.account {p {"Account: {account}"}}
@@ -352,17 +365,99 @@ fn ExtensionCard(id: String, name: String, busy: bool) -> Element {
 fn ExtensionSetting(
     extension: String,
     setting: acheflow_extension_api::integration::Setting,
+    local: bool,
 ) -> Element {
     let mut client = use_context::<ControlClient>();
-    let value = client
-        .project
-        .read()
-        .extensions
+    let workspace = client.project.read();
+    let settings = if local {
+        &workspace.client_extensions
+    } else {
+        &workspace.extensions
+    };
+    let value = settings
         .get(&extension)
         .and_then(|s| s.config.get(&setting.id))
         .cloned()
         .unwrap_or_default();
-    rsx! {label{class:"field",span{"{setting.label}"}input{r#type:"text",value:value.clone(),maxlength:setting.max_length as i64,oninput:move|event|{client.project.write().extensions.entry(extension.clone()).or_default().config.insert(setting.id.clone(),event.value());}}if !setting.help.is_empty(){p{class:"form-help","{setting.help}"}}}}
+    drop(workspace);
+    rsx! {label{class:"field",span{"{setting.label}"}input{r#type:"text",value:value.clone(),maxlength:setting.max_length as i64,oninput:move|event|{let mut w=client.project.write();let map=if local{&mut w.client_extensions}else{&mut w.extensions};map.entry(extension.clone()).or_default().config.insert(setting.id.clone(),event.value());}}if !setting.help.is_empty(){p{class:"form-help","{setting.help}"}}}}
+}
+
+#[component]
+fn ClientIntegrationCard(id: String, name: String) -> Element {
+    let mut client = use_context::<ControlClient>();
+    let catalog = use_context::<Rc<ClientCatalog>>();
+    let manifest = &catalog.installed[&id].manifest;
+    let enabled = client
+        .project
+        .read()
+        .client_extensions
+        .get(&id)
+        .is_some_and(|s| s.enabled);
+    let connected = client
+        .state
+        .read()
+        .as_ref()
+        .filter(|s| s.workspace_id.as_deref() == Some(client.project.read().id.as_str()))
+        .is_some_and(|s| {
+            s.client_executors
+                .iter()
+                .any(|e| e.connections.iter().any(|c| c.provider == id))
+        });
+    let toggle_id = id.clone();
+    let key_id = id.clone();
+    rsx! {
+        section{class:if enabled{"panel extension-card enabled client-integration"}else{"panel extension-card client-integration"},
+            div{class:"panel-heading",
+                div{class:"extension-identity",h2{"{name}"}if enabled{span{class:"badge",if connected{"Connected executor"}else{"Not connected"}}}}
+                button{class:if enabled{"extension-toggle selected"}else{"extension-toggle"},role:"switch","aria-label":"Enable {name} locally for this workspace","aria-checked":enabled.to_string(),"aria-expanded":enabled.to_string(),"aria-controls":"client-extension-{id}",
+                    onclick:move |_|{client.project.write().client_extensions.entry(toggle_id.clone()).or_default().enabled = !enabled;},
+                    onkeydown:move |event|{if event.key()==Key::Named(NamedKey::Enter)||event.key()==Key::Character(" ".into()){event.prevent_default();client.project.write().client_extensions.entry(key_id.clone()).or_default().enabled = !enabled;}},
+                    if enabled{"Enabled"}else{"Disabled"}
+                }
+            }
+            if enabled{div{class:"padded extension-settings",id:"client-extension-{id}",
+                for setting in manifest.settings.iter().filter(|s|!s.secret).cloned(){ExtensionSetting{key:"{setting.id}",extension:id.clone(),setting,local:true}}
+                if !connected {p{class:"form-help","An authorized client executor must connect before messages can be collected or sent."}}
+            }}
+        }
+    }
+}
+fn capability_names<'a>(
+    values: impl IntoIterator<Item = &'a acheflow_extension_api::client_execution::Capability>,
+) -> String {
+    values
+        .into_iter()
+        .map(|c| {
+            serde_json::to_value(c)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+#[component]
+fn WorkspaceCapabilities() -> Element {
+    let client = use_context::<ControlClient>();
+    let state = client.state.read();
+    let current = state
+        .as_ref()
+        .filter(|s| s.workspace_id.as_deref() == Some(client.project.read().id.as_str()));
+    rsx! {section{class:"panel workspace-capabilities",
+        div{class:"panel-heading",h2{"Workspace capabilities"}}
+        div{class:"padded",
+            if let Some(state)=current {
+                h3{"Saved permissions"}
+                if state.client_capabilities.is_empty(){p{class:"form-help","No client capabilities are authorized."}}
+                for grant in &state.client_capabilities {div{class:"audience-row",strong{"{grant.provider} / {grant.channel_id}"}p{"Account: {grant.account_id}"}p{class:"form-help","{capability_names(&grant.capabilities)}"}}}
+                h3{"Connected executors"}
+                if state.client_executors.is_empty(){p{class:"form-help","No executor is connected to this workspace."}}
+                for executor in &state.client_executors {for connection in &executor.connections {div{class:"audience-row",strong{"{executor.client_id} · {connection.provider} / {connection.channel_id}"}p{class:"form-help","{capability_names(&connection.capabilities)}"}}}}
+            }else{p{class:"form-help","Apply this workspace to inspect its server permissions and connected executors."}}
+        }
+    }}
 }
 
 fn money(amount: u64, places: u8) -> String {

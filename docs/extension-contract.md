@@ -28,7 +28,11 @@ which rejects service origins, secret captures/settings and HTTP/WebSocket capab
 There is no compatibility execution mode. A server logic guest may handle pure domain
 rules, bounded private noncredential storage and panels, without platform I/O.
 
-The server discovers public metadata for client manifests but never loads their WASM.
+The server skips client manifests entirely. The client owns provider discovery:
+native clients read their installation directory (or the bundled fallback), while
+browser clients use the manifest/WASM catalog bundled at UI build time. Server
+snapshots list server logic only; live client connections are separate metadata.
+Client providers need no server installation to register authorized capabilities.
 A native client runtime supplies bounded HTTP/WebSocket I/O and opaque secret handles
 for these guests. Manifest/effect captures redact credentials before guest delivery.
 Secrets remain local to one workspace/account runtime; network calls are restricted
@@ -65,7 +69,11 @@ amounts as integer minor units plus currency; the host does not infer exchanges.
 
 The versioned manifest defines settings, subscriptions, capabilities and origins.
 Adding a provider must require no production server/UI edit. Public configuration
-belongs to workspace.extensions[id].config; legacy client_id migrates to config.
+belongs to `workspace.extensions[id].config` for server logic and
+`workspace.client_extensions[id].config` for client integrations. Apply/Start use a
+server projection that excludes client settings. Known installed client providers
+migrate from the older shared settings map on client load/import, preserving newer
+client-scoped values when both formats exist. Legacy client_id migrates to config.
 Draft ABI v1 is replaced explicitly by v2; build/install matching guest artifacts.
 Rust guest sources compile to wasm32-unknown-unknown. WAT is only a sandbox test
 fixture format, not the authoring workflow. Build guests before the host tests.

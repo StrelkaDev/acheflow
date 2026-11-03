@@ -5,18 +5,25 @@ Client account UI, model import, lighting and authored animations are later mile
 
 ## Extensions and interaction
 
-Apply the workspace and enable extensions with their public manifest settings inside
-their cards. Server logic extensions run locally on the server. Client provider
-extensions display **Waiting for a client executor** until an authenticated executor
-registers authorized capabilities for this workspace. There is no server token input
-or server-side platform transport. The native `acheflow-client` library owns WASM,
-OAuth captures and provider I/O; its `Connect account` integration with the main UI
-is still pending. [Setup and implementation limits](client-executor.md) describe the
-current MCP bridge. No live accounts have been verified in this migration.
+The shared browser/native interface separates **Client integrations**, **Server logic**
+and **Workspace capabilities**. Client cards come from local installations, including
+the browser's build-time bundle, and remain configurable while the server is offline.
+Their enablement/public config are workspace-local `client_extensions` values;
+Apply/Start never send them to the server. Server logic cards come from server
+snapshots and retain the existing Apply/enable/panel lifecycle. Saved permissions
+and connected executors are shown separately for the active workspace.
+
+Client provider cards report a connected executor or **Not connected**. Their toggle
+saves a local preference; it does not register permissions or authorize an account.
+The native library owns WASM, OAuth captures and I/O, while main-UI account connection
+and scheduling remain pending. External executors can already register via MCP using
+explicit workspace policy without provider installation on the server. There is no
+server token input or server-side platform transport. [Setup and implementation
+limits](client-executor.md) describe the bridge; live accounts remain unverified.
 
 Chat is part of Live / Studio and moves to the shared sidebar during streaming.
 Select All channels or one registered destination; available choices are supplied
-by enabled extensions. Outgoing messages merge into one history entry with a
+by live authorized client connections or enabled logic extensions. Outgoing messages merge into one history entry with a
 result for each target. Receipts suppress duplicate echoes. Timeouts/connection
 loss report unknown outcomes and never automatically resend an uncertain message.
 Drafts persist when chat moves; narrow layouts place chat below the current page.

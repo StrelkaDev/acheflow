@@ -10,7 +10,7 @@ operations. The logic server has no durable workspace catalog or platform creden
 |---|---|---|
 | Native workspace catalog, selected workspace and client preferences | `~/.acheflow/workspaces.json`, overridden by `ACHEFLOW_WORKSPACE_FILE` | Loaded at client startup; edits auto-save through temporary-file replacement. Unix files are owner-only (`0600`). Parent directories are created. |
 | Browser workspace catalog, selected workspace and client preferences | localStorage key `acheflow.workspaces.v1`, scoped to the browser profile and origin | Loaded on page startup; edits auto-save. A different scheme/host/port has a separate catalog. |
-| Workspace server address, RTMP inputs/keys, scenes, outputs, audio, extension enablement/public config, `client_capabilities` policy and `edit_revision` | Each workspace entry in the client catalog; also in workspace JSON exports | Kept independently for each workspace. Export/import is the transfer mechanism between browser and native clients. |
+| Workspace server address, RTMP inputs/keys, scenes, outputs, audio, server logic `extensions`, local integration `client_extensions`, `client_capabilities` policy and `edit_revision` | Each workspace entry in the client catalog; also in workspace JSON exports | Kept independently for each workspace. Export/import is the transfer mechanism between browser and native clients. |
 | Background animation | Catalog `preferences.background_animation` | Shared across workspaces in this client catalog, restored after reload/restart. Old catalogs default to enabled. Excluded from workspace-only exports. |
 | Active workspace and its public capability policy on the server | Server process memory | Apply sends the selected local workspace to its server. Server restart/deactivation clears the active workspace; apply the saved client workspace again. |
 | HTTP/RTMP bind settings and TLS certificate/key **paths** | `acheflow-server.json` relative to the server working directory; `--config` or `ACHEFLOW_CONFIG` selects another file | Loaded at server startup. Saving creates missing parent directories and atomically replaces the file. Listener changes need a restart. |
@@ -26,11 +26,15 @@ export is required before submitting it to the current server.
 ## Local save and server apply
 
 **Saved locally** means the client catalog write succeeded. It does not mean that
-new source/output/extension drafts have been applied to the server. Public extension
-fields auto-save locally; full **Apply workspace** sends the workspace, while an
-extension enable/disable command also sends that extension's current public config.
+new source/output/extension drafts have been applied to the server. Client integration fields and toggles auto-save locally in `client_extensions`.
+Full **Apply workspace** / Start send a server projection that excludes this map.
+Server logic `extensions` settings are included in Apply and their enable/disable
+commands. The server rejects nonempty client integration maps submitted directly.
+Known installed providers migrate from the older shared `extensions` map when the
+client loads/imports a workspace, without overwriting newer local preferences.
 A client provider still needs a registered executor; saved enablement does not open
-a platform connection on the server.
+a platform connection on the server. Client preferences survive server-side merges
+and conflict resolution. They are not a server-wide enable/disable switch.
 
 Server `set_client_capabilities` and extension control commands update the active
 workspace in memory. Connected clients merge public server changes into their local
@@ -93,6 +97,9 @@ background animation surviving reload; an extension public draft surviving reloa
 a server policy change while the client was disconnected producing a visible
 conflict; choosing the server version and reloading; listener JSON being loaded by
 a restarted server without port flags; and the saved browser workspace restoring
-public extension config **and** capability policy through Apply after that restart.
+capability policy through Apply after that restart. The current split additionally
+verifies that migrated client provider preferences survive reload while the API lists
+only server logic, local toggles leave the server revision unchanged, and Apply
+excludes the local provider config entirely.
 The test tab/server were stopped afterward; the user's running server was untouched.
 Live platform OAuth and durable executor credentials remain separate unfinished work.

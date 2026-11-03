@@ -1,6 +1,8 @@
 use crate::{live::Field, project::Workspace};
+use acheflow_client::catalog::ClientCatalog;
 use dioxus_native::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::rc::Rc;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -103,7 +105,19 @@ impl Catalog {
 }
 
 pub fn use_workspaces() -> (Signal<Workspace>, Signal<Catalog>, Signal<String>) {
-    let loaded = use_hook(|| load().map(|c| c.unwrap_or_default()));
+    let client_catalog = use_hook(|| Rc::new(ClientCatalog::discover()));
+    use_context_provider(|| client_catalog.clone());
+    let loaded = use_hook(|| {
+        load().map(|c| {
+            let mut c = c.unwrap_or_default();
+            for record in &mut c.workspaces {
+                record
+                    .config
+                    .migrate_client_extensions(client_catalog.installed.keys().map(String::as_str));
+            }
+            c
+        })
+    });
     let saving_enabled = loaded.is_ok();
     let mut catalog = use_signal(|| loaded.clone().unwrap_or_default());
     let project = use_signal(|| catalog.peek().current().clone());
@@ -150,6 +164,7 @@ pub fn Workspaces(
     storage_status: Signal<String>,
     mut open: Signal<bool>,
 ) -> Element {
+    let client_catalog = use_context::<Rc<ClientCatalog>>();
     let mut busy = use_signal(|| false);
     let mut notice = use_signal(String::new);
     let mut creating = use_signal(|| false);
@@ -180,10 +195,10 @@ pub fn Workspaces(
                             });}
                         }
                     },"Export workspace"}
-                    button {disabled:busy(),onclick:move |_| {busy.set(true);spawn(async move {
+                    button {disabled:busy(),onclick:move |_| {busy.set(true);let client_catalog=client_catalog.clone();spawn(async move {
                         if let Some(file)=rfd::AsyncFileDialog::new().add_filter("JSON",&["json"]).pick_file().await {
                             match Workspace::from_json(&file.read().await) {
-                                Ok(mut config)=>{config.id=crate::project::new_token();let mut next=catalog.peek().clone();next.update(project.peek().clone());next.add(config.clone());project.set(config);catalog.set(next);notice.set("Workspace added from file".into());},
+                                Ok(mut config)=>{config.migrate_client_extensions(client_catalog.installed.keys().map(String::as_str));config.id=crate::project::new_token();let mut next=catalog.peek().clone();next.update(project.peek().clone());next.add(config.clone());project.set(config);catalog.set(next);notice.set("Workspace added from file".into());},
                                 Err(e)=>notice.set(format!("File rejected: {e}")),
                             }
                         }busy.set(false);
@@ -408,6 +423,16 @@ mod disk_tests {
             .unwrap()
             .config
             .insert("application".into(), "public-app".into());
+        first.client_extensions.insert(
+            "local-provider".into(),
+            crate::project::ExtensionSettings {
+                enabled: true,
+                config: std::collections::BTreeMap::from([(
+                    "application".into(),
+                    "local-native-app".into(),
+                )]),
+            },
+        );
         first.client_capabilities = vec![CapabilityGrant {
             provider: "fixture".into(),
             account_id: "bot".into(),

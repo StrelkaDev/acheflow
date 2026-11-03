@@ -21,7 +21,8 @@ currently no completed standalone executor binary or main-UI account connection
 flow. Enabling a provider on the server alone does not collect or send anything.
 Browser runtime, OAuth completion/renewal for every platform, durable credential
 storage, native polls and generic external MCP tool registration remain pending.
-Moderation DTOs exist; unsupported provider handlers cannot be registered.
+Moderation DTOs exist; the built-in provider runtime rejects unsupported moderation
+actions. Separately implemented executors must advertise only handlers they support.
 
 ## Authenticate the executor
 
@@ -54,7 +55,13 @@ sources for that workspace; provider account identity is asserted by the executo
 
 ## Save policy, then register availability
 
-Enable the provider in this workspace. Use operator `acheflow_command` with the
+Client provider installations and public config belong to the client. The page
+separates **Client integrations**, **Server logic** and **Workspace capabilities**;
+the server no longer publishes a provider installation catalog. Native discovery
+and browser bundling are described in [extensions.md](extensions.md). There is no
+requirement to install a provider on the server before registering it.
+
+Use operator `acheflow_command` with the
 current workspace/revision, a `unix_milliseconds:unique_suffix` intent ID and:
 
 ```json
@@ -74,8 +81,9 @@ current workspace/revision, a `unix_milliseconds:unique_suffix` intent ID and:
 Only grant implemented capabilities. Policy persists as workspace
 `client_capabilities`; default is empty/deny. The client sends connection metadata
 through `register` after local authorization, using a monotonic generation and
-connection IDs local to that client. Permissions are the intersection of policy,
-implemented provider handlers and requested live capabilities. Automatic registration
+connection IDs local to that client. Server permissions are the intersection of saved policy and requested live
+capabilities; the trusted executor must advertise only its implemented handlers.
+Host identities and IDs owned by server logic cannot be claimed as client providers. Automatic registration
 does not rewrite saved policy. Only one executor may own a provider/channel at once.
 Switching an account, workspace or expired session requires a new generation.
 
@@ -90,7 +98,9 @@ the provider runtime to cancel its remaining sockets and local state.
 Only normalized chat/audience/deletion events are forwarded. Raw provider JSON,
 authorization panels, OAuth responses, local errors, storage and credential handles
 remain client-local. Unknown event fields and arbitrary effects are rejected.
-Disabled providers and withdrawn policy immediately lose server authority. Queued
+Withdrawing policy, unregistering, or heartbeat expiry removes server authority.
+A local enable/disable preference alone is not a remote revocation mechanism; the
+owning client must stop its runtime and unregister when disabled. Queued
 work is cancelled/expired; in-flight uncertainty is retained without reassignment.
 
 ## Persistence and verification limits

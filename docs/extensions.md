@@ -3,8 +3,12 @@
 The [v2 contract](extension-contract.md) and [ADR-002](decisions/002-client-execution-and-workspace-capabilities.md)
 separate credential-free server logic from client-owned provider execution.
 The server has no provider credential store, secret-write API or HTTP/WebSocket
-handler. Provider manifests are `execution_side: "client"`; server discovery reads
-public metadata and displays `waiting_for_client`, without loading their modules.
+handler. Provider manifests are `execution_side: "client"` and are skipped by server
+discovery. Their cards come from the client catalog, independently of server status.
+The shared browser/native page separates **Client integrations**, **Server logic**
+and **Workspace capabilities**. The webpage served from a server address is itself
+a browser client: seeing its bundled local integrations does not install providers
+in the logic-server process.
 `acheflow-client` contains the native reactor and typed MCP adapter. See
 [client executor setup and limitations](client-executor.md).
 
@@ -22,7 +26,7 @@ memory ABI; `sample/src/lib.rs` is a minimal authoring example and
 matching `.wasm` artifacts beside their manifests. WAT remains supported by wasmi
 for low-level sandbox tests, but provider sources are Rust.
 
-Install a directory containing `manifest.json` and its module beneath
+Install server logic directories containing `manifest.json` and a module beneath
 `ACHEFLOW_EXTENSIONS_DIR`. Otherwise discovery uses `./extensions`, falling back
 to `extensions` beside the server executable. Restart the server to discover new
 installations. No provider list is compiled into the host. Only directories with
@@ -40,15 +44,25 @@ v2 guests alongside the v2 host rather than silently reinterpreting the old ABI.
 }
 ```
 
-Each workspace saves `extensions[id].enabled` and the public `config` map in its
-client catalog/export. The server's active copy and capability policy are in memory;
-after restart, apply the saved client workspace again. See [persistence and
-conflicts](settings-persistence.md). Old
-`client_id` values migrate into `config.client_id`. New/legacy workspaces default
-to disabled. Applying/starting restores enabled server logic guests and client metadata; switching/deactivating
-stops the previous instances. Reapply preserves running guests. Disabled cards
-collapse, retain configuration and remove live panels/channels. Errors stay inside
-the owning card, including errors enabling an otherwise collapsed extension.
+Native provider discovery uses `ACHEFLOW_CLIENT_EXTENSIONS_DIR` when explicitly set;
+otherwise it tries `./extensions`, then `extensions` beside the client executable,
+then the client catalog bundled during compilation. An explicit unavailable directory
+reports an installation error and does not silently fall back. Browser providers are
+bundled automatically from client manifests in the guest workspace: after adding a
+Rust guest/manifest and running `extensions/build.py`, rebuild the UI. No provider
+names or protocol definitions are added to server/shared UI source.
+
+Each workspace saves server logic under `extensions[id]` and local integrations under
+`client_extensions[id]`, both with `enabled` and public `config`. The client migrates
+known installed providers from the older shared map on load/import. Local settings
+survive server-side merges and are omitted from Apply/Start; the server rejects any
+nonempty client settings map submitted to it. See [persistence and conflicts](settings-persistence.md).
+New/legacy entries default to disabled; disabled cards collapse and retain config.
+Client toggles edit local workspace preferences without issuing server extension
+commands. They do not grant server permissions or connect an account by themselves.
+Server logic toggles retain their existing enabled-guest lifecycle and panel actions.
+The account UI/runtime scheduling is still pending; connected executors can already
+register separately through MCP. Policy and active capabilities are shown separately.
 
 ## Commands and events
 

@@ -25,11 +25,7 @@ fn dispatch(
     name: &str,
     mut payload: Value,
 ) -> Result<(), String> {
-    if host
-        .installed
-        .get(&channel.extension_id)
-        .is_some_and(|e| e.manifest.execution_side == ExecutionSide::Client)
-    {
+    if !host.installed.contains_key(&channel.extension_id) {
         if name != "chat.send" {
             return Err("unavailable: client action is not supported".into());
         }

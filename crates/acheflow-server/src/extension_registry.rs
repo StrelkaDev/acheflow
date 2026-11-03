@@ -30,7 +30,7 @@ pub fn discover_at(root: &Path) -> BTreeMap<String, Installed> {
                 continue;
             }
             match load(&entry.path()) {
-                Ok(extension)
+                Ok(Some(extension))
                     if !installed.contains_key(&extension.manifest.id) && installed.len() < 8 =>
                 {
                     installed.insert(extension.manifest.id.clone(), extension);
@@ -42,7 +42,7 @@ pub fn discover_at(root: &Path) -> BTreeMap<String, Installed> {
     }
     installed
 }
-fn load(directory: &Path) -> Result<Installed, String> {
+fn load(directory: &Path) -> Result<Option<Installed>, String> {
     let directory = directory
         .canonicalize()
         .map_err(|_| "invalid extension directory")?;
@@ -60,11 +60,7 @@ fn load(directory: &Path) -> Result<Installed, String> {
     .map_err(|_| "invalid manifest JSON")?;
     manifest.validate()?;
     if manifest.execution_side == acheflow_extension_api::integration::ExecutionSide::Client {
-        // The server retains public discovery metadata, never a client reactor.
-        return Ok(Installed {
-            manifest,
-            module: vec![],
-        });
+        return Ok(None);
     }
     let module_path = directory
         .join(&manifest.module)
@@ -80,5 +76,5 @@ fn load(directory: &Path) -> Result<Installed, String> {
     }
     let module = std::fs::read(module_path).map_err(|_| "could not read module")?;
     Guest::load(&module, manifest.capabilities.clone())?;
-    Ok(Installed { manifest, module })
+    Ok(Some(Installed { manifest, module }))
 }

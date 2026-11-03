@@ -51,6 +51,9 @@ pub async fn set_enabled(
     let extension = host.installed.get(id).ok_or("not_found: extension")?;
     let manifest = extension.manifest.clone();
     manifest.validate()?;
+    if manifest.execution_side == acheflow_extension_api::integration::ExecutionSide::Client {
+        return Err("client integrations cannot be installed or activated on the server".into());
+    }
     let mut running = host.guests.lock().await;
     host.disconnect_extension(owner, id);
     if let Some(old) = running.remove(id) {
@@ -67,22 +70,11 @@ pub async fn set_enabled(
             .filter(|s| !s.secret)
             .cloned()
             .collect(),
-        state: if !enabled {
-            "stopped"
-        } else if manifest.execution_side
-            == acheflow_extension_api::integration::ExecutionSide::Client
-        {
-            "waiting_for_client"
-        } else {
-            "running"
-        }
-        .into(),
+        state: if enabled { "running" } else { "stopped" }.into(),
         ..Default::default()
     };
     host.extension_status(owner, status.clone());
-    if !enabled
-        || manifest.execution_side == acheflow_extension_api::integration::ExecutionSide::Client
-    {
+    if !enabled {
         return Ok(());
     }
     let guest = Arc::new(Mutex::new(Guest::load(

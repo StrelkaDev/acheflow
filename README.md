@@ -221,6 +221,11 @@ settings, capability policy and 3D state into the local workspace; conflicts pre
 local drafts until an explicit choice. Use JSON to transfer workspaces between browser
 and desktop. Concurrent windows use the most recent local catalog write.
 
+Client integrations are discovered locally (bundled in browser builds); server
+snapshots list only server logic. Their public workspace settings live separately
+in `client_extensions` and are excluded from Apply/Start. The Extensions page shows
+client integrations, server logic and workspace capabilities in separate sections.
+
 The server's active workspace and public policy remain in memory: after a server
 restart, apply the saved client workspace again. Server listener/TLS path settings
 persist separately in the server JSON file. See [settings persistence and restore](docs/settings-persistence.md)

@@ -533,3 +533,21 @@ fn a_channel_cannot_have_two_collectors_or_conflicting_senders() {
             .is_ok()
     );
 }
+
+#[test]
+fn client_provider_identities_cannot_impersonate_host_roles() {
+    let mut registry = setup();
+    for id in ["acheflow", "ui", "namespace:provider", "namespace.provider"] {
+        let mut request = registration("alpha", 2);
+        request.connections[0].provider = id.into();
+        assert!(
+            registry
+                .register("workspace", "client-a", request, 1001)
+                .is_err()
+        );
+        let mut grant = policy("alpha");
+        grant.provider = id.into();
+        assert!(registry.set_policy("workspace", vec![grant], 1001).is_err());
+    }
+    assert_eq!(registry.connections("workspace", 1001).len(), 2);
+}

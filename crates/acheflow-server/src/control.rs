@@ -38,6 +38,7 @@ pub struct Services {
     pub extensions: Vec<ExtensionStatus>,
     pub integrations: acheflow_control::integrations::Integrations,
     pub instances: std::collections::BTreeMap<String, String>,
+    pub client_providers: std::collections::BTreeSet<String>,
     pub interaction_events: VecDeque<(String, String)>,
     requests: VecDeque<RequestResult>,
     expired_before: u64,
@@ -254,7 +255,9 @@ impl ControlHost {
                 .ok_or("invalid normalized event payload")?;
             object.insert("extension_id".into(), json!(origin));
         }
-        crate::integration_host::validate_effect(self, origin, &effect)?;
+        if !client_authorized {
+            crate::integration_host::validate_effect(self, origin, &effect)?;
+        }
         let mut state = self.services.lock().unwrap();
         if state.owner.as_deref() != Some(owner)
             || (!client_authorized
@@ -815,7 +818,11 @@ pub(crate) mod tests {
             .execution_side = acheflow_extension_api::integration::ExecutionSide::Client;
         let result =
             crate::extension_host::set_enabled(host.clone(), &workspace.id, "sample", true).await;
-        result.unwrap();
+        assert!(
+            result
+                .unwrap_err()
+                .contains("cannot be installed or activated")
+        );
         assert!(host.snapshot(0, 1).panels.is_empty());
         assert!(host.guests.lock().await.is_empty());
         assert!(host.services.lock().unwrap().instances.is_empty());

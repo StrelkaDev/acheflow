@@ -15,7 +15,7 @@ credentials. This applies to bot accounts as well as personal accounts.
 
 Workspace capabilities can be configured manually or registered automatically by
 a connected client for its active workspace. Neither path transfers credentials
-or lets client data grant itself authority. The server loads only public metadata for client extensions and runs only credential-free logic guests.
+or lets client data grant itself authority. The server runs only credential-free logic guests and skips client provider installations.
 
 ## Decision
 
@@ -136,10 +136,15 @@ Content reaches a remote/managed AI service only when explicitly configured.
 
 The earlier server-held bot model is removed: there is no server secret-write action,
 credential store or provider HTTP/WebSocket effect handler. Provider manifests are
-client-only. The owner explicitly chose removal before completing the new account UI;
+client-only and discovered by the client. The owner explicitly chose removal before completing the new account UI;
 client extensions remain unavailable until a registered executor is connected.
 
 The native `acheflow-client` library owns WASM provider execution and bounded I/O.
+Its catalog discovers client installations; browser builds bundle those manifests and
+modules. Shared UI separates client integration settings, server logic and workspace
+capabilities. Local `client_extensions` settings are excluded from server Apply/Start.
+Server registration is governed by public policy and does not require a provider
+module or manifest to be installed on the server.
 Authenticated MCP executor endpoints register public connections, ingest typed events,
 claim instructions and report results. Workspace policy is saved independently of live
 registrations. The shared chat command uses this outbox for client-owned channels.

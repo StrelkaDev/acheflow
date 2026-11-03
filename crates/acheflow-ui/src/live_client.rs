@@ -111,7 +111,7 @@ impl LiveClient {
                 Action::Apply => (
                     reqwest::Method::PUT,
                     "/api/live/config",
-                    serde_json::to_value(&workspace),
+                    serde_json::to_value(workspace.server_configuration()),
                 ),
                 Action::Start => {
                     let formats = Orientation::ALL
@@ -121,7 +121,10 @@ impl LiveClient {
                     (
                         reqwest::Method::POST,
                         "/api/live/start",
-                        serde_json::to_value(StartRequest { workspace, formats }),
+                        serde_json::to_value(StartRequest {
+                            workspace: workspace.server_configuration(),
+                            formats,
+                        }),
                     )
                 }
                 Action::RestartOutput(orientation, index) => (
