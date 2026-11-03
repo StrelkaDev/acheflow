@@ -1,37 +1,41 @@
 # Interaction, audience, 3D scenes and MCP
 
-Implementation follows the [capability map](../CAPABILITY-MAP.md). Twitch is first;
-YouTube/VK Live, native platform polls, model import, lighting and authored
-animations are subsequent milestones.
+Implementation follows the [provider-neutral v2 contract](extension-contract.md).
+YouTube/VK Live, model import, lighting and authored animations are later milestones.
 
-## Twitch and interaction
+## Extensions and interaction
 
-Apply the workspace, then use Extensions / Connect Twitch with a **public Twitch
-application Client ID**. Register the application in the
-[Twitch Developer Console](https://dev.twitch.tv/console/apps). Complete the
-shown device code on Twitch. Requested scopes: `user:read:chat user:write:chat`.
-The installed client operates on the authorized broadcaster's own channel.
-OAuth/refresh tokens stay in server memory, outside guests, workspaces and MCP;
-server restart requires reauthorization. No Client Secret is needed.
+Apply the workspace, enable an extension and fill its manifest-defined settings
+inside its card. Provider-defined panel actions handle connection/authorization.
+For Twitch, register a public application in the
+[Twitch Developer Console](https://dev.twitch.tv/console/apps), enter its Client ID
+and use Connect account. Complete the displayed device code. The Rust guest
+requests `user:read:chat user:write:chat channel:manage:polls` and operates on the
+authorized broadcaster's own channel. No Client Secret is needed. Secret captures
+and handles stay in server memory, scoped to the workspace/extension; restart
+requires authorization again. OAuth/protocol knowledge is entirely in the guest.
 
-EventSub receives chat; Twitch API sends messages and samples current viewers
-every 30 seconds, subject to provider retry limits. The binding handles reconnect
-handoff, keepalive, token refresh and event deduplication. Sends target one selected
-channel. A timeout reports an unknown outcome and never causes automatic resend.
+Chat is part of Live / Studio and moves to the shared sidebar during streaming.
+Select All channels or one registered destination; available choices are supplied
+by enabled extensions. Outgoing messages merge into one history entry with a
+result for each target. Receipts suppress duplicate echoes. Timeouts/connection
+loss report unknown outcomes and never automatically resend an uncertain message.
+Drafts persist when chat moves; narrow layouts place chat below the current page.
 
-Chat is part of Live / Studio. While a live session is running, it moves into a
-shared right sidebar that stays visible across all application and Live tabs.
-The message draft and outgoing channel persist when it moves. On narrow screens,
-the shared chat sits below the current page. Polls and scene commands have their
-own Live / Interactive tab, with a separate channel selection.
+Live / Interactive creates actual provider polls on selected capable channels.
+Extensions publish initial/periodic/final counts; the host aggregates results and
+shows per-target failures. Closing waits for final results. The 60-second UI poll
+uses two or more options; each provider declares its own limits. The Twitch guest
+supports 2–5 choices, 15–1800 seconds and the service's text limits. There is no
+`!vote` fallback. The same page shows normalized donations and direct/registered
+interactions. User-created and extension-declared interactions use the common
+validated scene action path; users may bind an extension interaction through the
+control API. Chat commands retain normalized role checks and cooldowns.
 
-Application polls accept `!vote <number>`; the first valid vote per namespaced
-provider user counts, including across targeted channels. UI duration is 60 seconds;
-API duration is 10–86400 seconds. Announcement failure is visible on the poll.
-Commands bind a selected 3D object to a finite rotation, role policy and cooldown;
-the initial UI offers 45-degree Y rotation and a five-second cooldown. Chat never
-executes a shell or arbitrary MCP tool. Session history retains 2,000 messages;
-initial reads show a recent page, cursor reads advance with explicit gaps.
+Session history retains 2,000 messages with bounded cursor reads and explicit
+gaps. Polls, donations, interactions and channel discovery are session state.
+Disabling cancels network work, removes live channels/panels and makes prior
+viewer samples unavailable; historical records and public configuration remain.
 
 ## Audience
 
@@ -104,7 +108,7 @@ hosting and stdio are outside this release.
 
 - `acheflow_state`: scene, chat, polls, commands, extension status/panels and audience;
   optional bounded `after`/`limit` support cursor reads.
-- `acheflow_command`: chat/poll/command, scene, extension/panel and authorization actions.
+- `acheflow_command`: chat/poll/interaction, scene and generic extension/panel actions.
 
 Commands require workspace id, expected revision, action and a request id shaped
 `unix_milliseconds:unique_suffix`. Reuse the id/arguments for retries of one intent.
@@ -132,4 +136,5 @@ Official sources: [Twitch device authorization](https://dev.twitch.tv/docs/authe
 [chat authorization](https://dev.twitch.tv/docs/chat/authenticating/),
 [EventSub lifecycle](https://dev.twitch.tv/docs/eventsub/handling-websocket-events/),
 [Get Streams](https://dev.twitch.tv/docs/api/reference/#get-streams),
+[native polls](https://dev.twitch.tv/docs/api/polls),
 [MCP transports](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports).

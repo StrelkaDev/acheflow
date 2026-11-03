@@ -3,6 +3,16 @@
 Status: implemented in the working tree; see [operational qualifications](controls.md). Module id: `mcp` in the
 [capability map](../CAPABILITY-MAP.md).
 
+Architecture amendment, 2026-11-03:
+[ADR-002](decisions/002-client-execution-and-workspace-capabilities.md) adds the target
+of client-owned credentials/execution and a workspace capability registry populated
+manually or by a connected client. The [execution specification](SPEC-client-execution.md)
+defines the proposed registration/event/instruction/result bridge. The current
+state/command MCP adapter below does not yet implement that bridge. On MCP
+2026-07-28, instructions are returned to client-initiated calls; the server does not
+initiate arbitrary tool calls on a client. Legacy server-routed provider sends must
+be migrated to client execution before claiming this architecture is implemented.
+
 ## Objective
 
 Let an external MCP client inspect chat, audience metrics, polls, extensions and

@@ -3,6 +3,8 @@ mod code_editor;
 mod control_client;
 mod dashboard;
 pub mod extension_panel;
+#[cfg(test)]
+mod extension_tests;
 mod fps;
 mod interaction;
 mod layer_editor;

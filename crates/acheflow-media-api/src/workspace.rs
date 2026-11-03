@@ -154,6 +154,36 @@ impl Scene {
         )
     }
 }
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Public extension-defined settings. Secret handles stay on the server.
+    pub config: std::collections::BTreeMap<String, String>,
+}
+impl<'de> Deserialize<'de> for ExtensionSettings {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize, Default)]
+        #[serde(default, deny_unknown_fields)]
+        struct Saved {
+            enabled: bool,
+            config: std::collections::BTreeMap<String, String>,
+            client_id: String,
+        }
+        let mut saved = Saved::deserialize(deserializer)?;
+        if !saved.client_id.is_empty() {
+            saved
+                .config
+                .entry("client_id".into())
+                .or_insert(saved.client_id);
+        }
+        Ok(Self {
+            enabled: saved.enabled,
+            config: saved.config,
+        })
+    }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Workspace {
@@ -166,6 +196,8 @@ pub struct Workspace {
     /// HTTP(S) API base. Empty in legacy files: use the UI's startup default.
     #[serde(default)]
     pub server_url: String,
+    #[serde(default)]
+    pub extensions: std::collections::BTreeMap<String, ExtensionSettings>,
     pub horizontal: Stream,
     pub vertical: Stream,
     pub sources: Vec<Source>,
@@ -181,6 +213,7 @@ impl Default for Workspace {
             version: 1,
             name: "My workspace".into(),
             server_url: String::new(),
+            extensions: Default::default(),
             horizontal: Stream {
                 base: Resolution {
                     width: 1920,
@@ -416,8 +449,28 @@ impl Workspace {
             }
         }
     }
+    fn validate_extensions(&self) -> Result<(), String> {
+        if self.extensions.len() > 8
+            || self.extensions.iter().any(|(id, settings)| {
+                id.is_empty()
+                    || id.len() > 64
+                    || !id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+                    || settings.config.len() > 32
+                    || settings.config.iter().any(|(key, value)| {
+                        !acheflow_extension_api::integration::valid_id(key, 64)
+                            || value.len() > 8192
+                    })
+            })
+        {
+            return Err("Invalid workspace extension settings".into());
+        }
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), String> {
         self.validate_audio()?;
+        self.validate_extensions()?;
         if !self.server_url.is_empty() {
             normalize_server_url(&self.server_url)?;
         }
@@ -599,6 +652,31 @@ pub fn normalize_server_url(address: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extension_preferences_roundtrip_and_legacy_defaults_are_disabled() {
+        let mut legacy = serde_json::to_value(Workspace::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("extensions");
+        let mut configured = legacy.clone();
+        configured["extensions"] = serde_json::json!({
+            "twitch": {"enabled": true, "client_id": "publicapplication123"},
+            "sample": {"enabled": false}
+        });
+        let workspace = Workspace::from_json(&serde_json::to_vec(&configured).unwrap()).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&workspace.json().unwrap()).unwrap();
+        assert_eq!(saved["extensions"]["twitch"]["enabled"], true);
+        assert_eq!(
+            saved["extensions"]["twitch"]["config"]["client_id"],
+            "publicapplication123"
+        );
+        assert_eq!(saved["extensions"]["sample"]["enabled"], false);
+        let restored = Workspace::from_json(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert!(
+            serde_json::to_value(restored).unwrap()["extensions"]
+                .as_object()
+                .is_none_or(|e| e.is_empty())
+        );
+    }
 
     #[test]
     fn server_address_survives_export_and_legacy_workspaces_still_load() {

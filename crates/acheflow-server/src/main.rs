@@ -13,9 +13,12 @@ mod compositor;
 mod control;
 mod extension_host;
 mod extension_registry;
+mod extension_transport;
 mod ffmpeg;
-mod guest_host;
 mod ingest;
+mod integration_host;
+#[cfg(test)]
+mod integration_tests;
 mod live;
 mod mcp;
 mod output;
@@ -25,7 +28,7 @@ mod rtmp;
 mod settings;
 mod tls;
 mod traffic;
-mod twitch_auth;
+mod workspace_extensions;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -68,6 +71,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             eprintln!("MCP: {error}");
         }
     });
+    let workspace_routes = workspace_extensions::routes(control_host.clone());
     let control_routes = Router::new()
         .route("/api/control/state", get(control::snapshot))
         .route(
@@ -87,11 +91,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_state(settings);
     let live_routes = Router::new()
         .route("/api/live/status", get(live::status))
-        .route(
-            "/api/live/config",
-            axum::routing::put(live::configure).delete(live::deactivate),
-        )
-        .route("/api/live/start", axum::routing::post(live::start))
         .route("/api/live/stop", axum::routing::post(live::stop))
         .route(
             "/api/live/output/restart",
@@ -109,6 +108,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_state(media_state)
         .merge(live_routes)
         .merge(control_routes)
+        .merge(workspace_routes)
         .layer(cors)
         .merge(settings_routes)
         .fallback_service(ServeDir::new(web_root).append_index_html_on_directories(true));

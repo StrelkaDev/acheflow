@@ -18,6 +18,10 @@ pub struct ChatEntry {
     pub cursor: u64,
     pub message: ChatMessage,
     pub deleted: bool,
+    #[serde(default)]
+    pub merged_into: Option<String>,
+    #[serde(default)]
+    pub delivery: Vec<crate::integration::Delivery>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -47,7 +51,7 @@ pub struct Poll {
     pub closed: bool,
     pub cancelled: bool,
     #[serde(default)]
-    pub announcement_error: Option<String>,
+    pub targets: Vec<crate::integration::PollTarget>,
 }
 
 pub fn channel_key(platform: &str, channel: &str) -> String {

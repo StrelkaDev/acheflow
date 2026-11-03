@@ -1,59 +1,42 @@
+//! One generic WASM lifecycle for every installed extension.
 use crate::{
     control::{ControlHost, now_ms},
-    twitch_auth::{self, Credentials},
+    extension_transport,
 };
-use acheflow_control::extensions::{Guest, GuestManifest};
-use acheflow_media_api::control::ExtensionStatus;
+use acheflow_control::extensions::Guest;
+use acheflow_media_api::control::{ControlAction, ControlRequest, ExtensionStatus};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
 use tokio_util::sync::CancellationToken;
 
-pub struct Outbound {
-    pub channel: String,
-    pub text: String,
-    pub result: oneshot::Sender<Result<(), String>>,
-}
 pub struct Running {
-    pub cancel: CancellationToken,
-    pub sender: mpsc::Sender<Outbound>,
-    pub join: tokio::task::JoinHandle<()>,
-}
-#[cfg(test)]
-fn bundled(id: &str) -> Result<(&'static [u8], GuestManifest), String> {
-    let (module, manifest) = match id {
-        "twitch" => (
-            include_bytes!("../../../extensions/twitch/twitch.wat").as_slice(),
-            include_str!("../../../extensions/twitch/manifest.json"),
-        ),
-        "sample" => (
-            include_bytes!("../../../extensions/sample/sample.wat").as_slice(),
-            include_str!("../../../extensions/sample/manifest.json"),
-        ),
-        _ => return Err("not_found: extension".into()),
-    };
-    let manifest: GuestManifest =
-        serde_json::from_str(manifest).map_err(|_| "invalid bundled manifest")?;
-    manifest.validate()?;
-    Ok((module, manifest))
+    cancel: CancellationToken,
+    join: tokio::task::JoinHandle<()>,
 }
 pub fn failed(host: &ControlHost, owner: &str, id: &str, error: String) {
+    let Some(extension) = host.installed.get(id) else {
+        return;
+    };
+    {
+        let mut state = host.services.lock().unwrap();
+        state.integrations.disconnect(id);
+        state.analytics.disconnect(id);
+        state.interaction.disconnect(id);
+    }
     host.extension_status(
         owner,
         ExtensionStatus {
             id: id.into(),
-            name: if id == "twitch" {
-                "Twitch"
-            } else {
-                "Sample extension"
-            }
-            .into(),
+            name: extension.manifest.name.clone(),
             state: "failed".into(),
             error: Some(error),
+            capabilities: extension.manifest.capabilities.clone(),
+            settings: extension.manifest.settings.clone(),
             ..Default::default()
         },
     );
@@ -64,71 +47,52 @@ pub async fn set_enabled(
     id: &str,
     enabled: bool,
 ) -> Result<(), String> {
-    if id != "twitch" {
-        return crate::guest_host::set_enabled(host, owner, id, enabled).await;
-    }
     let extension = host.installed.get(id).ok_or("not_found: extension")?;
-    let module = extension.module.as_slice();
     let manifest = extension.manifest.clone();
-    let mut task = host.twitch.lock().await;
-    if let Some(old) = task.take() {
+    let mut running = host.guests.lock().await;
+    host.disconnect_extension(owner, id);
+    if let Some(old) = running.remove(id) {
         old.cancel.cancel();
         let _ = old.join.await;
     }
+    let status = ExtensionStatus {
+        id: id.into(),
+        name: manifest.name.clone(),
+        capabilities: manifest.capabilities.clone(),
+        settings: manifest.settings.clone(),
+        state: if enabled { "running" } else { "stopped" }.into(),
+        ..Default::default()
+    };
+    host.extension_status(owner, status.clone());
     if !enabled {
-        if let Some(pending) = host.auth_cancel.lock().unwrap().take() {
-            pending.cancel();
-        }
-        host.services.lock().unwrap().authorization = None;
-        host.extension_status(
-            owner,
-            ExtensionStatus {
-                id: id.into(),
-                name: manifest.name,
-                state: "stopped".into(),
-                capabilities: manifest.capabilities,
-                ..Default::default()
-            },
-        );
         return Ok(());
     }
-    let credentials = host
-        .credentials
-        .read()
-        .await
-        .clone()
-        .ok_or("unavailable: connect a Twitch account first")?;
     let guest = Arc::new(Mutex::new(Guest::load(
-        module,
+        &extension.module,
         manifest.capabilities.clone(),
     )?));
+    let instance = acheflow_media_api::workspace::new_token();
+    host.services
+        .lock()
+        .unwrap()
+        .instances
+        .insert(id.into(), instance.clone());
     let cancel = host.runtime.shutdown.child_token();
-    let (sender, receiver) = mpsc::channel(512);
-    let owner = owner.to_owned();
-    let task_host = host.clone();
     let task_cancel = cancel.clone();
-    host.extension_status(
-        &owner,
-        ExtensionStatus {
-            id: id.into(),
-            name: manifest.name.clone(),
-            state: "connecting".into(),
-            capabilities: manifest.capabilities.clone(),
-            account: Some(credentials.login.clone()),
-            ..Default::default()
-        },
-    );
+    let task_host = host.clone();
+    let owner = owner.to_owned();
+    let id = id.to_owned();
+    let installed_id = manifest.id.clone();
     let join = tokio::spawn(async move {
-        let result = tokio::select! {_=task_cancel.cancelled()=>return,result=run(&task_host,&owner,guest,&manifest,credentials,receiver)=>result};
-        if let Err(error) = result {
-            failed(&task_host, &owner, "twitch", error);
+        let result = tokio::select! {_=task_cancel.cancelled()=>return,result=run(&task_host,&owner,&id,&instance,guest,&manifest)=>result};
+        if let Err(error) = result
+            && task_host.extension_is_live(&owner, &id, &instance)
+        {
+            failed(&task_host, &owner, &id, error);
+            task_host.disconnect_extension(&owner, &id);
         }
     });
-    *task = Some(Running {
-        cancel,
-        sender,
-        join,
-    });
+    running.insert(installed_id, Running { cancel, join });
     Ok(())
 }
 async fn invoke(guest: &Arc<Mutex<Guest>>, input: Value) -> Result<Vec<Value>, String> {
@@ -136,272 +100,238 @@ async fn invoke(guest: &Arc<Mutex<Guest>>, input: Value) -> Result<Vec<Value>, S
     tokio::task::spawn_blocking(move || {
         guest
             .lock()
-            .map_err(|_| "extension instance failed")?
+            .map_err(|_| "extension instance failed".to_owned())?
             .call(input)
     })
     .await
-    .map_err(|_| "extension worker failed")?
-}
-fn input(kind: &str, credentials: &Credentials) -> Value {
-    json!({"type":kind,"now_ms":now_ms(),"config":{"channel_id":credentials.user_id,"user_id":credentials.user_id}})
-}
-fn allowed_url(raw: &str, manifest: &GuestManifest, websocket: bool) -> Result<url::Url, String> {
-    let url = url::Url::parse(raw).map_err(|_| "invalid extension service URL")?;
-    let service = url.origin().ascii_serialization();
-    if !manifest.services.contains(&service)
-        || url.scheme() != if websocket { "wss" } else { "https" }
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.fragment().is_some()
-    {
-        return Err("forbidden: extension service is not granted".into());
-    }
-    Ok(url)
-}
-async fn http_effect(
-    http: &reqwest::Client,
-    effect: &Value,
-    manifest: &GuestManifest,
-    credentials: &Credentials,
-) -> Result<Value, String> {
-    let url = allowed_url(
-        effect["url"].as_str().ok_or("missing service URL")?,
-        manifest,
-        false,
-    )?;
-    let method = match effect["method"].as_str() {
-        Some("GET") => reqwest::Method::GET,
-        Some("POST") => reqwest::Method::POST,
-        _ => return Err("unsupported extension HTTP method".into()),
-    };
-    let mut request = http
-        .request(method, url)
-        .bearer_auth(&credentials.access_token)
-        .header("Client-Id", &credentials.client_id);
-    if let Some(query) = effect["query"].as_object() {
-        request = request.query(&query);
-    }
-    if !effect["body"].is_null() {
-        request = request.json(&effect["body"]);
-    }
-    let response = request
-        .send()
-        .await
-        .map_err(|_| "outcome_unknown: platform request interrupted")?;
-    if response.status().as_u16() == 429 {
-        let retry = response
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok())
-            .or_else(|| {
-                response
-                    .headers()
-                    .get("ratelimit-reset")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .map(|at| at.saturating_sub(now_ms() / 1000))
-            })
-            .unwrap_or(30)
-            .clamp(1, 3600);
-        return Err(format!("rate_limited:{retry}"));
-    }
-    if !response.status().is_success() {
-        return Err(match response.status().as_u16() {
-            401 | 403 => "forbidden: reconnect the Twitch account",
-            _ => "unavailable: Twitch request failed",
-        }
-        .into());
-    }
-    twitch_auth::bounded_json(response).await
+    .map_err(|_| "extension worker failed".to_owned())?
 }
 async fn run(
     host: &Arc<ControlHost>,
     owner: &str,
+    id: &str,
+    instance: &str,
     guest: Arc<Mutex<Guest>>,
-    manifest: &GuestManifest,
-    mut credentials: Credentials,
-    mut outgoing: mpsc::Receiver<Outbound>,
+    manifest: &acheflow_control::extensions::GuestManifest,
 ) -> Result<(), String> {
-    let http = twitch_auth::client()?;
-    let mut tick = tokio::time::interval(Duration::from_secs(30));
+    let mut events = host.events.subscribe();
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut socket = None;
-    let mut pending: std::collections::VecDeque<Value> =
-        invoke(&guest, input("start", &credentials)).await?.into();
-    let mut failures = 0u32;
-    let mut next_poll_ms = 0u64;
-    let mut resuming = false;
-    let mut heartbeat = Duration::from_secs(75);
+    let mut socket: Option<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    > = None;
+    let key = (owner.to_owned(), id.to_owned());
+    let mut secrets = host
+        .secrets
+        .lock()
+        .await
+        .get(&key)
+        .cloned()
+        .unwrap_or_default();
+    let mut storage = host
+        .extension_storage
+        .lock()
+        .unwrap()
+        .get(&key)
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut pending = std::collections::VecDeque::from([json!({"type":"start"})]);
     loop {
-        if !host.owns(owner) {
+        if !host.extension_is_live(owner, id, instance) {
             return Ok(());
         }
         if pending.len() > 512 {
             return Err("extension event queue exceeded".into());
         }
-        while let Some(effect) = pending.pop_front() {
-            match effect["type"].as_str() {
-                Some("websocket") => {
-                    let url = allowed_url(
-                        effect["url"].as_str().ok_or("missing WebSocket URL")?,
-                        manifest,
-                        true,
-                    )?;
-                    let config =
-                        tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
-                            .max_message_size(Some(1024 * 1024))
-                            .max_frame_size(Some(1024 * 1024));
-                    let connected = tokio::time::timeout(
-                        Duration::from_secs(10),
-                        tokio_tungstenite::connect_async_with_config(
-                            url.as_str(),
-                            Some(config),
-                            false,
-                        ),
-                    )
-                    .await;
-                    let (next, _) = match connected {
-                        Ok(Ok(connected)) => connected,
-                        _ => {
-                            failures = failures.saturating_add(1);
-                            host.extension_status(
-                                owner,
-                                ExtensionStatus {
-                                    id: manifest.id.clone(),
-                                    name: manifest.name.clone(),
-                                    state: "reconnecting".into(),
-                                    error: Some("Twitch chat connection failed; retrying".into()),
-                                    capabilities: manifest.capabilities.clone(),
-                                    account: Some(credentials.login.clone()),
-                                },
+        if let Some(mut input) = pending.pop_front() {
+            input["api_version"] = json!(acheflow_extension_api::API_VERSION);
+            input["workspace_id"] = json!(owner);
+            input["extension_id"] = json!(id);
+            input["instance_id"] = json!(instance);
+            input["now_ms"] = json!(now_ms());
+            if input["request_id"].is_null() {
+                input["request_id"] = json!(format!(
+                    "{}:{}",
+                    now_ms(),
+                    acheflow_media_api::workspace::new_token()
+                ));
+            }
+            input["config"] = serde_json::to_value(
+                host.runtime
+                    .workspace
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(|w| w.extensions.get(id))
+                    .map(|s| s.config.clone())
+                    .unwrap_or_default(),
+            )
+            .unwrap();
+            input["storage"] = storage.clone();
+            input["secrets"] = json!(secrets.keys().collect::<Vec<_>>());
+            if manifest.capabilities.iter().any(|c| c == "scene") {
+                let state = host.snapshot(0, 1);
+                input["state"] = json!({"workspace_id":state.workspace_id,"revision":state.revision,"scenes":state.scenes});
+            }
+            let depth = input["depth"].as_u64().unwrap_or(0).min(255) as u8;
+            for effect in invoke(&guest, input).await? {
+                if !host.extension_is_live(owner, id, instance) {
+                    return Ok(());
+                }
+                match effect["type"].as_str() {
+                    Some("http") => {
+                        let mut result=extension_transport::http(&effect,manifest,&mut secrets).await.unwrap_or_else(|error|json!({"type":"http_result","id":effect["id"],"status":0,"error":error,"payload":null}));
+                        if !host.extension_is_live(owner, id, instance) {
+                            return Ok(());
+                        }
+                        {
+                            let mut saved = host.secrets.lock().await;
+                            if !saved.contains_key(&key) && saved.len() >= 256 {
+                                return Err("extension credential namespace limit reached".into());
+                            }
+                            saved.insert(key.clone(), secrets.clone());
+                        }
+                        result["depth"] = json!(depth);
+                        pending.push_back(result);
+                    }
+                    Some("websocket") => {
+                        if let Some(payload) = effect.get("send") {
+                            let payload = extension_transport::resolve(payload, &secrets)?;
+                            let text = serde_json::to_string(&payload)
+                                .map_err(|_| "invalid WebSocket JSON")?;
+                            let connection = socket.as_mut().ok_or("WebSocket is not connected")?;
+                            tokio::time::timeout(
+                                Duration::from_secs(10),
+                                connection.send(Message::Text(text.into())),
+                            )
+                            .await
+                            .map_err(|_| "WebSocket send timed out")?
+                            .map_err(|_| "WebSocket send failed")?;
+                            pending.push_back(
+                                json!({"type":"websocket_sent","id":effect["id"],"depth":depth}),
                             );
-                            tokio::time::sleep(Duration::from_secs(
-                                (1u64 << failures.min(5)).min(30),
-                            ))
-                            .await;
-                            pending.push_front(effect);
                             continue;
                         }
-                    };
-                    resuming = effect["resume"] == true;
-                    socket = Some(next);
-                    host.extension_status(
-                        owner,
-                        ExtensionStatus {
-                            id: manifest.id.clone(),
-                            name: manifest.name.clone(),
-                            state: "running".into(),
-                            capabilities: manifest.capabilities.clone(),
-                            account: Some(credentials.login.clone()),
-                            ..Default::default()
-                        },
-                    );
-                }
-                Some("heartbeat") => {
-                    heartbeat = Duration::from_secs(
-                        effect["seconds"].as_u64().unwrap_or(10).clamp(5, 600) + 5,
-                    )
-                }
-                Some("http") => {
-                    if effect["id"] == "viewers" && now_ms() < next_poll_ms {
-                        continue;
-                    }
-                    match http_effect(&http, &effect, manifest, &credentials).await {
-                        Ok(payload) => {
-                            let mut response = input("http_result", &credentials);
-                            response["id"] = effect["id"].clone();
-                            response["payload"] = payload;
-                            pending.extend(invoke(&guest, response).await?);
-                            failures = 0;
+                        if effect["close"] == true {
+                            socket = None;
+                            continue;
                         }
-                        Err(error) => {
-                            failures = failures.saturating_add(1);
-                            let error = if let Some(seconds) = error
-                                .strip_prefix("rate_limited:")
-                                .and_then(|s| s.parse::<u64>().ok())
-                            {
-                                next_poll_ms = now_ms().saturating_add(seconds * 1000);
-                                "rate_limited: Twitch requested a pause".to_owned()
-                            } else {
-                                error
-                            };
-                            if effect["id"] == "subscribe" || error.starts_with("forbidden") {
-                                return Err(error);
+                        let url = extension_transport::allowed_url(
+                            effect["url"].as_str().ok_or("missing WebSocket URL")?,
+                            manifest,
+                            true,
+                        )?;
+                        let config =
+                            tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+                                .max_message_size(Some(1024 * 1024))
+                                .max_frame_size(Some(1024 * 1024));
+                        let mut request = url
+                            .as_str()
+                            .into_client_request()
+                            .map_err(|_| "invalid WebSocket request")?;
+                        let headers = extension_transport::resolve(&effect["headers"], &secrets)?;
+                        if let Some(headers) = headers.as_object() {
+                            if headers.len() > 32 {
+                                return Err("too many request headers".into());
                             }
-                            host.extension_status(
-                                owner,
-                                ExtensionStatus {
-                                    id: manifest.id.clone(),
-                                    name: manifest.name.clone(),
-                                    state: "reconnecting".into(),
-                                    error: Some(error),
-                                    capabilities: manifest.capabilities.clone(),
-                                    account: Some(credentials.login.clone()),
-                                },
-                            );
+                            for (name, value) in headers {
+                                extension_transport::validate_header(name)?;
+                                let name =
+                                    tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(
+                                        name.as_bytes(),
+                                    )
+                                    .map_err(|_| "invalid WebSocket header")?;
+                                let value =
+                                    tokio_tungstenite::tungstenite::http::HeaderValue::from_str(
+                                        value.as_str().ok_or("invalid WebSocket header")?,
+                                    )
+                                    .map_err(|_| "invalid WebSocket header")?;
+                                request.headers_mut().insert(name, value);
+                            }
+                        }
+                        match tokio::time::timeout(Duration::from_secs(10),tokio_tungstenite::connect_async_with_config(request,Some(config),true)).await {
+                            Ok(Ok((connection,_)))=>{socket=Some(connection);pending.push_back(json!({"type":"websocket_open","depth":depth}));},
+                            _=>pending.push_back(json!({"type":"websocket_closed","error":"WebSocket connection failed","depth":depth})),
+                        }
+                    }
+                    Some("storage") => {
+                        if serde_json::to_vec(&effect["value"])
+                            .map_err(|_| "invalid storage value")?
+                            .len()
+                            > 65536
+                        {
+                            return Err("extension storage exceeds 64 KiB".into());
+                        }
+                        storage = effect["value"].clone();
+                        {
+                            let mut saved = host.extension_storage.lock().unwrap();
+                            if !saved.contains_key(&key) && saved.len() >= 256 {
+                                return Err("extension storage namespace limit reached".into());
+                            }
+                            saved.insert(key.clone(), storage.clone());
+                        }
+                    }
+                    Some("scene") => {
+                        let request = ControlRequest {
+                            workspace_id: owner.into(),
+                            request_id: effect["request_id"]
+                                .as_str()
+                                .ok_or("scene effects require request_id")?
+                                .into(),
+                            expected_revision: effect["expected_revision"]
+                                .as_u64()
+                                .ok_or("scene effects require expected_revision")?,
+                            action: ControlAction::SetScene {
+                                scene_id: effect["scene_id"]
+                                    .as_u64()
+                                    .and_then(|id| u32::try_from(id).ok())
+                                    .ok_or("invalid scene id")?,
+                                spatial: serde_json::from_value(effect["spatial"].clone())
+                                    .map_err(|_| "invalid extension scene")?,
+                            },
+                        };
+                        host.apply_extension_scene(request)?;
+                    }
+                    Some("failure") => {
+                        let message = effect["message"]
+                            .as_str()
+                            .ok_or("missing extension failure message")?
+                            .chars()
+                            .take(500)
+                            .collect();
+                        let mut services = host.services.lock().unwrap();
+                        if let Some(status) = services.extensions.iter_mut().find(|s| s.id == id) {
+                            status.error = Some(message);
+                        }
+                    }
+                    _ => {
+                        let fatal = effect["type"] == "status" && effect["state"] == "failed";
+                        host.publish_from(owner, id, instance, effect, depth.saturating_add(1))
+                            .await?;
+                        if fatal {
+                            return Err("Extension reported a fatal failure; disable and enable it to restart".into());
                         }
                     }
                 }
-                _ => host.publish(owner, effect).await?,
             }
+            continue;
         }
         tokio::select! {
-            _=tick.tick()=>{
-                if credentials.expires_at_ms<now_ms().saturating_add(60000) {
-                    credentials=twitch_auth::refresh(&http,&credentials).await?;
-                    *host.credentials.write().await=Some(credentials.clone());
-                }
-                pending.extend(invoke(&guest,input("tick",&credentials)).await?);
-            }
-            outbound=outgoing.recv()=>{
-                let Some(outbound)=outbound else {return Ok(());};
-                let mut event=input("send",&credentials);event["channel_id"]=json!(outbound.channel);event["text"]=json!(outbound.text);
-                let result=async {
-                    let effects=invoke(&guest,event).await?;
-                    let request=effects.first().filter(|e|e["type"]=="http").ok_or("guest did not produce send request")?;
-                    let payload=http_effect(&http,request,manifest,&credentials).await?;
-                    let mut response=input("http_result",&credentials);response["id"]=json!("send");response["payload"]=payload;
-                    let effects=invoke(&guest,response).await?;
-                    if effects.first().is_some_and(|e|e["type"]=="delivery" && e["sent"]==true) {Ok(())}else {Err("unavailable: Twitch rejected the message".into())}
-                }.await;
-                let _=outbound.result.send(result);
-            }
-            message=async {match socket.as_mut(){Some(socket)=>tokio::time::timeout(heartbeat,socket.next()).await.ok().flatten(),None=>None}}=>{
+            _=tick.tick()=>pending.push_back(json!({"type":"tick"})),
+            event=events.recv()=>match event {
+                Ok(event) if event["workspace_id"]==owner && (event["target"]==id || (event["target"].is_null() && event["origin"]!=id && event["name"].as_str().is_some_and(|name|manifest.subscriptions.iter().any(|s|s==name))))=>{
+                    if event["type"]!="command" || event["name"].as_str().is_some_and(|name|manifest.subscriptions.iter().any(|s|s==name)) {pending.push_back(event);}
+                },Ok(_)=>{},Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>return Err("Event cursor gap; restart the extension to reconnect".into()),Err(_)=>return Ok(()),
+            },
+            message=async {if let Some(socket)=socket.as_mut(){socket.next().await}else{std::future::pending().await}}=>{
                 match message {
-                    Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text)))=>{
-                        if text.len()>1024*1024 {return Err("Twitch event exceeds 1 MiB".into());}
-                        let payload:Value=serde_json::from_str(&text).map_err(|_|"invalid Twitch event")?;
-                        let mut event=input("websocket",&credentials);event["resuming"]=json!(resuming);event["payload"]=payload;
-                        pending.extend(invoke(&guest,event).await?);
-                    }
-                    Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(bytes)))=>{if let Some(socket)=socket.as_mut(){socket.send(tokio_tungstenite::tungstenite::Message::Pong(bytes)).await.map_err(|_|"Twitch ping response failed")?;}},
-                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))|Some(Err(_))|None=>{
-                        socket=None;
-                        tokio::time::sleep(Duration::from_secs(3)).await;
-                        pending.extend(invoke(&guest,input("start",&credentials)).await?);
-                    }
-                    _=>{},
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text)))=>match serde_json::from_str::<Value>(&text){Ok(payload)=>pending.push_back(json!({"type":"websocket","payload":payload})),Err(_)=>return Err("invalid WebSocket JSON".into())},
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(data)))=>{if let Some(socket)=socket.as_mut(){tokio::time::timeout(Duration::from_secs(10),socket.send(Message::Pong(data))).await.map_err(|_|"WebSocket ping timed out")?.map_err(|_|"WebSocket ping failed")?;}},
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))|Some(Err(_))|None=>{socket=None;pending.push_back(json!({"type":"websocket_closed"}));},_=>{}
                 }
             }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn credentials_can_only_be_used_for_granted_https_origins() {
-        let (_, manifest) = bundled("twitch").unwrap();
-        assert!(allowed_url("https://api.twitch.tv/helix/streams", &manifest, false).is_ok());
-        for url in [
-            "http://api.twitch.tv/helix/streams",
-            "https://api.twitch.tv.evil.test/",
-            "https://api.twitch.tv@evil.test/",
-            "https://api.twitch.tv:444/",
-        ] {
-            assert!(allowed_url(url, &manifest, false).is_err());
         }
     }
 }

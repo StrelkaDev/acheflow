@@ -6,59 +6,7 @@ use wasmi::{
 const MAX_BYTES: usize = 1024 * 1024;
 const FUEL: u64 = 10_000_000;
 
-#[derive(Clone, serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct GuestManifest {
-    pub id: String,
-    pub name: String,
-    pub api_version: u32,
-    pub module: String,
-    pub capabilities: Vec<String>,
-    pub services: Vec<String>,
-    pub unique_viewers: bool,
-}
-impl GuestManifest {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.api_version != 1 {
-            return Err("unsupported extension API version".into());
-        }
-        if !(1..=64).contains(&self.id.len())
-            || !self
-                .id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
-        {
-            return Err("invalid extension id".into());
-        }
-        if self.name.len() > 128 {
-            return Err("extension name is too long".into());
-        }
-        if self.capabilities.len() > 16 || self.services.len() > 16 {
-            return Err("too many extension capabilities or services".into());
-        }
-        if self.module.contains(['/', '\\']) || self.module.contains("..") {
-            return Err("extension module must be a local file name".into());
-        }
-        for capability in &self.capabilities {
-            if !matches!(
-                capability.as_str(),
-                "http"
-                    | "websocket"
-                    | "chat"
-                    | "audience"
-                    | "delete"
-                    | "delivery"
-                    | "failure"
-                    | "panel"
-                    | "scene"
-                    | "heartbeat"
-            ) {
-                return Err("unknown extension capability".into());
-            }
-        }
-        Ok(())
-    }
-}
+pub use acheflow_extension_api::integration::GuestManifest;
 
 struct Host {
     input: Value,
@@ -336,7 +284,7 @@ mod tests {
     #[test]
     fn sample_action_changes_wasm_state_and_returns_a_host_rendered_panel() {
         let mut guest = Guest::load(
-            include_bytes!("../../../extensions/sample/sample.wat"),
+            include_bytes!("../../../extensions/sample/sample.wasm"),
             vec!["panel".into()],
         )
         .unwrap();
@@ -353,7 +301,7 @@ mod tests {
             serde_json::from_str(include_str!("../../../extensions/twitch/manifest.json")).unwrap();
         manifest.validate().unwrap();
         let mut guest = Guest::load(
-            include_bytes!("../../../extensions/twitch/twitch.wat"),
+            include_bytes!("../../../extensions/twitch/twitch.wasm"),
             manifest.capabilities,
         )
         .unwrap();
@@ -363,10 +311,82 @@ mod tests {
         assert_eq!(message.text, "!vote 1");
         assert_eq!(message.roles, ["moderator"]);
         let effects = guest
-            .call(json!({"type":"tick","config":{"channel_id":"b"}}))
+            .call(json!({"type":"start","config":{"client_id":"publicapplication"}}))
             .unwrap();
-        assert_eq!(effects[0]["url"], "https://api.twitch.tv/helix/streams");
-        assert_eq!(effects[0]["query"]["user_id"], "b");
+        assert!(
+            effects
+                .iter()
+                .any(|e| e["type"] == "status" && e["state"] == "needs_authorization")
+        );
+        let effects=guest.call(json!({"type":"action","action_id":"connect","now_ms":1000,"config":{"client_id":"publicapplication"}})).unwrap();
+        assert!(
+            effects
+                .iter()
+                .any(|e| e["url"] == "https://id.twitch.tv/oauth2/device"
+                    && e["capture"]["device_code"] == "/device_code")
+        );
+        let effects=guest.call(json!({"type":"http_result","id":"validate","status":200,"now_ms":1000,"config":{"client_id":"publicapplication"},"payload":{"client_id":"publicapplication","user_id":"b","login":"Broadcaster","scopes":["user:read:chat","user:write:chat","channel:manage:polls"]}})).unwrap();
+        assert!(
+            effects
+                .iter()
+                .any(|e| e["type"] == "channel" && e["channel"]["id"] == "b")
+        );
+        let effects = guest
+            .call(json!({"type":"tick","now_ms":1001,"config":{"client_id":"publicapplication"}}))
+            .unwrap();
+        assert!(
+            effects
+                .iter()
+                .any(|e| e["url"] == "https://api.twitch.tv/helix/streams"
+                    && e["query"]["user_id"] == "b")
+        );
+    }
+    #[test]
+    fn rust_provider_creates_refreshes_and_closes_its_native_poll() {
+        let manifest: GuestManifest =
+            serde_json::from_str(include_str!("../../../extensions/twitch/manifest.json")).unwrap();
+        let mut guest = Guest::load(
+            include_bytes!("../../../extensions/twitch/twitch.wasm"),
+            manifest.capabilities,
+        )
+        .unwrap();
+        let mut call = |mut input: Value| {
+            input["config"] = json!({"client_id":"publicapplication"});
+            input["now_ms"] = json!(1000);
+            guest.call(input).unwrap()
+        };
+        call(
+            json!({"type":"http_result","id":"tokens","status":200,"payload":{"expires_in":3600}}),
+        );
+        call(
+            json!({"type":"http_result","id":"validate","status":200,"payload":{"client_id":"publicapplication","user_id":"b","login":"Broadcaster","scopes":["user:read:chat","user:write:chat","channel:manage:polls"]}}),
+        );
+        let create = call(
+            json!({"type":"command","name":"poll.create","poll_id":7,"channel_id":"b","question":"Choose","options":["A","B"],"duration_seconds":60,"request_id":"intent"}),
+        );
+        assert_eq!(create[0]["method"], "POST");
+        assert_eq!(create[0]["body"]["choices"][0]["title"], "A");
+        let data = json!({"id":"native-7","status":"ACTIVE","choices":[{"votes":2},{"votes":1}]});
+        let update = call(
+            json!({"type":"http_result","id":"poll:create:7","status":200,"payload":{"data":[data]}}),
+        );
+        assert_eq!(update[0]["update"]["votes"], json!([2, 1]));
+        let tick = call(json!({"type":"tick"}));
+        assert!(tick.iter().any(|e| e["id"] == "poll:get:7"));
+        let temporary =
+            call(json!({"type":"http_result","id":"poll:get:7","status":503,"payload":{}}));
+        assert_eq!(temporary[0]["update"]["state"], "active");
+        assert_eq!(temporary[0]["update"]["votes"], json!([2, 1]));
+        let close = call(
+            json!({"type":"command","name":"poll.close","poll_id":7,"channel_id":"b","cancel":false}),
+        );
+        assert_eq!(close[0]["method"], "PATCH");
+        assert_eq!(close[0]["body"]["id"], "native-7");
+        let final_result = call(
+            json!({"type":"http_result","id":"poll:close:7","status":200,"payload":{"data":[{"id":"native-7","status":"TERMINATED","choices":[{"votes":3},{"votes":2}]}]}}),
+        );
+        assert_eq!(final_result[0]["update"]["state"], "completed");
+        assert_eq!(final_result[0]["update"]["votes"], json!([3, 2]));
     }
     #[test]
     fn actual_guest_maps_json_and_capabilities_gate_emitted_effects() {

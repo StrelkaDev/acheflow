@@ -1,27 +1,13 @@
-//! Draft host-rendered UI contract shared by server, native GUI and browser GUI.
+//! Versioned provider-neutral contracts shared by guests, server and both UIs.
 //! These types do not load or execute WASM modules. The plugin ABI is not stable yet.
 
 use serde::{Deserialize, Serialize};
 
 pub mod audience;
+pub mod integration;
 pub mod interaction;
 
-pub const API_VERSION: u32 = 1;
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ExtensionManifest {
-    pub id: String,
-    pub name: String,
-    pub api_version: u32,
-    pub capabilities: Vec<Capability>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Capability {
-    ServerLogic,
-    GuiPanel,
-}
+pub const API_VERSION: u32 = 2;
 
 /// Declarative content: the host owns rendering on both native and WASM targets.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -49,6 +35,10 @@ pub enum PanelWidget {
         id: String,
         label: String,
         value: String,
+    },
+    Link {
+        label: String,
+        url: String,
     },
     Select {
         id: String,

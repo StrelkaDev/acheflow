@@ -46,6 +46,7 @@ initialization failures are explicit. It runs without a browser or window.
 Start the server for either UI target, from the workspace root:
 
 ```sh
+python3 extensions/build.py
 cargo run -p acheflow-server --release --locked
 ```
 
@@ -142,7 +143,8 @@ waits for server discovery, then combines the selected hostname with the active
 RTMP port and TLS mode returned by `/api/live/status`. Listener bind addresses
 such as `0.0.0.0` are not used as public ingest hostnames.
 
-Each workspace owns its expected RTMP sources, scenes/layers, selected Studio
+Each workspace owns its enabled extensions and their public configuration,
+expected RTMP sources, scenes/layers, selected Studio
 scenes, horizontal/vertical base resolutions and FPS, and per-format RTMP outputs
 (URL, key, resolution, quality, CBR/VBR bitrate mode, video codec/encoder and enabled state). The current output
 profile uses AAC audio. Video codecs and encoder implementations come from the
@@ -258,6 +260,10 @@ See [FFmpeg integration](docs/ffmpeg.md) for scope and verification.
 ## Checks
 
 ```sh
+python3 extensions/build.py
+cargo fmt --manifest-path extensions/Cargo.toml --all -- --check
+cargo clippy --manifest-path extensions/Cargo.toml --workspace --all-targets --locked -- -D warnings
+cargo test --manifest-path extensions/Cargo.toml --workspace --locked
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo clippy -p acheflow-ui --lib --target wasm32-unknown-unknown --locked -- -D warnings
@@ -307,7 +313,9 @@ all browser behaviors are qualified. Known input, accessibility, DPI and
 performance qualifications are recorded in [integration notes](docs/blitz-prototype.md).
 
 WASM extensions are separate from compiling the UI to WASM. Server logic runs in
-wasmi and panels are host-rendered; see [extension boundary](docs/extensions.md).
+wasmi and panels are host-rendered. Providers are independent Rust guest crates;
+server/UI code stays provider-neutral. See the [architecture contract](docs/extension-contract.md)
+and [extension development guide](extensions/README.md).
 The bundled DejaVu font has its license under `crates/acheflow-ui/assets/`.
 
 ## Repowise

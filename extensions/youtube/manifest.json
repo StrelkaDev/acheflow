@@ -1,0 +1,12 @@
+{
+  "id": "youtube",
+  "name": "YouTube",
+  "api_version": 2,
+  "module": "youtube.wasm",
+  "capabilities": ["http", "chat", "audience", "delete", "delivery", "failure", "panel", "channel", "status"],
+  "services": ["https://www.googleapis.com"],
+  "subscriptions": ["chat.send"],
+  "settings": [{"id":"video_id","label":"Video ID","help":"ID from the YouTube watch URL. Leave empty to discover an active broadcast for the authorized account.","max_length":128},{"id":"access_token","label":"Access token","help":"YouTube OAuth token with youtube.force-ssl scope. Stored only on this server until restart.","max_length":8192,"secret":true}],
+  "secret_fields": {"access_token":"/access_token","refresh_token":"/refresh_token"},
+  "unique_viewers": false
+}

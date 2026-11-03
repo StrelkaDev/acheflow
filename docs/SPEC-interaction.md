@@ -28,8 +28,8 @@ features are declared by the connection. Render external text as text.
 
 Expose bounded cursor-based message reads and snapshots, incoming event delivery,
 send-message commands, command registration/update/enable/disable and poll
-create/read/close/cancel. Sending selects an explicit connection/channel; do not
-implicitly broadcast to all accounts. Return queued, sent, rejected or unknown
+create/read/close/cancel. Sending explicitly selects All channels (empty target list) or particular
+registered channel keys. Fanout is limited to enabled capable channel owners. Return queued, sent, rejected or unknown
 outcomes with a correlation id; incoming echo must not create duplicate messages.
 
 Command definitions contain a name, typed arguments, allowed platform/channel,
@@ -38,17 +38,19 @@ invalid arguments. Command processing uses provider user identity and validated
 roles, enforces cooldowns atomically and deduplicates replayed events. No shell,
 arbitrary code or unrestricted MCP invocation is available to a chat command.
 
-Polls are Acheflow polls announced to selected chats, with `!vote <option>` as the
-initial voting syntax. Store poll id, question, ordered option ids/text, targeted
-channels, opening/closing times and state. One active poll per channel; overlapping
-targets conflict. One vote per namespaced provider user per poll; the first valid
-vote counts. Replayed messages do not add votes. Closing fixes results; late votes
-are rejected. Users on different platforms remain different voters. Native
-platform polls and cross-platform account linking are later capabilities.
+Polls are application-owned aggregates of native provider polls. Creation routes
+commands to selected poll-capable extensions; each retains its external poll ID
+and publishes initial, periodic and final votes through the v2 event API. One
+active aggregate per channel; overlapping targets conflict. Closure requests final
+results and preserves per-target pending/closing/completed/failed state. A provider
+without poll support is unavailable rather than silently using chat voting.
+Donations are normalized integer minor units/currency/decimal scale, deduplicated
+by extension + receipt ID. Direct and extension-declared interactions register
+through the same host domain API and validated scene-action handler.
 
 Owner/operator actions require application authorization; viewer commands receive
-only their configured permissions. Commands and votes share one deterministic
-parser so the same message cannot execute multiple unintended actions. Retention,
+only their configured permissions. Chat commands use a deterministic parser; native votes arrive as provider poll
+updates and never execute host commands. Retention,
 text length, batch and cooldown defaults are fixed before implementation.
 
 ## Acceptance and testing
@@ -58,12 +60,13 @@ text length, batch and cooldown defaults are fixed before implementation.
 - Test duplicate/reordered delivery, reconnects, bounded history and cursor gaps.
 - Test role spoofing, concurrent cooldown checks, disabled commands and invalid
   arguments against a real command dispatcher.
-- Test one-vote identity, duplicated/late votes, overlapping polls and deterministic
-  closure; only accepted commands reach scene services.
+- Test two real WASM providers, all/single chat routing, receipts and late echoes,
+  duplicate/periodic/final poll updates and partial failures; only accepted
+  interactions reach scene services.
 
 Commands: `cargo test -p acheflow-extension-api --locked`,
 `cargo test -p acheflow-server --locked`, `cargo test -p acheflow-ui --locked`,
 then the shared implementation checks. Use shared typed serde style/error codes.
 
-Always route side effects through granted application actions. Native polls and
-moderation tools beyond receiving deletion/clear events require later specs.
+Always route side effects through granted application actions. See [the v2 contract](extension-contract.md). Additional moderation tools beyond
+receiving deletion/clear events require later specs.

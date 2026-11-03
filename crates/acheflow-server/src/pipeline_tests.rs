@@ -600,7 +600,10 @@ async fn spatial_chat_roundtrip(runtime: &RuntimeState, sink: &RuntimeState, sce
         spatial::*,
     };
     use serde_json::json;
-    let host = crate::control::ControlHost::new(runtime.clone());
+    let mut host = crate::control::ControlHost::new(runtime.clone());
+    Arc::get_mut(&mut host).unwrap().installed = crate::extension_registry::discover_at(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions"),
+    );
     let workspace = runtime.workspace.read().unwrap().clone().unwrap();
     let mut spatial = SpatialScene::from_canvas(&workspace.horizontal.base);
     spatial.objects.push(SceneObject {
@@ -648,13 +651,15 @@ async fn spatial_chat_roundtrip(runtime: &RuntimeState, sink: &RuntimeState, sce
     let manifest: acheflow_control::extensions::GuestManifest =
         serde_json::from_str(include_str!("../../../extensions/twitch/manifest.json")).unwrap();
     let mut guest = acheflow_control::extensions::Guest::load(
-        include_bytes!("../../../extensions/twitch/twitch.wat"),
+        include_bytes!("../../../extensions/twitch/twitch.wasm"),
         manifest.capabilities,
     )
     .unwrap();
     let effects=guest.call(json!({"type":"websocket","now_ms":crate::control::now_ms(),"payload":{"metadata":{"message_type":"notification","subscription_type":"channel.chat.message"},"payload":{"event":{"broadcaster_user_id":"fixture","message_id":"turn-once","chatter_user_id":"moderator","chatter_user_name":"Moderator","message":{"text":"!turn"},"badges":[{"set_id":"moderator"}]}}}})).unwrap();
     for effect in effects {
-        host.publish(&workspace.id, effect).await.unwrap();
+        host.publish_fixture(&workspace.id, "twitch", effect)
+            .await
+            .unwrap();
     }
     let actual = host.snapshot(0, 1);
     assert_eq!(

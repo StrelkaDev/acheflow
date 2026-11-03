@@ -1,1 +1,46 @@
-{"id":"twitch","name":"Twitch","api_version":1,"module":"twitch.wat","capabilities":["http","websocket","chat","audience","delete","delivery","failure","heartbeat"],"services":["https://api.twitch.tv","wss://eventsub.wss.twitch.tv"],"unique_viewers":false}
+{
+  "id": "twitch",
+  "name": "Twitch",
+  "api_version": 2,
+  "module": "twitch.wasm",
+  "capabilities": [
+    "http",
+    "websocket",
+    "chat",
+    "audience",
+    "delete",
+    "delivery",
+    "failure",
+    "panel",
+    "channel",
+    "poll",
+    "storage",
+    "status"
+  ],
+  "services": [
+    "https://api.twitch.tv",
+    "https://id.twitch.tv",
+    "https://www.twitch.tv",
+    "https://twitch.tv",
+    "wss://eventsub.wss.twitch.tv"
+  ],
+  "subscriptions": [
+    "chat.send",
+    "poll.create",
+    "poll.close"
+  ],
+  "settings": [
+    {
+      "id": "client_id",
+      "label": "Application Client ID",
+      "help": "Public application Client ID. Account authorization is handled by this extension.",
+      "max_length": 128
+    }
+  ],
+  "unique_viewers": false,
+  "secret_fields": {
+    "access_token": "/access_token",
+    "refresh_token": "/refresh_token",
+    "device_code": "/device_code"
+  }
+}

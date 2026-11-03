@@ -301,12 +301,20 @@ mod tests {
         let mut c = Catalog::default();
         let mut first = c.current().clone();
         first.server_url = "https://first.example:8443".into();
+        first.extensions.entry("sample".into()).or_default().enabled = true;
+        first
+            .extensions
+            .entry("twitch".into())
+            .or_default()
+            .config
+            .insert("client_id".into(), "firstpublicapp".into());
         first.add_source();
         first.add_scene(crate::project::Orientation::Vertical);
         first.migrate_spatial();
         c.update(first.clone());
         c.add(new_workspace("Second", "http://second.example:21296/").unwrap());
         assert!(c.current().sources.is_empty());
+        assert!(c.current().extensions.is_empty());
         c.add(Workspace::from_json(first.json().unwrap().as_bytes()).unwrap());
         assert_eq!(c.workspaces.len(), 3);
         assert_eq!(c.current(), &first);

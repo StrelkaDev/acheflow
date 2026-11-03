@@ -13,8 +13,7 @@ use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
 };
-use tokio::sync::{Mutex as AsyncMutex, RwLock};
-use tokio_util::sync::CancellationToken;
+use tokio::sync::Mutex as AsyncMutex;
 
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -31,12 +30,15 @@ struct RequestResult {
 }
 #[derive(Default)]
 pub struct Services {
+    pub initialized: bool,
     pub panels: std::collections::BTreeMap<String, acheflow_extension_api::ExtensionPanel>,
     pub owner: Option<String>,
     pub analytics: Analytics,
     pub interaction: Interaction,
     pub extensions: Vec<ExtensionStatus>,
-    pub authorization: Option<AuthorizationStatus>,
+    pub integrations: acheflow_control::integrations::Integrations,
+    pub instances: std::collections::BTreeMap<String, String>,
+    pub interaction_events: VecDeque<(String, String)>,
     requests: VecDeque<RequestResult>,
     expired_before: u64,
 }
@@ -44,12 +46,14 @@ pub struct Services {
 pub struct ControlHost {
     pub runtime: RuntimeState,
     pub services: Mutex<Services>,
-    pub credentials: RwLock<Option<crate::twitch_auth::Credentials>>,
-    pub twitch: AsyncMutex<Option<crate::extension_host::Running>>,
-    pub auth_cancel: Mutex<Option<CancellationToken>>,
-    command_lock: AsyncMutex<()>,
+    pub secrets: AsyncMutex<
+        std::collections::BTreeMap<(String, String), crate::extension_transport::Secrets>,
+    >,
+    pub extension_storage: Mutex<std::collections::BTreeMap<(String, String), Value>>,
+    pub extension_owner: Mutex<Option<String>>,
+    pub(crate) command_lock: AsyncMutex<()>,
     pub installed: std::collections::BTreeMap<String, crate::extension_registry::Installed>,
-    pub guests: AsyncMutex<std::collections::HashMap<String, crate::guest_host::Running>>,
+    pub guests: AsyncMutex<std::collections::HashMap<String, crate::extension_host::Running>>,
     pub events: tokio::sync::broadcast::Sender<Value>,
 }
 impl ControlHost {
@@ -57,9 +61,9 @@ impl ControlHost {
         Arc::new(Self {
             runtime,
             services: Mutex::new(Services::default()),
-            credentials: RwLock::new(None),
-            twitch: AsyncMutex::new(None),
-            auth_cancel: Mutex::new(None),
+            secrets: AsyncMutex::new(Default::default()),
+            extension_storage: Mutex::new(Default::default()),
+            extension_owner: Mutex::new(None),
             command_lock: AsyncMutex::new(()),
             installed: crate::extension_registry::discover(),
             guests: AsyncMutex::new(std::collections::HashMap::new()),
@@ -70,8 +74,9 @@ impl ControlHost {
         let workspace = self.runtime.workspace.read().unwrap();
         let owner = workspace.as_ref().map(|w| w.id.clone());
         let mut state = self.services.lock().unwrap();
-        if state.owner != owner || state.extensions.is_empty() {
+        if state.owner != owner || !state.initialized {
             *state = Services {
+                initialized: true,
                 owner: owner.clone(),
                 extensions: self
                     .installed
@@ -81,13 +86,28 @@ impl ControlHost {
                         name: e.manifest.name.clone(),
                         state: "stopped".into(),
                         capabilities: e.manifest.capabilities.clone(),
+                        settings: e.manifest.settings.clone(),
                         ..Default::default()
                     })
                     .collect(),
                 ..Default::default()
             };
         }
+        let mut extensions = state.extensions.clone();
+        if let Ok(credentials) = self.secrets.try_lock() {
+            for extension in &mut extensions {
+                extension.configured_secrets = owner
+                    .as_ref()
+                    .and_then(|owner| credentials.get(&(owner.clone(), extension.id.clone())))
+                    .map(|secrets| secrets.keys().cloned().collect())
+                    .unwrap_or_default();
+            }
+        }
         ControlSnapshot {
+            extension_settings: workspace
+                .as_ref()
+                .map(|w| w.extensions.clone())
+                .unwrap_or_default(),
             panels: state.panels.values().cloned().collect(),
             edit_revision: workspace.as_ref().map(|w| w.edit_revision).unwrap_or(0),
             workspace_id: owner,
@@ -100,8 +120,10 @@ impl ControlHost {
             history: state.analytics.history().iter().cloned().collect(),
             polls: state.interaction.polls(now_ms()),
             commands: state.interaction.commands(),
-            extensions: state.extensions.clone(),
-            authorization: state.authorization.clone(),
+            extensions,
+            channels: state.integrations.channels(),
+            donations: state.integrations.donations(),
+            interactions: state.integrations.interactions(),
             scenes: workspace
                 .as_ref()
                 .map(|w| w.scenes.clone())
@@ -124,33 +146,85 @@ impl ControlHost {
         if state.owner.as_deref() != Some(owner) {
             return;
         }
+        if status.state == "stopped" {
+            state.panels.remove(&status.id);
+        }
         if let Some(old) = state.extensions.iter_mut().find(|s| s.id == status.id) {
             *old = status;
         } else if state.extensions.len() < 8 {
             state.extensions.push(status);
         }
     }
-    pub async fn publish(&self, owner: &str, effect: Value) -> Result<(), String> {
-        self.publish_from(owner, "twitch", effect, 0).await
+    pub fn extension_is_live(&self, owner: &str, id: &str, instance: &str) -> bool {
+        self.runtime
+            .workspace
+            .read()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|w| w.id == owner && w.extensions.get(id).is_some_and(|s| s.enabled))
+            && self
+                .services
+                .lock()
+                .unwrap()
+                .instances
+                .get(id)
+                .is_some_and(|current| current == instance)
+    }
+    pub fn disconnect_extension(&self, owner: &str, id: &str) {
+        let mut state = self.services.lock().unwrap();
+        if state.owner.as_deref() == Some(owner) {
+            state.instances.remove(id);
+            state.panels.remove(id);
+            state.integrations.disconnect(id);
+            state.analytics.disconnect(id);
+            state.interaction.disconnect(id);
+        }
+    }
+    #[cfg(test)]
+    pub async fn publish_fixture(
+        &self,
+        owner: &str,
+        origin: &str,
+        effect: Value,
+    ) -> Result<(), String> {
+        self.snapshot(0, 1);
+        self.runtime
+            .workspace
+            .write()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .extensions
+            .entry(origin.into())
+            .or_default()
+            .enabled = true;
+        self.services
+            .lock()
+            .unwrap()
+            .instances
+            .insert(origin.into(), "fixture".into());
+        self.publish_from(owner, origin, "fixture", effect, 0).await
     }
     pub async fn publish_from(
         &self,
         owner: &str,
         origin: &str,
+        instance: &str,
         effect: Value,
         depth: u8,
     ) -> Result<(), String> {
-        let _control = if effect["type"] == "chat" {
+        let _control = if matches!(effect["type"].as_str(), Some("chat" | "interaction")) {
             Some(self.runtime.control.lock().await)
         } else {
             None
         };
-        self.publish_inner(owner, origin, effect, depth)
+        self.publish_inner(owner, origin, instance, effect, depth)
     }
     fn publish_inner(
         &self,
         owner: &str,
         origin: &str,
+        instance: &str,
         effect: Value,
         depth: u8,
     ) -> Result<(), String> {
@@ -160,9 +234,27 @@ impl ControlHost {
         if !self.owns(owner) {
             return Err("workspace changed".into());
         }
+        let mut effect = effect;
+        if let Some(key) = match effect["type"].as_str() {
+            Some("channel") => Some("channel"),
+            Some("donation") => Some("donation"),
+            _ => None,
+        } {
+            let object = effect
+                .get_mut(key)
+                .and_then(Value::as_object_mut)
+                .ok_or("invalid normalized event payload")?;
+            object.insert("extension_id".into(), json!(origin));
+        }
+        crate::integration_host::validate_effect(self, origin, &effect)?;
         let mut state = self.services.lock().unwrap();
-        if state.owner.as_deref() != Some(owner) {
-            return Err("workspace changed".into());
+        if state.owner.as_deref() != Some(owner)
+            || state
+                .instances
+                .get(origin)
+                .is_none_or(|current| current != instance)
+        {
+            return Err("extension instance is no longer active".into());
         }
         match effect["type"].as_str() {
             Some("audience") => {
@@ -272,9 +364,62 @@ impl ControlHost {
                     .take(500)
                     .collect());
             }
+            Some("status") => {
+                let status = effect["state"].as_str().ok_or("invalid extension state")?;
+                if !matches!(
+                    status,
+                    "running" | "connecting" | "reconnecting" | "needs_authorization" | "failed"
+                ) {
+                    return Err("invalid extension state".into());
+                }
+                if matches!(status, "needs_authorization" | "failed") {
+                    state.integrations.disconnect(origin);
+                    state.analytics.disconnect(origin);
+                    state.interaction.disconnect(origin);
+                }
+                if let Some(entry) = state.extensions.iter_mut().find(|e| e.id == origin) {
+                    entry.state = status.into();
+                    entry.error = effect["error"]
+                        .as_str()
+                        .map(|s| s.chars().take(500).collect());
+                    entry.account = effect["account"]
+                        .as_str()
+                        .map(|s| s.chars().take(128).collect());
+                }
+            }
+            Some("channel" | "poll" | "donation" | "interaction" | "delivery") => {
+                let (action, changed) =
+                    crate::integration_host::publish(&mut state, origin, &effect, now_ms())?;
+                drop(state);
+                if !changed {
+                    return Ok(());
+                }
+                if let Some(action) = action {
+                    self.apply_rotation(owner, &action)?;
+                }
+            }
             _ => return Err("unsupported host effect".into()),
         }
-        let _=self.events.send(json!({"type":"event","origin":origin,"depth":depth,"event":effect,"now_ms":now_ms(),"request_id":format!("{}:{}",now_ms(),acheflow_media_api::workspace::new_token())}));
+        if effect["type"] == "interaction" {
+            if effect["action"] == "register" {
+                if let Some(id) = effect["interaction"]["id"].as_str() {
+                    let id = format!("{origin}:{id}");
+                    let state = self.services.lock().unwrap();
+                    if let Some(definition) = state
+                        .integrations
+                        .interactions()
+                        .into_iter()
+                        .find(|i| i.id == id)
+                    {
+                        effect["interaction"] = serde_json::to_value(definition)
+                            .map_err(|_| "invalid interaction event")?;
+                    }
+                }
+            } else if let Some(id) = effect["id"].as_str() {
+                effect["id"] = json!(format!("{origin}:{id}"));
+            }
+        }
+        let _=self.events.send(json!({"type":"event","workspace_id":owner,"name":crate::integration_host::topic(&effect),"origin":origin,"depth":depth,"event":effect,"now_ms":now_ms(),"request_id":format!("{}:{}",now_ms(),acheflow_media_api::workspace::new_token())}));
         Ok(())
     }
     /// Reserve each intent before any asynchronous side effect. Repeated ids never
@@ -421,25 +566,50 @@ impl ControlHost {
     }
     async fn apply(self: &Arc<Self>, request: &ControlRequest) -> Result<(), String> {
         match &request.action {
+            ControlAction::SetExtensionSecret {
+                id,
+                key,
+                value,
+                config,
+            } => {
+                if let Some(config) = config {
+                    crate::workspace_extensions::configure_extension(
+                        self,
+                        &request.workspace_id,
+                        id,
+                        config,
+                    )?;
+                }
+                crate::workspace_extensions::set_secret(
+                    self,
+                    &request.workspace_id,
+                    id,
+                    key,
+                    &value.0,
+                )
+                .await?;
+            }
             ControlAction::ExtensionEvent {
                 id,
                 action_id,
                 value,
+                config,
             } => {
                 if action_id.is_empty() || action_id.len() > 128 || value.len() > 8192 {
                     return Err("invalid_argument: extension action".into());
                 }
-                if !self
-                    .services
-                    .lock()
-                    .unwrap()
-                    .extensions
-                    .iter()
-                    .any(|e| e.id == *id && e.state == "running")
-                {
+                if !self.services.lock().unwrap().instances.contains_key(id) {
                     return Err("unavailable: extension is not running".into());
                 }
-                let _=self.events.send(json!({"type":"action","origin":"ui","target":id,"action_id":action_id,"value":value,"depth":0,"now_ms":now_ms(),"request_id":request.request_id}));
+                if let Some(config) = config {
+                    crate::workspace_extensions::configure_extension(
+                        self,
+                        &request.workspace_id,
+                        id,
+                        config,
+                    )?;
+                }
+                let _=self.events.send(json!({"type":"action","workspace_id":request.workspace_id,"origin":"ui","target":id,"action_id":action_id,"value":value,"depth":0,"now_ms":now_ms(),"request_id":request.request_id}));
             }
             ControlAction::SetScene { scene_id, spatial } => {
                 let _control = self.runtime.control.lock().await;
@@ -453,98 +623,85 @@ impl ControlHost {
                 }
                 self.set_scene(&request.workspace_id, *scene_id, spatial)?;
             }
-            ControlAction::CreatePoll { poll } => {
-                let id = self
-                    .services
-                    .lock()
-                    .unwrap()
-                    .interaction
-                    .create_poll(poll.clone(), now_ms())?;
-                let options = poll
-                    .options
-                    .iter()
-                    .enumerate()
-                    .map(|(i, s)| format!("{}: {s}", i + 1))
-                    .collect::<Vec<_>>()
-                    .join(" | ");
-                let text = format!(
-                    "Poll #{id}: {} — {options}. Vote: !vote <number>",
-                    poll.question
-                );
-                for channel in &poll.channels {
-                    if let Some(channel) = channel.strip_prefix("twitch:")
-                        && let Err(error) = self.send_chat(channel, text.clone()).await
-                    {
-                        self.services
-                            .lock()
-                            .unwrap()
-                            .interaction
-                            .announcement_failed(id, error);
-                    }
+            ControlAction::CreatePoll { .. }
+            | ControlAction::ClosePoll { .. }
+            | ControlAction::SendChat { .. }
+            | ControlAction::SetInteraction { .. }
+            | ControlAction::TriggerInteraction { .. } => {
+                let _control = self.runtime.control.lock().await;
+                if self
+                    .runtime
+                    .control_revision
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != request.expected_revision
+                {
+                    return Err("conflict: state changed before the command was applied".into());
                 }
+                crate::integration_host::command(self, request)?;
             }
-            ControlAction::ClosePoll { id, cancel } => self
-                .services
-                .lock()
-                .unwrap()
-                .interaction
-                .close_poll(*id, *cancel)?,
             ControlAction::SetCommand { command } => self
                 .services
                 .lock()
                 .unwrap()
                 .interaction
                 .set_command(command.clone())?,
-            ControlAction::SendChat { channel_id, text } => {
-                self.send_chat(channel_id, text.clone()).await?
-            }
-            ControlAction::SetExtension { id, enabled } => {
+            ControlAction::SetExtension {
+                id,
+                enabled,
+                config,
+            } => {
+                if let Some(config) = config {
+                    crate::workspace_extensions::configure_extension(
+                        self,
+                        &request.workspace_id,
+                        id,
+                        config,
+                    )?;
+                }
+                crate::workspace_extensions::update_settings(
+                    self,
+                    &request.workspace_id,
+                    id,
+                    |settings| settings.enabled = *enabled,
+                )?;
                 crate::extension_host::set_enabled(
                     self.clone(),
                     &request.workspace_id,
                     id,
                     *enabled,
                 )
-                .await?
-            }
-            ControlAction::AuthorizeTwitch { client_id } => {
-                crate::twitch_auth::begin(
-                    self.clone(),
-                    request.workspace_id.clone(),
-                    client_id.clone(),
-                )
-                .await?
+                .await?;
             }
         }
         Ok(())
     }
-    async fn send_chat(&self, channel: &str, text: String) -> Result<(), String> {
-        if text.trim().is_empty()
-            || text.chars().count() > 500
-            || !channel.bytes().all(|c| c.is_ascii_digit())
-        {
-            return Err("invalid_argument: chat channel or text".into());
+    pub(crate) fn apply_rotation(
+        &self,
+        owner: &str,
+        action: &acheflow_extension_api::integration::SceneAction,
+    ) -> Result<(), String> {
+        if action.rotation.iter().any(|v| !v.is_finite()) {
+            return Err("invalid interaction rotation".into());
         }
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let outbound = crate::extension_host::Outbound {
-            channel: channel.into(),
-            text,
-            result: tx,
-        };
-        {
-            let running = self.twitch.lock().await;
-            let running = running
-                .as_ref()
-                .ok_or("unavailable: Twitch extension is not running")?;
-            running
-                .sender
-                .try_send(outbound)
-                .map_err(|_| "unavailable: outgoing chat queue is full")?;
-        }
-        tokio::time::timeout(std::time::Duration::from_secs(15), rx)
-            .await
-            .map_err(|_| "outcome_unknown: chat send timed out")?
-            .map_err(|_| "outcome_unknown: chat transport closed")?
+        let mut workspace = self.runtime.workspace.write().unwrap();
+        let workspace = workspace
+            .as_mut()
+            .filter(|w| w.id == owner)
+            .ok_or("workspace changed")?;
+        let object = workspace
+            .scenes
+            .iter_mut()
+            .find(|s| s.id == action.scene_id)
+            .and_then(|s| s.spatial.as_mut())
+            .and_then(|s| s.objects.iter_mut().find(|o| o.id == action.object_id))
+            .ok_or("interaction object not found")?;
+        object.transform.rotation = action.rotation;
+        workspace.edit_revision = self
+            .runtime
+            .control_revision
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            + 1;
+        Ok(())
     }
 }
 
@@ -570,7 +727,7 @@ pub async fn command(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use acheflow_media_api::{
         spatial::SpatialScene,
@@ -584,7 +741,10 @@ mod tests {
         let mut workspace = Workspace::default();
         workspace.add_scene(Orientation::Horizontal);
         *runtime.workspace.write().unwrap() = Some(workspace.clone());
-        let host = ControlHost::new(runtime);
+        let mut host = ControlHost::new(runtime);
+        Arc::get_mut(&mut host).unwrap().installed = crate::extension_registry::discover_at(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions"),
+        );
         host.snapshot(0, 1);
         (host, workspace)
     }
@@ -601,6 +761,7 @@ mod tests {
             ControlAction::SetExtension {
                 id: "sample".into(),
                 enabled: true,
+                config: None,
             },
             0,
             "enable",
@@ -622,6 +783,7 @@ mod tests {
                 id: "sample".into(),
                 action_id: "increment".into(),
                 value: String::new(),
+                config: None,
             },
             1,
             "action",
@@ -648,6 +810,7 @@ mod tests {
                 ControlAction::SetExtension {
                     id: "sample".into(),
                     enabled: false,
+                    config: None,
                 },
                 2,
                 "stop",
@@ -664,6 +827,10 @@ mod tests {
             "stopped"
         );
         assert!(host.guests.lock().await.is_empty());
+        assert!(
+            state.panels.is_empty(),
+            "disabled extensions must remove their panels"
+        );
     }
     #[tokio::test]
     async fn repeated_scene_intents_do_not_repeat_or_allow_changed_payloads() {
@@ -712,7 +879,7 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn wrong_workspace_stale_edits_and_poll_announcement_failure_are_explicit() {
+    async fn wrong_workspace_stale_edits_and_unavailable_poll_targets_are_explicit() {
         let (host, workspace) = host();
         let mut request = ControlRequest {
             workspace_id: "other".into(),
@@ -721,6 +888,7 @@ mod tests {
             action: ControlAction::SetExtension {
                 id: "sample".into(),
                 enabled: true,
+                config: None,
             },
         };
         assert!(host.execute(request.clone()).await.is_err());
@@ -736,8 +904,12 @@ mod tests {
                 duration_seconds: 10,
             },
         };
-        let result = host.execute(request).await.unwrap();
-        assert_eq!(result.polls.len(), 1);
-        assert!(result.polls[0].announcement_error.is_some());
+        assert!(
+            host.execute(request)
+                .await
+                .unwrap_err()
+                .contains("unavailable")
+        );
+        assert!(host.snapshot(0, 1).polls.is_empty());
     }
 }

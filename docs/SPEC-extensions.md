@@ -4,6 +4,10 @@ Status: implemented in the working tree; see [operational qualifications](contro
 [capability map](../CAPABILITY-MAP.md). This extends the existing
 [WASM boundary](extensions.md); it does not claim that the runtime already exists.
 
+Governing revision: [provider-neutral contract v2](extension-contract.md).
+Provider OAuth and protocol logic run in Rust WASM guests; the host supplies only
+generic transport/secret facilities. Installations are discovered from manifests.
+
 ## Objective
 
 Load and execute server WASM extensions with explicit host capabilities. Ship an

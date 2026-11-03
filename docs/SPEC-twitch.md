@@ -12,8 +12,9 @@ application commands/polls. It is not a Twitch embedded video-player extension.
 ## Contracts and structure
 
 Place guest source/manifest under `extensions/twitch/`. The core host owns generic
-credential storage, OAuth transport and capability-restricted HTTP/WebSocket
-operations; platform request mapping and event normalization belong to the guest.
+credential handles and capability-restricted HTTP/WebSocket
+operations; the entire OAuth state machine, request mapping and event normalization
+belong to the Rust guest under the [v2 contract](extension-contract.md).
 Do not implement Twitch as a native-only shortcut around the extension runtime.
 Connection controls/panels work through the common extension UI contracts.
 
@@ -56,10 +57,11 @@ metric contract. Never derive it from chatters or concurrent counts.
 Commands: `cargo test -p acheflow-extension-api --locked`,
 `cargo test -p acheflow-server --locked`, then shared checks. Add the exact selected
 guest build/test commands to the implementation plan once the ABI/runtime is
-chosen. Use typed, validated provider DTOs and the shared message/error style.
+chosen. Build with `python3 extensions/build.py`. Use typed, validated provider DTOs and the shared message/error style.
 
 Always prove the integration through the actual extension boundary. YouTube,
-VK Live, Twitch-native polls and unrelated Twitch automation are later work.
+VK Live and unrelated Twitch automation are later work. Native poll create/get/end
+and periodic/final vote normalization are implemented in the guest.
 
 ## Official references checked on 2026-11-02
 

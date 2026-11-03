@@ -13,15 +13,15 @@ pub struct ExtensionStatus {
     pub error: Option<String>,
     pub capabilities: Vec<String>,
     pub account: Option<String>,
-}
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct AuthorizationStatus {
-    pub verification_uri: String,
-    pub user_code: String,
-    pub expires_at_ms: u64,
+    #[serde(default)]
+    pub settings: Vec<acheflow_extension_api::integration::Setting>,
+    #[serde(default)]
+    pub configured_secrets: Vec<String>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ControlSnapshot {
+    #[serde(default)]
+    pub extension_settings: std::collections::BTreeMap<String, crate::workspace::ExtensionSettings>,
     pub panels: Vec<acheflow_extension_api::ExtensionPanel>,
     pub edit_revision: u64,
     pub workspace_id: Option<String>,
@@ -32,19 +32,30 @@ pub struct ControlSnapshot {
     pub polls: Vec<Poll>,
     pub commands: Vec<CommandRule>,
     pub extensions: Vec<ExtensionStatus>,
-    pub authorization: Option<AuthorizationStatus>,
+    pub channels: Vec<acheflow_extension_api::integration::Channel>,
+    pub donations: Vec<acheflow_extension_api::integration::Donation>,
+    pub interactions: Vec<acheflow_extension_api::integration::Interaction>,
     pub scenes: Vec<Scene>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlAction {
+    SetExtensionSecret {
+        id: String,
+        key: String,
+        value: SecretValue,
+        #[serde(default)]
+        config: Option<std::collections::BTreeMap<String, String>>,
+    },
     ExtensionEvent {
         id: String,
         action_id: String,
         value: String,
+        #[serde(default)]
+        config: Option<std::collections::BTreeMap<String, String>>,
     },
     SendChat {
-        channel_id: String,
+        targets: Vec<String>,
         text: String,
     },
     CreatePoll {
@@ -64,10 +75,24 @@ pub enum ControlAction {
     SetExtension {
         id: String,
         enabled: bool,
+        #[serde(default)]
+        config: Option<std::collections::BTreeMap<String, String>>,
     },
-    AuthorizeTwitch {
-        client_id: String,
+    TriggerInteraction {
+        id: String,
     },
+    SetInteraction {
+        interaction: acheflow_extension_api::integration::Interaction,
+    },
+}
+/// Secret-bearing command data is serialized only for transport, never Debug logs.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SecretValue(pub String);
+impl std::fmt::Debug for SecretValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

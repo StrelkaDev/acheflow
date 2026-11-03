@@ -114,27 +114,26 @@ pub fn ChatPanel() -> Element {
         .filter(|s| s.workspace_id.as_deref() == Some(client.project.read().id.as_str()))
         .unwrap_or_default();
     let channels = state
-        .audience
         .channels
         .iter()
-        .filter(|c| c.sample.platform == "twitch")
-        .map(|c| c.sample.channel_id.clone())
+        .filter(|c| c.capabilities.iter().any(|s| s == "chat.send"))
+        .map(|c| c.key())
         .collect::<Vec<_>>();
     let target = if channels.contains(&channel()) {
         channel()
     } else {
-        channels.first().cloned().unwrap_or_default()
+        String::new()
     };
     let send_target = target.clone();
     rsx! {
-            section{class:"panel chat-panel",div{class:"panel-heading",h2{"Chat"}crate::live::Choice{label:"Channel",value:target.clone(),choices:channels.iter().map(|id|format!("Twitch / {id}")).collect::<Vec<_>>(),values:Some(channels.clone()),change:move |id|channel.set(id)}if channels.is_empty(){span{class:"form-help","No connected channel"}}}
+            section{class:"panel chat-panel",div{class:"panel-heading",h2{"Chat"}crate::live::Choice{label:"Channel",value:target.clone(),choices:std::iter::once("All channels".to_owned()).chain(channels.iter().map(|key|state.channels.iter().find(|c|c.key()==*key).map(|c|c.label.clone()).unwrap_or_else(||key.clone()))).collect::<Vec<_>>(),values:Some(std::iter::once(String::new()).chain(channels.iter().cloned()).collect::<Vec<_>>()),change:move |id|channel.set(id)}if channels.is_empty(){span{class:"form-help","No connected channel"}}}
 
                 Notice{}
                 div{class:"chat-history",role:"log","aria-label":"Chat messages",
                     if state.chat.entries.is_empty(){p{class:"form-help","Messages will appear when a connected channel receives chat."}}
-                    for entry in state.chat.entries {div{key:"{entry.cursor}",class:"chat-message",span{class:"chat-origin","{entry.message.platform}"}strong{"{entry.message.display_name}"}span{if entry.deleted{"Message deleted"}else{"{entry.message.text}"}}}}
+                    for entry in state.chat.entries.clone() {div{key:"{entry.cursor}",class:"chat-message",span{class:"chat-origin","{entry.message.platform}"}strong{"{entry.message.display_name}"}span{if entry.deleted{"Message deleted"}else{"{entry.message.text}"}}for delivery in entry.delivery{small{class:"form-help","{delivery.channel}: {delivery.state}"}if let Some(error)=delivery.error{small{class:"field-error","{error}"}}}}}
                 }
-                div{class:"chat-compose",input{"aria-label":"Message",placeholder:"Write a message…",maxlength:500,value:"{text}",oninput:move|e|text.set(e.value())}button{class:"primary",disabled:(client.busy)() || target.is_empty() || text().trim().is_empty(),onclick:move |_|{client.command(ControlAction::SendChat{channel_id:send_target.clone(),text:text()});text.set(String::new());},"Send"}}
+                div{class:"chat-compose",input{"aria-label":"Message",placeholder:"Write a message…",maxlength:8192,value:"{text}",oninput:move|e|text.set(e.value())}button{class:"primary",disabled:(client.busy)() || channels.is_empty() || text().trim().is_empty(),onclick:move |_|{client.command(ControlAction::SendChat{targets:if send_target.is_empty(){vec![]}else{vec![send_target.clone()]},text:text()});text.set(String::new());},"Send"}}
             }
     }
 }
@@ -152,31 +151,31 @@ pub fn InteractivePage() -> Element {
         .filter(|s| s.workspace_id.as_deref() == Some(client.project.read().id.as_str()))
         .unwrap_or_default();
     let channels = state
-        .audience
         .channels
         .iter()
-        .filter(|c| c.sample.platform == "twitch")
-        .map(|c| c.sample.channel_id.clone())
+        .filter(|c| c.capabilities.iter().any(|s| s == "poll.create"))
+        .map(|c| c.key())
         .collect::<Vec<_>>();
     let target = if channels.contains(&channel()) {
         channel()
     } else {
-        channels.first().cloned().unwrap_or_default()
+        String::new()
     };
     let poll_target = target.clone();
     rsx! {
         div{class:"page-heading",div{h1{"Interactive"}p{"Polls and viewer interactions with your scenes."}}}
         Notice{}
         div{class:"interaction-channel",
-            crate::live::Choice{label:"Channel",value:target.clone(),choices:channels.iter().map(|id|format!("Twitch / {id}")).collect::<Vec<_>>(),values:Some(channels.clone()),change:move |id|channel.set(id)}
+            crate::live::Choice{label:"Channel",value:target.clone(),choices:std::iter::once("All channels".to_owned()).chain(channels.iter().map(|key|state.channels.iter().find(|c|c.key()==*key).map(|c|c.label.clone()).unwrap_or_else(||key.clone()))).collect::<Vec<_>>(),values:Some(std::iter::once(String::new()).chain(channels.iter().cloned()).collect::<Vec<_>>()),change:move |id|channel.set(id)}
             if channels.is_empty(){p{class:"form-help","Connect a channel in Extensions to start polls and configure commands."}}
         }
         div{class:"interaction-grid",
                 section{class:"panel",div{class:"panel-heading",h2{"Polls"}}
-                    div{class:"padded",label{class:"field",span{"Question"}input{value:"{question}",maxlength:500,oninput:move|e|question.set(e.value())}}label{class:"field",span{"Options, separated by ;"}input{value:"{options}",oninput:move|e|options.set(e.value())}}button{disabled:(client.busy)() || target.is_empty() || question().trim().is_empty(),onclick:move |_|client.command(ControlAction::CreatePoll{poll:PollRequest{question:question(),options:options().split(';').map(str::trim).filter(|s|!s.is_empty()).map(str::to_owned).collect::<Vec<_>>(),channels:vec![format!("twitch:{poll_target}")],duration_seconds:60}}),"Start 60-second poll"}p{class:"form-help","Viewers vote with !vote 1, !vote 2…"}}
-                    for poll in state.polls.iter().rev().take(5).cloned(){div{class:"poll-result",strong{"{poll.question}"}for (index,option) in poll.options.iter().enumerate(){p{"{index+1}. {option} — {poll.votes[index]}"}}if let Some(error)=poll.announcement_error{p{class:"field-error","Announcement: {error}"}}if !poll.closed{div{class:"row",button{onclick:move |_|client.command(ControlAction::ClosePoll{id:poll.id,cancel:false}),"Close"}button{onclick:move |_|client.command(ControlAction::ClosePoll{id:poll.id,cancel:true}),"Cancel"}}}else{p{class:"form-help",if poll.cancelled{"Cancelled"}else{"Closed"}}}}}
+                    div{class:"padded",label{class:"field",span{"Question"}input{value:"{question}",maxlength:500,oninput:move|e|question.set(e.value())}}label{class:"field",span{"Options, separated by ;"}input{value:"{options}",oninput:move|e|options.set(e.value())}}button{disabled:(client.busy)() || channels.is_empty() || question().trim().is_empty(),onclick:move |_|client.command(ControlAction::CreatePoll{poll:PollRequest{question:question(),options:options().split(';').map(str::trim).filter(|s|!s.is_empty()).map(str::to_owned).collect::<Vec<_>>(),channels:if poll_target.is_empty(){vec![]}else{vec![poll_target.clone()]},duration_seconds:60}}),"Start 60-second poll"}p{class:"form-help","Results are updated by the selected extensions."}}
+                    for poll in state.polls.iter().rev().take(5).cloned(){div{class:"poll-result",strong{"{poll.question}"}for (index,option) in poll.options.iter().enumerate(){p{"{index+1}. {option} — {poll.votes[index]}"}}for target in poll.targets.clone() {p{class:"form-help","{target.channel}: {target.state}"}if let Some(error)=target.error{p{class:"field-error","{error}"}}}if !poll.closed && poll.targets.iter().any(|t| t.state!="closing"){div{class:"row",button{onclick:move |_|client.command(ControlAction::ClosePoll{id:poll.id,cancel:false}),"Close"}button{onclick:move |_|client.command(ControlAction::ClosePoll{id:poll.id,cancel:true}),"Cancel"}}}else{p{class:"form-help",if !poll.closed{"Collecting final results…"}else if poll.cancelled{"Cancelled"}else{"Closed"}}}}}
                 }
-            CommandEditor{channel:target.clone()}
+            CommandEditor{channel:state.channels.iter().find(|c|c.capabilities.iter().any(|s|s=="chat.send")).map(|c|c.key()).unwrap_or_default()}
+            section{class:"panel",div{class:"panel-heading",h2{"Donations"}}div{class:"padded",if state.donations.is_empty(){p{class:"form-help","Incoming donations appear here."}}for donation in state.donations.iter().rev(){div{class:"row",strong{"{donation.display_name}"}span{"{money(donation.amount_minor,donation.decimal_places)} {donation.currency}"}span{"{donation.message}"}}}}}
         }
     }
 }
@@ -188,6 +187,26 @@ fn CommandEditor(channel: String) -> Element {
     let mut scene = use_signal(|| 0u32);
     let mut object = use_signal(|| 0u64);
     let mut role = use_signal(|| "moderator".to_owned());
+    let state = client
+        .state
+        .read()
+        .clone()
+        .filter(|s| s.workspace_id.as_deref() == Some(client.project.read().id.as_str()))
+        .unwrap_or_default();
+    let mut interaction_id = use_signal(String::new);
+    let selected_interaction = state
+        .interactions
+        .iter()
+        .find(|i| i.id == interaction_id())
+        .cloned();
+    let interaction_key = selected_interaction
+        .as_ref()
+        .map(|i| i.id.clone())
+        .unwrap_or_default();
+    let interaction_label = selected_interaction
+        .as_ref()
+        .map(|i| i.label.clone())
+        .unwrap_or_else(&*name);
     let scenes = client.project.read().scenes.clone();
     let scene_id = if scene() == 0 {
         scenes.first().map(|s| s.id).unwrap_or(0)
@@ -210,26 +229,148 @@ fn CommandEditor(channel: String) -> Element {
         crate::live::Choice{label:"Scene",value:scene_id.to_string(),choices:scenes.iter().map(|s|s.name.clone()).collect::<Vec<_>>(),values:Some(scenes.iter().map(|s|s.id.to_string()).collect::<Vec<_>>()),change:move |id:String|{scene.set(id.parse().unwrap_or(0));object.set(0);}}
         crate::live::Choice{label:"Object",value:object_id.to_string(),choices:objects.iter().map(|o|o.name.clone()).collect::<Vec<_>>(),values:Some(objects.iter().map(|o|o.id.to_string()).collect::<Vec<_>>()),change:move |id:String|object.set(id.parse().unwrap_or(0))}
         crate::live::Choice{label:"Who may use it",value:role(),choices:vec!["Moderators".into(),"Broadcaster".into(),"Everyone".into()],values:Some(vec!["moderator".into(),"broadcaster".into(),String::new()]),change:move |value|role.set(value)}
-        button{disabled:channel.is_empty() || object_id==0 || (client.busy)(),onclick:move |_|client.command(ControlAction::SetCommand{command:CommandRule{name:name(),channel:format!("twitch:{channel}"),roles:if role().is_empty(){vec![]}else{vec![role()]},cooldown_ms:5000,scene_id,object_id,rotation:[0.,45.,0.],enabled:true}}),"Bind to 45° Y rotation"}
+        button{disabled:channel.is_empty() || object_id==0 || (client.busy)(),onclick:move |_|client.command(ControlAction::SetCommand{command:CommandRule{name:name(),channel:channel.clone(),roles:if role().is_empty(){vec![]}else{vec![role()]},cooldown_ms:5000,scene_id,object_id,rotation:[0.,45.,0.],enabled:true}}),"Bind to 45° Y rotation"}
+        crate::live::Choice{label:"Interaction",value:interaction_key.clone(),choices:std::iter::once("New interaction".into()).chain(state.interactions.iter().map(|i|i.label.clone())).collect::<Vec<_>>(),values:Some(std::iter::once(String::new()).chain(state.interactions.iter().map(|i|i.id.clone())).collect::<Vec<_>>()),change:move|id|interaction_id.set(id)}
+        button{disabled:object_id==0 || (client.busy)(),onclick:move |_|client.command(ControlAction::SetInteraction{interaction:acheflow_extension_api::integration::Interaction {id:if interaction_key.is_empty(){name()}else{interaction_key.clone()},label:interaction_label.clone(),action:Some(acheflow_extension_api::integration::SceneAction {scene_id,object_id,rotation:[0.,45.,0.]}),enabled:true}}),"Save interaction binding"}
+        for interaction in state.interactions.clone(){div{class:"row",span{"{interaction.label}"}button{disabled:!interaction.enabled || interaction.id.split_once(':').is_some_and(|(origin,_)| origin!="acheflow" && !state.extensions.iter().any(|e| e.id==origin && !matches!(e.state.as_str(),"stopped"|"failed"))) || (client.busy)(),onclick:move |_|client.command(ControlAction::TriggerInteraction{id:interaction.id.clone()}),"Trigger"}}}
         p{class:"form-help","Five-second cooldown. Select a 3D object to enable the binding."}
-        for rule in client.state.read().as_ref().map(|s|s.commands.clone()).unwrap_or_default(){div{class:"row command-row",span{"!{rule.name}"}button{onclick:{let mut rule=rule.clone();rule.enabled = !rule.enabled;move |_|client.command(ControlAction::SetCommand{command:rule.clone()})},if rule.enabled{"Disable"}else{"Enable"}}}}
+        for rule in state.commands.clone(){div{class:"row command-row",span{"!{rule.name}"}button{onclick:{let mut rule=rule.clone();rule.enabled = !rule.enabled;move |_|client.command(ControlAction::SetCommand{command:rule.clone()})},if rule.enabled{"Disable"}else{"Enable"}}}}
     }}}
 }
 
 #[component]
 pub fn ExtensionsPage() -> Element {
     let client = use_context::<ControlClient>();
-    let mut client_id = use_signal(String::new);
-    let state = client.state.read().clone().unwrap_or_default();
-    rsx! {div{class:"page-heading",div{h1{"Extensions"}p{"Connect platforms and manage their access to your workspace."}}}Notice{}
-        section{class:"panel",div{class:"panel-heading",h2{"Twitch"}span{class:"badge",{state.extensions.iter().find(|e|e.id=="twitch").map(|s|s.state.clone()).unwrap_or_else(||"Not connected".into())}}}
-            div{class:"padded",label{class:"field",span{"Twitch application client ID"}input{value:"{client_id}",oninput:move|e|client_id.set(e.value()),placeholder:"Public client ID from your Twitch application"}}
-                button{class:"primary",disabled:client_id().is_empty() || (client.busy)(),onclick:move |_|client.command(ControlAction::AuthorizeTwitch{client_id:client_id()}),"Connect Twitch"}
-                p{class:"form-help","Use a public Twitch application. You'll authorize chat access on Twitch; credentials stay on the server for this session."}
-                if let Some(auth)=state.authorization {div{class:"authorization-box",strong{"Enter code: {auth.user_code}"}a{href:"{auth.verification_uri}",target:"_blank",rel:"noopener noreferrer","Authorize on Twitch"}}}
-            }
+    let live = use_context::<LiveClient>();
+    let workspace = client.project.read().clone();
+    let snapshot = client.state.read().clone().unwrap_or_default();
+    let extensions = snapshot.extensions.clone();
+    rsx! {
+        div {class:"page-heading",div {h1 {"Extensions"}p {"Enable extensions for this workspace and configure them in their cards."}}}
+        Notice {}
+        if client.state.read().is_some() && extensions.is_empty() {p{class:"form-help","No extensions are installed on this server."}}
+        for status in extensions {
+            ExtensionCard {key:"{workspace.id}:{status.id}", id:status.id, name:status.name, busy:(live.busy)()}
         }
-        for status in state.extensions.clone() {{let id=status.id.clone();let capabilities=status.capabilities.join(", ");let running=matches!(status.state.as_str(),"running"|"connecting"|"reconnecting");rsx!{section{class:"panel",div{class:"panel-heading",h2{"{status.name}"}button{disabled:(client.busy)(),onclick:move |_|client.command(ControlAction::SetExtension{id:id.clone(),enabled:!running}),if running{"Stop"}else{"Start"}}}div{class:"padded",p{"{status.state}"}p{class:"form-help","Capabilities: {capabilities}"}if let Some(account)=status.account{p{"Account: {account}"}}if let Some(error)=status.error{p{class:"field-error",role:"alert","{error}"}}}}}}}
-        for panel in state.panels {{crate::extension_panel::render(&panel)}}
+    }
+}
+
+#[component]
+fn ExtensionCard(id: String, name: String, busy: bool) -> Element {
+    let client = use_context::<ControlClient>();
+    let snapshot = client.state.read().clone().unwrap_or_default();
+    let active = snapshot.workspace_id.as_deref() == Some(client.project.read().id.as_str());
+    let status = snapshot
+        .extensions
+        .iter()
+        .find(|s| s.id == id)
+        .cloned()
+        .unwrap_or_default();
+    let settings = client
+        .project
+        .read()
+        .extensions
+        .get(&id)
+        .cloned()
+        .unwrap_or_default();
+    let enabled = settings.enabled;
+    let error = client
+        .extension_errors
+        .read()
+        .get(&id)
+        .cloned()
+        .or_else(|| {
+            if active && enabled {
+                status.error.clone()
+            } else {
+                None
+            }
+        });
+    let body_id = format!("extension-{id}");
+    let toggle_id = id.clone();
+    let keyboard_id = id.clone();
+    let capabilities = status.capabilities.join(", ");
+    let state_label = if !enabled {
+        None
+    } else if !active {
+        Some("Apply workspace to start")
+    } else {
+        match status.state.as_str() {
+            "running" => None,
+            "connecting" => Some("Connecting"),
+            "reconnecting" => Some("Reconnecting"),
+            "needs_authorization" => Some("Connect an account"),
+            "failed" => Some("Failed"),
+            _ => Some("Ready to start"),
+        }
+    };
+    let unavailable = busy || (client.busy)();
+    rsx! {
+        section {class:if enabled {"panel extension-card enabled"} else {"panel extension-card"},
+            div {class:"panel-heading",
+                div {class:"extension-identity",h2 {"{name}"}if let Some(label) = state_label {span {class:"badge","{label}"}}}
+                button {class:if enabled {"extension-toggle selected"} else {"extension-toggle"},
+                    role:"switch", "aria-label":"Enable {name} for this workspace", "aria-checked":enabled.to_string(),
+                    "aria-expanded":enabled.to_string(), "aria-controls":body_id.clone(), disabled:unavailable,
+                    onclick:move |_|client.set_extension(toggle_id.clone(), !enabled),
+                    onkeydown:move |event| {
+                        if !unavailable && (event.key() == Key::Named(NamedKey::Enter) || event.key() == Key::Character(" ".into())) {
+                            event.prevent_default();
+                            client.set_extension(keyboard_id.clone(), !enabled);
+                        }
+                    },
+                    if enabled {"Enabled"} else {"Disabled"}
+                }
+            }
+            if enabled {
+                div {class:"padded extension-settings",id:body_id.clone(),
+                    for setting in status.settings.clone() {
+                        ExtensionSetting {key:"{setting.id}",extension:id.clone(),setting}
+                    }
+                    if active {
+                        if let Some(account) = status.account {p {"Account: {account}"}}
+                        if !capabilities.is_empty() {p {class:"form-help","Capabilities: {capabilities}"}}
+                        for panel in snapshot.panels.iter().filter(|p| p.extension_id == id) {
+                            {crate::extension_panel::render(panel)}
+                        }
+                    }
+                }
+            }
+            if let Some(error) = error {div {class:"panel-note",p {class:"field-error",role:"alert","{error}"}}}
+        }
+    }
+}
+
+#[component]
+fn ExtensionSetting(
+    extension: String,
+    setting: acheflow_extension_api::integration::Setting,
+) -> Element {
+    let mut client = use_context::<ControlClient>();
+    if setting.secret {
+        return rsx! {crate::extension_panel::SecretSetting {extension,setting}};
+    }
+    let value = client
+        .project
+        .read()
+        .extensions
+        .get(&extension)
+        .and_then(|s| s.config.get(&setting.id))
+        .cloned()
+        .unwrap_or_default();
+    rsx! {label{class:"field",span{"{setting.label}"}input{r#type:"text",value:value.clone(),maxlength:setting.max_length as i64,oninput:move|event|{client.project.write().extensions.entry(extension.clone()).or_default().config.insert(setting.id.clone(),event.value());}}if !setting.help.is_empty(){p{class:"form-help","{setting.help}"}}}}
+}
+
+fn money(amount: u64, places: u8) -> String {
+    let scale = 10u64.pow(u32::from(places.min(6)));
+    if places == 0 {
+        amount.to_string()
+    } else {
+        format!(
+            "{}.{:0width$}",
+            amount / scale,
+            amount % scale,
+            width = usize::from(places.min(6))
+        )
     }
 }

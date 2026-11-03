@@ -7,6 +7,7 @@ pub struct ControlClient {
     pub project: Signal<Workspace>,
     pub state: Signal<Option<ControlSnapshot>>,
     pub error: Signal<Option<String>>,
+    pub extension_errors: Signal<std::collections::BTreeMap<String, String>>,
     pub busy: Signal<bool>,
 }
 pub fn use_control_client(project: Signal<Workspace>) -> ControlClient {
@@ -14,6 +15,7 @@ pub fn use_control_client(project: Signal<Workspace>) -> ControlClient {
         project,
         state: use_signal(|| None),
         error: use_signal(|| None),
+        extension_errors: use_signal(std::collections::BTreeMap::new),
         busy: use_signal(|| false),
     };
     use_context_provider(|| client);
@@ -25,6 +27,7 @@ pub fn use_control_client(project: Signal<Workspace>) -> ControlClient {
         let owner = identity();
         client.state.set(None);
         client.error.set(None);
+        client.extension_errors.write().clear();
         async move {
             loop {
                 if !*client.busy.peek() {
@@ -55,22 +58,66 @@ impl ControlClient {
             let changed = self.state.peek().as_ref().is_some_and(|old| {
                 old.workspace_id == snapshot.workspace_id && old.revision != snapshot.revision
             });
-            if changed
-                && let Some(previous) = self.state.peek().clone()
-                && merge_remote_spatial(&mut self.project.write(), &previous, &snapshot)
-            {
-                self.error.set(Some(
-                    "The scene changed remotely. Apply your draft or reload it before editing."
-                        .into(),
-                ));
+            if changed && let Some(previous) = self.state.peek().clone() {
+                let mut workspace = self.project.write();
+                let scene_conflict = merge_remote_spatial(&mut workspace, &previous, &snapshot);
+                let extension_conflict =
+                    merge_remote_extensions(&mut workspace, &previous, &snapshot);
+                if scene_conflict || extension_conflict {
+                    self.error.set(Some("Workspace settings changed remotely. Apply your draft or reload it before editing.".into()));
+                }
             }
         }
         self.state.set(Some(snapshot));
     }
-    pub fn command(mut self, action: ControlAction) {
+    pub fn set_extension(mut self, id: String, enabled: bool) {
+        self.extension_errors.write().remove(&id);
+        if self
+            .state
+            .peek()
+            .as_ref()
+            .is_some_and(|s| s.workspace_id.as_deref() == Some(self.project.peek().id.as_str()))
+        {
+            self.command(ControlAction::SetExtension {
+                id,
+                enabled,
+                config: None,
+            });
+        } else {
+            self.project
+                .write()
+                .extensions
+                .entry(id)
+                .or_default()
+                .enabled = enabled;
+        }
+    }
+    pub fn command(mut self, mut action: ControlAction) {
         if *self.busy.peek() {
             return;
         }
+        match &mut action {
+            ControlAction::ExtensionEvent { id, config, .. }
+            | ControlAction::SetExtension { id, config, .. }
+            | ControlAction::SetExtensionSecret { id, config, .. } => {
+                *config = Some(
+                    self.project
+                        .peek()
+                        .extensions
+                        .get(id)
+                        .map(|s| s.config.clone())
+                        .unwrap_or_default(),
+                );
+            }
+            _ => {}
+        }
+        let extension = match &action {
+            ControlAction::SetExtension { id, .. }
+            | ControlAction::ExtensionEvent { id, .. }
+            | ControlAction::SetExtensionSecret { id, .. } => Some(id.clone()),
+            _ => None,
+        };
+        self.command_error(extension.as_deref(), None);
         let workspace = self.project.peek().clone();
         let Some(state) = self
             .state
@@ -78,8 +125,10 @@ impl ControlClient {
             .clone()
             .filter(|s| s.workspace_id.as_deref() == Some(workspace.id.as_str()))
         else {
-            self.error
-                .set(Some("Apply the workspace to its server first.".into()));
+            self.command_error(
+                extension.as_deref(),
+                Some("Apply the workspace to its server first.".into()),
+            );
             return;
         };
         let request = ControlRequest {
@@ -89,7 +138,6 @@ impl ControlClient {
             action,
         };
         self.busy.set(true);
-        self.error.set(None);
         spawn(async move {
             let result = fetch(&workspace, Some(request)).await;
             if self.project.peek().id == workspace.id
@@ -97,12 +145,70 @@ impl ControlClient {
             {
                 match result {
                     Ok(state) => self.accept(state),
-                    Err(error) => self.error.set(Some(error)),
+                    Err(error) => self.command_error(extension.as_deref(), Some(error)),
                 }
             }
             self.busy.set(false);
         });
     }
+    fn command_error(mut self, extension: Option<&str>, error: Option<String>) {
+        if let Some(id) = extension {
+            let mut errors = self.extension_errors.write();
+            if let Some(error) = error {
+                errors.insert(id.into(), error);
+            } else {
+                errors.remove(id);
+            }
+        } else {
+            self.error.set(error);
+        }
+    }
+}
+fn merge_remote_extensions(
+    workspace: &mut Workspace,
+    previous: &ControlSnapshot,
+    next: &ControlSnapshot,
+) -> bool {
+    let ids = previous
+        .extension_settings
+        .keys()
+        .chain(next.extension_settings.keys())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut conflict = false;
+    for id in ids {
+        let base = previous
+            .extension_settings
+            .get(id)
+            .cloned()
+            .unwrap_or_default();
+        let remote = next.extension_settings.get(id).cloned().unwrap_or_default();
+        let local = workspace.extensions.entry(id.clone()).or_default();
+        // Merge individual fields so an enable/disable response preserves a local client ID draft.
+        if remote.enabled != base.enabled {
+            local.enabled = remote.enabled;
+        }
+        for key in base
+            .config
+            .keys()
+            .chain(remote.config.keys())
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            let before = base.config.get(key);
+            let after = remote.config.get(key);
+            if before != after {
+                if local.config.get(key) == before || local.config.get(key) == after {
+                    if let Some(value) = after {
+                        local.config.insert(key.clone(), value.clone());
+                    } else {
+                        local.config.remove(key);
+                    }
+                } else {
+                    conflict = true;
+                }
+            }
+        }
+    }
+    conflict
 }
 fn merge_remote_spatial(
     workspace: &mut Workspace,
@@ -172,4 +278,44 @@ async fn fetch(
         .json()
         .await
         .map_err(|_| "Invalid interaction service response".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn remote_toggles_preserve_public_client_id_drafts_and_report_conflicting_edits() {
+        let mut workspace = Workspace::default();
+        workspace
+            .extensions
+            .entry("twitch".into())
+            .or_default()
+            .config
+            .insert("application".into(), "localdraft".into());
+        let previous = ControlSnapshot::default();
+        let mut next = previous.clone();
+        next.extension_settings
+            .entry("twitch".into())
+            .or_default()
+            .enabled = true;
+        assert!(!merge_remote_extensions(&mut workspace, &previous, &next));
+        assert!(workspace.extensions["twitch"].enabled);
+        assert_eq!(
+            workspace.extensions["twitch"].config["application"],
+            "localdraft"
+        );
+        let previous = next.clone();
+        next.extension_settings.get_mut("twitch").unwrap().enabled = false;
+        next.extension_settings
+            .get_mut("twitch")
+            .unwrap()
+            .config
+            .insert("application".into(), "remotedraft".into());
+        assert!(merge_remote_extensions(&mut workspace, &previous, &next));
+        assert!(!workspace.extensions["twitch"].enabled);
+        assert_eq!(
+            workspace.extensions["twitch"].config["application"],
+            "localdraft"
+        );
+    }
 }

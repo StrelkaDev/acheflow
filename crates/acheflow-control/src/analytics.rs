@@ -40,6 +40,15 @@ impl Analytics {
         Ok(())
     }
 
+    pub fn disconnect(&mut self, origin: &str) {
+        for ((platform, _), sample) in &mut self.samples {
+            if platform == origin {
+                sample.concurrent = None;
+                sample.observed_at_ms = 0;
+                sample.offline = false;
+            }
+        }
+    }
     pub fn snapshot(&self, now: u64) -> AudienceSnapshot {
         let mut snapshot = AudienceSnapshot {
             peak: self.peak,

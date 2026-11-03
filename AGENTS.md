@@ -36,3 +36,15 @@ work is a Git task; do not restart implementation or a full feature workflow.
   cases and relevant excerpts. Expand output when needed to diagnose a failure.
 - Stop after the requested result and its necessary verification are complete.
   Keep progress and final reports brief and factual.
+
+## Extension architecture
+
+- Follow [the v2 extension contract](docs/extension-contract.md) for every extension.
+- Keep provider authentication, URLs, protocol mappings and subscriptions under
+  `extensions/`. Production server/UI code must stay provider-neutral.
+- Register settings, channels and capabilities through the manifest/domain API.
+  Adding a provider must not require editing the server or shared UI.
+- After changing guest/SDK source, run `python3 extensions/build.py` before host
+  tests; keep source, manifests and WASM artifacts matched.
+- Publish only from enabled live instances. Test two independent providers and
+  lifecycle/cancellation boundaries; use real WASM guests, not native substitutes.

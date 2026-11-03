@@ -7,29 +7,28 @@ pub struct Installed {
     pub module: Vec<u8>,
 }
 pub fn discover() -> BTreeMap<String, Installed> {
+    let root = std::env::var_os("ACHEFLOW_EXTENSIONS_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            let local = std::path::PathBuf::from("extensions");
+            if local.is_dir() {
+                local
+            } else {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|p| p.join("extensions")))
+                    .unwrap_or(local)
+            }
+        });
+    discover_at(&root)
+}
+pub fn discover_at(root: &Path) -> BTreeMap<String, Installed> {
     let mut installed = BTreeMap::new();
-    for (manifest, module) in [
-        (
-            include_str!("../../../extensions/twitch/manifest.json"),
-            include_bytes!("../../../extensions/twitch/twitch.wat").as_slice(),
-        ),
-        (
-            include_str!("../../../extensions/sample/manifest.json"),
-            include_bytes!("../../../extensions/sample/sample.wat").as_slice(),
-        ),
-    ] {
-        let manifest: GuestManifest = serde_json::from_str(manifest).expect("bundled manifest");
-        installed.insert(
-            manifest.id.clone(),
-            Installed {
-                manifest,
-                module: module.to_vec(),
-            },
-        );
-    }
-    let root = std::env::var("ACHEFLOW_EXTENSIONS_DIR").unwrap_or_else(|_| "extensions".into());
-    if let Ok(entries) = std::fs::read_dir(&root) {
-        for entry in entries.flatten().take(32) {
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten().take(64) {
+            if !entry.path().join("manifest.json").is_file() {
+                continue;
+            }
             match load(&entry.path()) {
                 Ok(extension)
                     if !installed.contains_key(&extension.manifest.id) && installed.len() < 8 =>

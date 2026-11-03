@@ -1,0 +1,12 @@
+{
+  "id": "vklive",
+  "name": "VK Video Live",
+  "api_version": 2,
+  "module": "vklive.wasm",
+  "capabilities": ["http", "chat", "audience", "failure", "panel", "channel", "status"],
+  "services": ["https://apidev.live.vkvideo.ru"],
+  "subscriptions": [],
+  "settings": [{"id":"channel","label":"Channel","help":"Channel slug from live.vkvideo.ru, without the URL.","max_length":128},{"id":"access_token","label":"Access token","help":"VK Video Live user or application OAuth token. Stored only on this server until restart.","max_length":8192,"secret":true}],
+  "secret_fields": {"access_token":"/access_token","refresh_token":"/refresh_token"},
+  "unique_viewers": false
+}

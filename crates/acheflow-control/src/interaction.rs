@@ -11,7 +11,6 @@ pub struct Interaction {
     seen_order: VecDeque<MessageKey>,
     cursor: u64,
     polls: VecDeque<Poll>,
-    voters: HashSet<(u64, String, String)>,
     next_poll: u64,
     commands: BTreeMap<(String, String), CommandRule>,
     cooldowns: BTreeMap<(String, String), u64>,
@@ -33,12 +32,6 @@ impl Interaction {
         self.expire_polls(now);
         let words: Vec<_> = message.text.split_whitespace().take(3).collect();
         match words.as_slice() {
-            ["!vote", option] => {
-                if let Ok(option) = option.parse::<usize>() {
-                    self.vote(&message, option);
-                }
-                Ok(None)
-            }
             [command] => Ok(command
                 .strip_prefix('!')
                 .and_then(|name| self.chat_command(&message, name, now))),
@@ -65,32 +58,13 @@ impl Interaction {
             cursor: self.cursor,
             message: message.clone(),
             deleted: false,
+            merged_into: None,
+            delivery: vec![],
         });
         if self.messages.len() > MESSAGE_LIMIT {
             self.messages.pop_front();
         }
         true
-    }
-    fn vote(&mut self, message: &ChatMessage, option: usize) {
-        if self.voters.len() >= 100000 {
-            return;
-        }
-        let channel = channel_key(&message.platform, &message.channel_id);
-        for poll in self
-            .polls
-            .iter_mut()
-            .filter(|p| !p.closed && p.channels.contains(&channel))
-        {
-            if !(1..=poll.options.len()).contains(&option) {
-                continue;
-            }
-            if self
-                .voters
-                .insert((poll.id, message.platform.clone(), message.user_id.clone()))
-            {
-                poll.votes[option - 1] += 1;
-            }
-        }
     }
     fn chat_command(&mut self, message: &ChatMessage, name: &str, now: u64) -> Option<CommandRule> {
         let key = (
@@ -118,19 +92,27 @@ impl Interaction {
     pub fn messages(&self, after: u64, limit: usize) -> ChatPage {
         let limit = limit.clamp(1, 200);
         let skip = if after == 0 {
-            self.messages.len().saturating_sub(limit)
+            self.messages
+                .iter()
+                .filter(|e| e.merged_into.is_none())
+                .count()
+                .saturating_sub(limit)
         } else {
             0
         };
         let entries: Vec<_> = self
             .messages
             .iter()
-            .filter(|m| m.cursor > after)
+            .filter(|m| m.cursor > after && (after > 0 || m.merged_into.is_none()))
             .skip(skip)
             .take(limit)
             .cloned()
             .collect();
-        let cursor = entries.last().map(|e| e.cursor).unwrap_or(self.cursor);
+        let cursor = if after == 0 {
+            self.cursor
+        } else {
+            entries.last().map(|e| e.cursor).unwrap_or(self.cursor)
+        };
         ChatPage {
             entries,
             cursor,
@@ -179,8 +161,7 @@ impl Interaction {
                 .iter()
                 .position(|p| p.closed)
                 .ok_or("poll limit reached")?;
-            let old = self.polls.remove(index).unwrap();
-            self.voters.retain(|(id, _, _)| *id != old.id);
+            self.polls.remove(index);
         }
         self.next_poll += 1;
         let id = self.next_poll;
@@ -188,12 +169,23 @@ impl Interaction {
             id,
             question: request.question,
             votes: vec![0; request.options.len()],
-            options: request.options,
-            channels: request.channels,
+            options: request.options.clone(),
+            channels: request.channels.clone(),
             closes_at_ms: now.saturating_add(u64::from(request.duration_seconds) * 1000),
             closed: false,
             cancelled: false,
-            announcement_error: None,
+            targets: request
+                .channels
+                .iter()
+                .map(|channel| acheflow_extension_api::integration::PollTarget {
+                    channel: channel.clone(),
+                    external_id: None,
+                    state: "pending".into(),
+                    votes: vec![0; request.options.len()],
+                    error: None,
+                    updated_at_ms: now,
+                })
+                .collect(),
         });
         Ok(id)
     }
@@ -201,7 +193,17 @@ impl Interaction {
     fn expire_polls(&mut self, now: u64) {
         for poll in &mut self.polls {
             if now >= poll.closes_at_ms {
-                poll.closed = true;
+                for target in &mut poll.targets {
+                    if !matches!(target.state.as_str(), "completed" | "failed")
+                        && now > poll.closes_at_ms.saturating_add(30000)
+                    {
+                        target.error = Some("Final poll result was not received".into());
+                    }
+                }
+                poll.closed = poll
+                    .targets
+                    .iter()
+                    .all(|t| matches!(t.state.as_str(), "completed" | "failed"));
             }
         }
     }
@@ -215,13 +217,216 @@ impl Interaction {
             .iter_mut()
             .find(|p| p.id == id)
             .ok_or("poll not found")?;
-        poll.closed = true;
+        for target in &mut poll.targets {
+            if !matches!(target.state.as_str(), "completed" | "failed") {
+                target.state = "closing".into();
+            }
+        }
         poll.cancelled |= cancel;
         Ok(())
     }
-    pub fn announcement_failed(&mut self, id: u64, message: String) {
-        if let Some(poll) = self.polls.iter_mut().find(|p| p.id == id) {
-            poll.announcement_error = Some(message.chars().take(500).collect());
+    pub fn update_poll(
+        &mut self,
+        origin: &str,
+        update: acheflow_extension_api::integration::PollUpdate,
+        now: u64,
+    ) -> Result<(), String> {
+        let poll = self
+            .polls
+            .iter_mut()
+            .find(|p| p.id == update.poll_id)
+            .ok_or("poll not found")?;
+        if update.votes.len() != poll.options.len()
+            || !matches!(update.state.as_str(), "active" | "completed" | "failed")
+            || update.error.as_ref().is_some_and(|e| e.len() > 500)
+            || update.external_id.as_ref().is_some_and(|id| id.len() > 256)
+        {
+            return Err("invalid poll update".into());
+        }
+        let key = channel_key(origin, &update.channel_id);
+        let target = poll
+            .targets
+            .iter_mut()
+            .find(|t| t.channel == key)
+            .ok_or("forbidden: poll channel is not targeted")?;
+        if matches!(target.state.as_str(), "completed" | "failed") {
+            return Ok(());
+        }
+        if target.external_id.is_some() && update.external_id != target.external_id {
+            return Err("conflict: external poll identity changed".into());
+        }
+        target.external_id = update.external_id;
+        if target.state != "closing" || update.state != "active" {
+            target.state = update.state;
+        }
+        target.votes = update.votes;
+        target.error = update.error;
+        target.updated_at_ms = now;
+        poll.votes = vec![0; poll.options.len()];
+        for target in &poll.targets {
+            for (sum, vote) in poll.votes.iter_mut().zip(&target.votes) {
+                *sum = sum.saturating_add(*vote);
+            }
+        }
+        poll.closed = poll
+            .targets
+            .iter()
+            .all(|t| matches!(t.state.as_str(), "completed" | "failed"));
+        Ok(())
+    }
+    pub fn begin_send(
+        &mut self,
+        id: &str,
+        text: &str,
+        channels: &[String],
+        now: u64,
+    ) -> Result<(), String> {
+        if text.trim().is_empty() || text.len() > 8192 {
+            return Err("invalid chat text".into());
+        }
+        self.remember(&ChatMessage {
+            platform: "acheflow".into(),
+            channel_id: "outgoing".into(),
+            message_id: id.into(),
+            user_id: "local".into(),
+            display_name: "You".into(),
+            text: text.into(),
+            roles: vec![],
+            occurred_at_ms: now,
+        });
+        if let Some(entry) = self.messages.back_mut() {
+            entry.delivery = channels
+                .iter()
+                .map(|channel| acheflow_extension_api::integration::Delivery {
+                    channel: channel.clone(),
+                    state: "pending".into(),
+                    error: None,
+                    external_id: None,
+                })
+                .collect();
+        }
+        Ok(())
+    }
+    pub fn delivery(
+        &mut self,
+        origin: &str,
+        channel: &str,
+        id: &str,
+        sent: Option<bool>,
+        external_id: Option<String>,
+        error: Option<String>,
+    ) -> Result<(), String> {
+        if error.as_ref().is_some_and(|e| e.len() > 500)
+            || external_id.as_ref().is_some_and(|e| e.len() > 256)
+        {
+            return Err("invalid delivery result".into());
+        }
+        let entry = self
+            .messages
+            .iter_mut()
+            .find(|e| e.message.platform == "acheflow" && e.message.message_id == id)
+            .ok_or("send operation not found")?;
+        let key = channel_key(origin, channel);
+        let target = entry
+            .delivery
+            .iter_mut()
+            .find(|t| t.channel == key)
+            .ok_or("forbidden: delivery channel is not targeted")?;
+        if target.state != "pending" {
+            return Ok(());
+        }
+        target.state = match sent {
+            Some(true) => "sent",
+            Some(false) => "failed",
+            None => "unknown",
+        }
+        .into();
+        target.error = error;
+        target.external_id = external_id.clone();
+        let updated = entry.clone();
+        self.republish(updated);
+        if let Some(external_id) = external_id {
+            let message = ChatMessage {
+                platform: origin.into(),
+                channel_id: channel.into(),
+                message_id: external_id.clone(),
+                user_id: "receipt".into(),
+                display_name: String::new(),
+                text: String::new(),
+                roles: vec![],
+                occurred_at_ms: 0,
+            };
+            let echoes: Vec<_> = self
+                .messages
+                .iter()
+                .filter(|e| {
+                    e.message.platform == origin
+                        && e.message.channel_id == channel
+                        && e.message.message_id == external_id
+                        && e.merged_into.is_none()
+                })
+                .cloned()
+                .collect();
+            for mut echo in echoes {
+                echo.deleted = true;
+                echo.message.text.clear();
+                echo.merged_into = Some(id.into());
+                self.republish(echo);
+            }
+            // Remember without emitting a second history entry, including echoes arriving after the receipt.
+            let key = (message.platform, message.channel_id, message.message_id);
+            if self.seen.insert(key.clone()) {
+                self.seen_order.push_back(key);
+            }
+            while self.seen_order.len() > MESSAGE_LIMIT * 4 {
+                if let Some(old) = self.seen_order.pop_front() {
+                    self.seen.remove(&old);
+                }
+            }
+        }
+        Ok(())
+    }
+    fn republish(&mut self, mut entry: ChatEntry) {
+        self.messages.retain(|old| old.cursor != entry.cursor);
+        self.cursor += 1;
+        entry.cursor = self.cursor;
+        self.messages.push_back(entry);
+        if self.messages.len() > MESSAGE_LIMIT {
+            self.messages.pop_front();
+        }
+    }
+    pub fn disconnect(&mut self, origin: &str) {
+        let prefix = format!("{origin}:");
+        let mut updates = vec![];
+        for entry in &mut self.messages {
+            let mut changed = false;
+            for target in &mut entry.delivery {
+                if target.channel.starts_with(&prefix) && target.state == "pending" {
+                    target.state = "unknown".into();
+                    target.error = Some("Extension stopped before delivery was confirmed".into());
+                    changed = true;
+                }
+            }
+            if changed {
+                updates.push(entry.clone());
+            }
+        }
+        for entry in updates {
+            self.republish(entry);
+        }
+        for poll in &mut self.polls {
+            for target in &mut poll.targets {
+                if target.channel.starts_with(&prefix)
+                    && !matches!(target.state.as_str(), "completed" | "failed")
+                {
+                    target.state = "failed".into();
+                    target.error = Some("Extension stopped before the final poll result".into());
+                }
+            }
+            poll.closed = poll
+                .targets
+                .iter()
+                .all(|t| matches!(t.state.as_str(), "completed" | "failed"));
         }
     }
     pub fn commands(&self) -> Vec<CommandRule> {
@@ -285,8 +490,8 @@ fn validate_poll(request: &PollRequest) -> Result<(), String> {
     Ok(())
 }
 fn validate_command(rule: &CommandRule) -> Result<(), String> {
-    if !bounded_text(&rule.name, 32) || rule.name == "vote" {
-        return Err("invalid or reserved command name".into());
+    if !bounded_text(&rule.name, 32) {
+        return Err("invalid command name".into());
     }
     if !rule
         .name
@@ -299,12 +504,10 @@ fn validate_command(rule: &CommandRule) -> Result<(), String> {
         return Err("invalid command channel".into());
     }
     if rule.roles.len() > 16
-        || rule.roles.iter().any(|r| {
-            !matches!(
-                r.as_str(),
-                "broadcaster" | "moderator" | "vip" | "subscriber"
-            )
-        })
+        || rule
+            .roles
+            .iter()
+            .any(|r| !acheflow_extension_api::integration::valid_id(r, 64))
     {
         return Err("invalid command roles".into());
     }
@@ -333,26 +536,106 @@ mod tests {
         }
     }
     #[test]
-    fn votes_are_namespaced_deduplicated_and_close_deterministically() {
+    fn poll_votes_come_from_providers_and_close_waits_for_final_results() {
         let mut service = Interaction::default();
         let id = service
             .create_poll(
                 PollRequest {
                     question: "Where?".into(),
                     options: vec!["Left".into(), "Right".into()],
-                    channels: vec!["twitch:a".into()],
+                    channels: vec!["first:a".into(), "second:b".into()],
                     duration_seconds: 10,
                 },
                 1000,
             )
             .unwrap();
         service.ingest(chat("1", "u", "!vote 1"), 1001).unwrap();
-        service.ingest(chat("1", "u", "!vote 1"), 1002).unwrap();
-        service.ingest(chat("2", "u", "!vote 2"), 1003).unwrap();
-        service.ingest(chat("3", "v", "!vote 2"), 11000).unwrap();
-        assert_eq!(service.polls(11000)[0].votes, [1, 0]);
-        assert!(service.polls(11000)[0].closed);
-        assert!(service.close_poll(id, false).is_ok());
+        assert_eq!(service.polls(1001)[0].votes, [0, 0]);
+        service
+            .update_poll(
+                "first",
+                acheflow_extension_api::integration::PollUpdate {
+                    poll_id: id,
+                    channel_id: "a".into(),
+                    external_id: Some("external".into()),
+                    state: "active".into(),
+                    votes: vec![3, 2],
+                    error: None,
+                },
+                1002,
+            )
+            .unwrap();
+        service.close_poll(id, false).unwrap();
+        assert!(!service.polls(1003)[0].closed);
+        for (origin, channel, votes) in [("first", "a", vec![4, 3]), ("second", "b", vec![1, 2])] {
+            service
+                .update_poll(
+                    origin,
+                    acheflow_extension_api::integration::PollUpdate {
+                        poll_id: id,
+                        channel_id: channel.into(),
+                        external_id: Some("external".into()),
+                        state: "completed".into(),
+                        votes,
+                        error: None,
+                    },
+                    1004,
+                )
+                .unwrap();
+        }
+        assert_eq!(service.polls(1005)[0].votes, [5, 5]);
+        assert!(service.polls(1005)[0].closed);
+    }
+    #[test]
+    fn cursor_reads_receive_delivery_changes_and_echo_merge_tombstones() {
+        let mut service = Interaction::default();
+        service
+            .begin_send("intent", "hello", &["twitch:a".into()], 1000)
+            .unwrap();
+        let cursor = service.cursor();
+        service
+            .ingest(chat("external", "account", "hello"), 1001)
+            .unwrap();
+        let echo_cursor = service.cursor();
+        service
+            .delivery(
+                "twitch",
+                "a",
+                "intent",
+                Some(true),
+                Some("external".into()),
+                None,
+            )
+            .unwrap();
+        let delta = service.messages(echo_cursor, 200);
+        assert!(delta.cursor > echo_cursor);
+        assert!(
+            delta
+                .entries
+                .iter()
+                .any(|e| e.message.message_id == "intent" && e.delivery[0].state == "sent")
+        );
+        assert!(
+            delta
+                .entries
+                .iter()
+                .any(|e| e.message.message_id == "external"
+                    && e.merged_into.as_deref() == Some("intent"))
+        );
+        assert_eq!(service.messages(0, 200).entries.len(), 1);
+        service
+            .begin_send("pending", "another", &["twitch:a".into()], 1002)
+            .unwrap();
+        let before = service.cursor();
+        service.disconnect("twitch");
+        assert!(
+            service
+                .messages(before, 200)
+                .entries
+                .iter()
+                .any(|e| e.delivery.iter().any(|d| d.state == "unknown"))
+        );
+        assert!(service.cursor() > cursor);
     }
     #[test]
     fn history_has_explicit_gaps_and_deleted_messages_are_scrubbed() {

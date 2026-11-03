@@ -1,0 +1,13 @@
+[workspace]
+members = ["guest-sdk", "twitch", "youtube", "vklive", "sample", "fixture"]
+resolver = "3"
+
+[workspace.dependencies]
+serde_json = { version = "1", features = ["raw_value"] }
+guest-sdk = { path = "guest-sdk" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"

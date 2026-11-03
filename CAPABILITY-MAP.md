@@ -8,7 +8,8 @@ the working tree. See [operational details and qualifications](docs/controls.md)
 Acheflow hosts platform integrations as extensions. External MCP clients control
 Acheflow; Acheflow is not an MCP client for platform integrations in this milestone.
 Twitch is the first working integration. YouTube and VK Live follow the same host
-contracts in later milestones.
+contracts in later milestones. The governing boundary is the
+[provider-neutral extension contract v2](docs/extension-contract.md).
 
 A render scene contains a camera, viewport planes and basic 3D objects. The existing
 2D layer composition, including CSS, crop and WGSL effects, becomes viewport
@@ -18,10 +19,10 @@ materials, lighting and authored animation are subsequent work.
 | Module id | Responsibility | Depends on | Specification |
 |---|---|---|---|
 | `extensions` | Versioned contracts, server WASM execution, host capabilities, panels and lifecycle | Existing extension API | [SPEC-extensions](docs/SPEC-extensions.md) |
-| `interaction` | Normalized chat, outgoing messages, commands and application polls | Extension contracts/event delivery | [SPEC-interaction](docs/SPEC-interaction.md) |
+| `interaction` | Normalized chat, outgoing messages, commands and native provider polls | Extension contracts/event delivery | [SPEC-interaction](docs/SPEC-interaction.md) |
 | `analytics` | Current viewers, sum, session history and optional platform uniques | Extension contracts/event delivery | [SPEC-analytics](docs/SPEC-analytics.md) |
 | `scene-3d` | Camera, viewport textures, primitives, transforms and workspace migration | Existing media API and GPU composition | [SPEC-scene-3d](docs/SPEC-scene-3d.md) |
-| `twitch` | Account/channel connection, incoming/outgoing chat and viewer samples | Extensions, interaction and analytics contracts | [SPEC-twitch](docs/SPEC-twitch.md) |
+| `twitch` | Account/channel connection, incoming/outgoing chat, native polls and viewer samples | Extensions, interaction and analytics contracts | [SPEC-twitch](docs/SPEC-twitch.md) |
 | `mcp` | External read/control adapter over application services | Extensions, interaction, analytics and scene services | [SPEC-mcp](docs/SPEC-mcp.md) |
 
 Build order: extension contracts/runtime → interaction and analytics with Twitch →
