@@ -12,6 +12,12 @@ pub fn Notice() -> Element {
     let live = use_context::<LiveClient>();
     rsx! {
         if let Some(error)=client.error.read().as_ref(){p{class:"field-error",role:"alert","{error}"}}
+        if (client.sync_conflict)() {
+            div{class:"panel-note row",
+                button{disabled:(client.busy)() || (live.busy)(),onclick:move |_|client.resolve_sync_conflict(true),"Use server settings"}
+                button{disabled:(client.busy)() || (live.busy)(),onclick:move |_|client.resolve_sync_conflict(false),"Keep local edits"}
+            }
+        }
         if client.state.read().as_ref().is_none_or(|s|s.workspace_id.as_deref()!=Some(client.project.read().id.as_str())) {
             div{class:"panel-note row",p{"Apply this workspace to connect its chat and extensions."}button{disabled:(live.busy)(),onclick:move |_|live.command(Action::Apply),"Apply workspace"}}
         }
@@ -297,6 +303,7 @@ fn ExtensionCard(id: String, name: String, busy: bool) -> Element {
     } else {
         match status.state.as_str() {
             "running" => None,
+            "waiting_for_client" => Some("Waiting for a client executor"),
             "connecting" => Some("Connecting"),
             "reconnecting" => Some("Reconnecting"),
             "needs_authorization" => Some("Connect an account"),
@@ -324,7 +331,7 @@ fn ExtensionCard(id: String, name: String, busy: bool) -> Element {
             }
             if enabled {
                 div {class:"padded extension-settings",id:body_id.clone(),
-                    for setting in status.settings.clone() {
+                    for setting in status.settings.iter().filter(|s|!s.secret).cloned() {
                         ExtensionSetting {key:"{setting.id}",extension:id.clone(),setting}
                     }
                     if active {
@@ -347,9 +354,6 @@ fn ExtensionSetting(
     setting: acheflow_extension_api::integration::Setting,
 ) -> Element {
     let mut client = use_context::<ControlClient>();
-    if setting.secret {
-        return rsx! {crate::extension_panel::SecretSetting {extension,setting}};
-    }
     let value = client
         .project
         .read()

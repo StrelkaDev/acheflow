@@ -340,101 +340,70 @@ fn production_host_and_ui_do_not_reference_installed_provider_protocols() {
 }
 
 #[tokio::test]
-async fn stopping_an_extension_cancels_in_flight_transport_without_waiting_for_network_timeout() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let origin = format!("https://{address}");
-    let (mut host, _) = host(&["network"]);
-    let inner = Arc::get_mut(&mut host).unwrap();
-    let installed = inner.installed.get_mut("network").unwrap();
-    installed.manifest.capabilities.push("http".into());
-    installed.manifest.services.push(origin.clone());
-    installed
-        .manifest
-        .settings
-        .push(acheflow_extension_api::integration::Setting {
-            id: "transport_url".into(),
-            label: "Fixture URL".into(),
-            ..Default::default()
-        });
-    execute(
-        &host,
-        ControlAction::SetExtension {
-            id: "network".into(),
-            enabled: true,
-            config: Some(std::collections::BTreeMap::from([(
-                "transport_url".into(),
-                origin,
-            )])),
-        },
-    )
-    .await;
-    let (_socket, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
-        .await
+async fn server_rejects_provider_transport_before_starting_a_guest() {
+    let (mut host, workspace) = host(&["network"]);
+    let extension = Arc::get_mut(&mut host)
         .unwrap()
+        .installed
+        .get_mut("network")
         .unwrap();
-    tokio::time::timeout(
-        Duration::from_secs(1),
-        execute(
-            &host,
-            ControlAction::SetExtension {
-                id: "network".into(),
-                enabled: false,
-                config: None,
-            },
-        ),
-    )
-    .await
-    .expect("stop waited for HTTP timeout");
+    extension.manifest.capabilities.push("http".into());
+    let result =
+        crate::extension_host::set_enabled(host.clone(), &workspace.id, "network", true).await;
+    assert!(
+        result
+            .unwrap_err()
+            .contains("cannot request provider transport")
+    );
     assert!(host.guests.lock().await.is_empty());
-    assert!(host.snapshot(0, 1).channels.is_empty());
+    assert!(host.services.lock().unwrap().instances.is_empty());
 }
 
 #[tokio::test]
-async fn a_waiting_guest_can_receive_configuration_and_actions_without_a_provider_host_branch() {
+async fn client_provider_discovery_never_loads_or_starts_a_server_guest() {
     let (host, workspace) = crate::control::tests::host();
-    host.execute(ControlRequest {
-        workspace_id: workspace.id,
-        request_id: format!("{}:enable", now_ms()),
-        expected_revision: 0,
-        action: ControlAction::SetExtension {
-            id: "twitch".into(),
-            enabled: true,
-            config: None,
-        },
-    })
-    .await
-    .unwrap();
-    wait(&host, |s| {
-        s.extensions
+    for id in ["twitch", "youtube", "vklive"] {
+        assert!(host.installed[id].module.is_empty());
+        execute(
+            &host,
+            ControlAction::SetExtension {
+                id: id.into(),
+                enabled: true,
+                config: None,
+            },
+        )
+        .await;
+    }
+    let state = host.snapshot(0, 1);
+    assert_eq!(
+        state
+            .extensions
             .iter()
-            .any(|e| e.id == "twitch" && e.state == "needs_authorization")
-    })
-    .await;
-    execute(
-        &host,
-        ControlAction::ExtensionEvent {
-            id: "twitch".into(),
-            action_id: "connect".into(),
-            value: String::new(),
-            config: Some(std::collections::BTreeMap::from([(
-                "client_id".into(),
-                "x".into(),
-            )])),
-        },
-    )
-    .await;
-    let state = wait(&host, |s| {
-        s.extensions.iter().any(|e| {
-            e.id == "twitch"
-                && e.error
-                    .as_ref()
-                    .is_some_and(|error| error.contains("Client ID"))
+            .filter(|e| e.state == "waiting_for_client")
+            .count(),
+        3
+    );
+    assert!(host.guests.lock().await.is_empty());
+    assert!(state.panels.is_empty());
+    assert!(
+        host.execute(ControlRequest {
+            workspace_id: workspace.id,
+            request_id: format!("{}:connect", now_ms()),
+            expected_revision: state.revision,
+            action: ControlAction::ExtensionEvent {
+                id: "twitch".into(),
+                action_id: "connect".into(),
+                value: String::new(),
+                config: None
+            }
         })
-    })
-    .await;
-    assert_eq!(state.extension_settings["twitch"].config["client_id"], "x");
+        .await
+        .unwrap_err()
+        .contains("not running")
+    );
+    assert!(serde_json::from_value::<ControlAction>(json!({"type":"set_extension_secret","id":"twitch","key":"access_token","value":"never-on-server"})).is_err());
 }
+
 #[tokio::test]
 async fn domain_state_survives_snapshots_without_any_installed_extension() {
     let (host, _) = host(&[]);

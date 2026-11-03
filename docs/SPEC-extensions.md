@@ -6,11 +6,12 @@ Status: implemented in the working tree; see [operational qualifications](contro
 
 Governing revision: [provider-neutral contract v2](extension-contract.md).
 Provider OAuth and protocol logic run in Rust WASM guests; the host supplies only
-generic transport/secret facilities. Installations are discovered from manifests.
+generic transport/secret facilities in the client runtime. Server logic guests have
+no credentials or provider I/O. Installations are discovered from manifests.
 
 ## Objective
 
-Load and execute server WASM extensions with explicit host capabilities. Ship an
+Load and execute client provider WASM and credential-free server logic WASM with explicit host capabilities. Ship an
 actual Twitch guest plus a small deterministic sample guest. The host renders
 extension panels consistently in native and browser UI; building the UI to WASM
 is separate from executing guest modules.
@@ -19,7 +20,8 @@ is separate from executing guest modules.
 
 Extend `acheflow-extension-api` with versioned manifests, guest/host envelopes,
 typed events, action schemas and panels. Put server lifecycle, sandbox and host
-bindings in new extension modules under `acheflow-server/src`; guest fixtures
+bindings under `acheflow-server/src` for pure logic and `acheflow-client/src` for
+provider execution; guest fixtures
 under `extensions/`; panel controls in `acheflow-ui/src/extension_panel.rs`.
 
 Manifests declare id, release version, supported host API version, module entry,

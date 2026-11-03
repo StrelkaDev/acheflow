@@ -59,6 +59,13 @@ fn load(directory: &Path) -> Result<Installed, String> {
     )
     .map_err(|_| "invalid manifest JSON")?;
     manifest.validate()?;
+    if manifest.execution_side == acheflow_extension_api::integration::ExecutionSide::Client {
+        // The server retains public discovery metadata, never a client reactor.
+        return Ok(Installed {
+            manifest,
+            module: vec![],
+        });
+    }
     let module_path = directory
         .join(&manifest.module)
         .canonicalize()

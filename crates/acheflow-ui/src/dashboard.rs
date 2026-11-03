@@ -17,10 +17,16 @@ pub fn dashboard() -> Element {
                 .encode(include_bytes!("../assets/achedev-logo.svg"))
         )
     });
-    let effects = use_signal(|| true);
     let backend = use_signal(|| "Starting GPU...".to_owned());
     let mut page = use_signal(|| "Overview");
-    let (project, catalog, storage_status) = use_workspaces();
+    let (project, mut catalog, storage_status) = use_workspaces();
+    let effects = use_signal(|| catalog.peek().background_animation());
+    use_effect(move || {
+        let enabled = effects();
+        if catalog.peek().background_animation() != enabled {
+            catalog.write().set_background_animation(enabled);
+        }
+    });
     let workspace_open = use_signal(|| false);
     let live = use_live_client(project);
     let _control = crate::control_client::use_control_client(project);

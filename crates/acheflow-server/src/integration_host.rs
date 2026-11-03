@@ -25,6 +25,21 @@ fn dispatch(
     name: &str,
     mut payload: Value,
 ) -> Result<(), String> {
+    if host
+        .installed
+        .get(&channel.extension_id)
+        .is_some_and(|e| e.manifest.execution_side == ExecutionSide::Client)
+    {
+        if name != "chat.send" {
+            return Err("unavailable: client action is not supported".into());
+        }
+        return crate::client_bridge::enqueue_chat(
+            host,
+            request,
+            channel,
+            payload["text"].as_str().ok_or("missing text")?,
+        );
+    }
     if !host
         .services
         .lock()
@@ -352,11 +367,9 @@ pub fn validate_effect(host: &ControlHost, origin: &str, effect: &Value) -> Resu
     {
         for widget in widgets {
             if widget["type"] == "link" {
-                crate::extension_transport::allowed_url(
-                    widget["url"].as_str().ok_or("invalid panel link")?,
-                    &extension.manifest,
-                    false,
-                )?;
+                return Err(
+                    "server logic extensions cannot publish provider authorization links".into(),
+                );
             }
         }
     }

@@ -28,6 +28,14 @@ impl Default for Setting {
 fn setting_limit() -> usize {
     8192
 }
+/// Execution authority is explicit; server logic never receives provider I/O.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionSide {
+    #[default]
+    Server,
+    Client,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GuestManifest {
@@ -35,6 +43,8 @@ pub struct GuestManifest {
     pub name: String,
     pub api_version: u32,
     pub module: String,
+    #[serde(default)]
+    pub execution_side: ExecutionSide,
     pub capabilities: Vec<String>,
     pub services: Vec<String>,
     #[serde(default)]
@@ -50,6 +60,19 @@ impl GuestManifest {
     pub fn validate(&self) -> Result<(), String> {
         if self.api_version != crate::API_VERSION {
             return Err("unsupported extension API version".into());
+        }
+        if self.execution_side == ExecutionSide::Server
+            && (!self.services.is_empty()
+                || !self.secret_fields.is_empty()
+                || self.settings.iter().any(|s| s.secret)
+                || self
+                    .capabilities
+                    .iter()
+                    .any(|c| matches!(c.as_str(), "http" | "websocket")))
+        {
+            return Err(
+                "server logic extensions cannot request provider transport or credentials".into(),
+            );
         }
         if matches!(self.id.as_str(), "acheflow" | "ui")
             || !valid_id(&self.id, 64)

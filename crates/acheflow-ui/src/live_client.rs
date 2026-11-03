@@ -100,6 +100,7 @@ impl LiveClient {
             return;
         }
         let workspace = self.project.peek().clone();
+        let applies_workspace = matches!(&action, Action::Apply | Action::Start);
         let target = workspace.clone();
         self.busy.set(true);
         self.error.set(None);
@@ -171,7 +172,9 @@ impl LiveClient {
             }
             match result {
                 Ok(status) => {
-                    if status.workspace_id.as_deref() == Some(target.id.as_str()) {
+                    if applies_workspace
+                        && status.workspace_id.as_deref() == Some(target.id.as_str())
+                    {
                         self.project.write().edit_revision = status.edit_revision;
                     }
                     self.status.set(Some(status));

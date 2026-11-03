@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod audience;
+pub mod client_execution;
 pub mod integration;
 pub mod interaction;
 

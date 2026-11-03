@@ -91,20 +91,27 @@ impl Runtime {
     async fn apply(&self, mut workspace: Workspace) -> Result<(), String> {
         workspace.migrate_spatial();
         validate(&workspace)?;
-        if let Some(old) = self.workspace.read().unwrap().as_ref()
-            && old.id == workspace.id
-            && old.edit_revision != workspace.edit_revision
-            && old.scenes.iter().any(|before| {
+        if let Some(old) =
+            self.workspace.read().unwrap().as_ref().filter(|old| {
+                old.id == workspace.id && old.edit_revision != workspace.edit_revision
+            })
+        {
+            if old.extensions != workspace.extensions
+                || old.client_capabilities != workspace.client_capabilities
+            {
+                return Err("Workspace extension settings or capabilities changed remotely. Refresh or resolve the conflict before applying.".into());
+            }
+            if old.scenes.iter().any(|before| {
                 workspace
                     .scenes
                     .iter()
                     .find(|s| s.id == before.id)
                     .is_none_or(|after| after.spatial != before.spatial)
-            })
-        {
-            return Err(
-                "The 3D scene changed remotely. Refresh before applying this workspace.".into(),
-            );
+            }) {
+                return Err(
+                    "The 3D scene changed remotely. Refresh before applying this workspace.".into(),
+                );
+            }
         }
         {
             let formats = self.formats.lock().await;

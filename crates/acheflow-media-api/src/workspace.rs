@@ -159,7 +159,7 @@ impl Scene {
 pub struct ExtensionSettings {
     #[serde(default)]
     pub enabled: bool,
-    /// Public extension-defined settings. Secret handles stay on the server.
+    /// Public extension-defined settings. Integration credentials stay on clients.
     pub config: std::collections::BTreeMap<String, String>,
 }
 impl<'de> Deserialize<'de> for ExtensionSettings {
@@ -198,6 +198,8 @@ pub struct Workspace {
     pub server_url: String,
     #[serde(default)]
     pub extensions: std::collections::BTreeMap<String, ExtensionSettings>,
+    #[serde(default)]
+    pub client_capabilities: Vec<acheflow_extension_api::client_execution::CapabilityGrant>,
     pub horizontal: Stream,
     pub vertical: Stream,
     pub sources: Vec<Source>,
@@ -214,6 +216,7 @@ impl Default for Workspace {
             name: "My workspace".into(),
             server_url: String::new(),
             extensions: Default::default(),
+            client_capabilities: Default::default(),
             horizontal: Stream {
                 base: Resolution {
                     width: 1920,

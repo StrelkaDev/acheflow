@@ -9,11 +9,11 @@ mod audio_packet;
 #[cfg(test)]
 mod audio_pipeline_tests;
 mod browser_access;
+mod client_bridge;
 mod compositor;
 mod control;
 mod extension_host;
 mod extension_registry;
-mod extension_transport;
 mod ffmpeg;
 mod ingest;
 mod integration_host;

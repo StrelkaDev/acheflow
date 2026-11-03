@@ -15,11 +15,13 @@ pub struct ExtensionStatus {
     pub account: Option<String>,
     #[serde(default)]
     pub settings: Vec<acheflow_extension_api::integration::Setting>,
-    #[serde(default)]
-    pub configured_secrets: Vec<String>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ControlSnapshot {
+    #[serde(default)]
+    pub client_capabilities: Vec<acheflow_extension_api::client_execution::CapabilityGrant>,
+    #[serde(default)]
+    pub client_executors: Vec<acheflow_extension_api::client_execution::ExecutorStatus>,
     #[serde(default)]
     pub extension_settings: std::collections::BTreeMap<String, crate::workspace::ExtensionSettings>,
     pub panels: Vec<acheflow_extension_api::ExtensionPanel>,
@@ -40,12 +42,8 @@ pub struct ControlSnapshot {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlAction {
-    SetExtensionSecret {
-        id: String,
-        key: String,
-        value: SecretValue,
-        #[serde(default)]
-        config: Option<std::collections::BTreeMap<String, String>>,
+    SetClientCapabilities {
+        grants: Vec<acheflow_extension_api::client_execution::CapabilityGrant>,
     },
     ExtensionEvent {
         id: String,
@@ -84,15 +82,6 @@ pub enum ControlAction {
     SetInteraction {
         interaction: acheflow_extension_api::integration::Interaction,
     },
-}
-/// Secret-bearing command data is serialized only for transport, never Debug logs.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SecretValue(pub String);
-impl std::fmt::Debug for SecretValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("[REDACTED]")
-    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

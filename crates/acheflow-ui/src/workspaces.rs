@@ -10,8 +10,23 @@ pub struct WorkspaceRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Preferences {
+    background_animation: bool,
+}
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            background_animation: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Catalog {
+    #[serde(default)]
+    preferences: Preferences,
     version: u32,
     active: u32,
     workspaces: Vec<WorkspaceRecord>,
@@ -20,6 +35,7 @@ pub struct Catalog {
 impl Default for Catalog {
     fn default() -> Self {
         Self {
+            preferences: Preferences::default(),
             version: 1,
             active: 1,
             workspaces: vec![WorkspaceRecord {
@@ -31,6 +47,12 @@ impl Default for Catalog {
 }
 
 impl Catalog {
+    pub fn background_animation(&self) -> bool {
+        self.preferences.background_animation
+    }
+    pub fn set_background_animation(&mut self, enabled: bool) {
+        self.preferences.background_animation = enabled;
+    }
     pub fn active_id(&self) -> u32 {
         self.active
     }
@@ -264,7 +286,11 @@ fn storage_path() -> Result<std::path::PathBuf, String> {
 }
 #[cfg(not(target_arch = "wasm32"))]
 fn load() -> Result<Option<Catalog>, String> {
-    match std::fs::read(storage_path()?) {
+    load_at(&storage_path()?)
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn load_at(path: &std::path::Path) -> Result<Option<Catalog>, String> {
+    match std::fs::read(path) {
         Ok(bytes) => Catalog::decode(&bytes).map(Some),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.to_string()),
@@ -272,8 +298,11 @@ fn load() -> Result<Option<Catalog>, String> {
 }
 #[cfg(not(target_arch = "wasm32"))]
 fn save(catalog: &Catalog) -> Result<(), String> {
+    save_at(&storage_path()?, catalog)
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn save_at(path: &std::path::Path, catalog: &Catalog) -> Result<(), String> {
     use std::io::Write;
-    let path = storage_path()?;
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -348,5 +377,96 @@ mod tests {
         c.active = 1;
         c.workspaces.push(c.workspaces[0].clone());
         assert!(Catalog::decode(&serde_json::to_vec(&c).unwrap()).is_err());
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod disk_tests {
+    use super::*;
+    use acheflow_extension_api::client_execution::{Capability, CapabilityGrant};
+    #[test]
+    fn native_catalog_restores_selected_workspace_public_settings_and_policy_from_disk() {
+        let root = std::env::temp_dir().join(format!(
+            "acheflow-workspace-storage-{}",
+            crate::project::new_token()
+        ));
+        let path = root.join("nested/workspaces.json");
+        assert!(load_at(&path).unwrap().is_none());
+        let mut catalog = Catalog::default();
+        catalog.set_background_animation(false);
+        let mut first = catalog.current().clone();
+        first.server_url = "https://first.example".into();
+        first.edit_revision = 7;
+        first
+            .extensions
+            .entry("fixture".into())
+            .or_default()
+            .enabled = true;
+        first
+            .extensions
+            .get_mut("fixture")
+            .unwrap()
+            .config
+            .insert("application".into(), "public-app".into());
+        first.client_capabilities = vec![CapabilityGrant {
+            provider: "fixture".into(),
+            account_id: "bot".into(),
+            channel_id: "channel".into(),
+            capabilities: [Capability::ChatRead].into(),
+        }];
+        catalog.update(first.clone());
+        catalog.add(new_workspace("Second", "https://second.example").unwrap());
+        save_at(&path, &catalog).unwrap();
+        let mut reopened = load_at(&path).unwrap().unwrap();
+        assert_eq!(reopened, catalog);
+        assert!(!reopened.background_animation());
+        assert_eq!(reopened.active_id(), 2);
+        assert!(reopened.current().extensions.is_empty());
+        assert!(reopened.current().client_capabilities.is_empty());
+        reopened.active = 1;
+        assert_eq!(reopened.current(), &first);
+        let imported = Workspace::from_json(first.json().unwrap().as_bytes()).unwrap();
+        assert_eq!(imported.client_capabilities, first.client_capabilities);
+        assert_eq!(imported.extensions, first.extensions);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::write(&path, b"{broken").unwrap();
+        assert!(
+            load_at(&path).is_err(),
+            "corrupt storage must not silently become an empty catalog"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"{broken");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod preference_tests {
+    use super::*;
+    #[test]
+    fn old_catalogs_get_default_appearance_and_switching_keeps_preferences_global() {
+        let mut legacy = serde_json::to_value(Catalog::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("preferences");
+        let mut catalog = Catalog::decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert!(catalog.background_animation());
+        catalog.set_background_animation(false);
+        catalog.add(new_workspace("Second", "https://server.example").unwrap());
+        assert!(!catalog.background_animation());
+        catalog.active = 1;
+        let restored = Catalog::decode(&serde_json::to_vec(&catalog).unwrap()).unwrap();
+        assert!(!restored.background_animation());
+        assert!(
+            !restored
+                .current()
+                .json()
+                .unwrap()
+                .contains("background_animation")
+        );
     }
 }

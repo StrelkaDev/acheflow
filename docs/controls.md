@@ -1,19 +1,18 @@
 # Interaction, audience, 3D scenes and MCP
 
 Implementation follows the [provider-neutral v2 contract](extension-contract.md).
-YouTube/VK Live, model import, lighting and authored animations are later milestones.
+Client account UI, model import, lighting and authored animations are later milestones.
 
 ## Extensions and interaction
 
-Apply the workspace, enable an extension and fill its manifest-defined settings
-inside its card. Provider-defined panel actions handle connection/authorization.
-For Twitch, register a public application in the
-[Twitch Developer Console](https://dev.twitch.tv/console/apps), enter its Client ID
-and use Connect account. Complete the displayed device code. The Rust guest
-requests `user:read:chat user:write:chat channel:manage:polls` and operates on the
-authorized broadcaster's own channel. No Client Secret is needed. Secret captures
-and handles stay in server memory, scoped to the workspace/extension; restart
-requires authorization again. OAuth/protocol knowledge is entirely in the guest.
+Apply the workspace and enable extensions with their public manifest settings inside
+their cards. Server logic extensions run locally on the server. Client provider
+extensions display **Waiting for a client executor** until an authenticated executor
+registers authorized capabilities for this workspace. There is no server token input
+or server-side platform transport. The native `acheflow-client` library owns WASM,
+OAuth captures and provider I/O; its `Connect account` integration with the main UI
+is still pending. [Setup and implementation limits](client-executor.md) describe the
+current MCP bridge. No live accounts have been verified in this migration.
 
 Chat is part of Live / Studio and moves to the shared sidebar during streaming.
 Select All channels or one registered destination; available choices are supplied
@@ -22,7 +21,10 @@ result for each target. Receipts suppress duplicate echoes. Timeouts/connection
 loss report unknown outcomes and never automatically resend an uncertain message.
 Drafts persist when chat moves; narrow layouts place chat below the current page.
 
-Live / Interactive creates actual provider polls on selected capable channels.
+Live / Interactive offers polls only for registered poll-capable channels. Native
+provider poll instructions are not yet connected to the client bridge, so migrated
+provider integrations do not advertise this capability. Pure domain/fixture handling
+remains covered.
 Extensions publish initial/periodic/final counts; the host aggregates results and
 shows per-target failures. Closing waits for final results. The 60-second UI poll
 uses two or more options; each provider declares its own limits. The Twitch guest
@@ -36,6 +38,16 @@ Session history retains 2,000 messages with bounded cursor reads and explicit
 gaps. Polls, donations, interactions and channel discovery are session state.
 Disabling cancels network work, removes live channels/panels and makes prior
 viewer samples unavailable; historical records and public configuration remain.
+
+## Saving settings
+
+Workspace public config and capability policy auto-save in the local client catalog;
+Apply remains a separate server operation. First-contact and edit conflicts preserve
+local drafts until **Use server settings** or **Keep local edits** is selected. Server
+Apply rejects stale replacement of extension settings, capability grants or 3D state.
+Background animation now persists as a client-wide preference. Server listener JSON
+survives restart; its active workspace does not. See [settings persistence and
+restore](settings-persistence.md) for locations, precedence and tested restart behavior.
 
 ## Audience
 

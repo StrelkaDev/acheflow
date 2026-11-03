@@ -1,19 +1,12 @@
 # WASM extensions
 
-The [v2 architecture contract](extension-contract.md) is the governing boundary.
-The server owns domain state and routing; provider protocols and OAuth live entirely
-inside independently compiled Rust guests. Native and browser UIs render the same
-manifest settings and guest panels. There is no provider-specific host binding.
-
-[ADR-002](decisions/002-client-execution-and-workspace-capabilities.md) defines the
-accepted target: clients own all integration credentials, platform collection and
-execution; the server processes normalized events and returns typed instructions.
-Manual MCP configuration and automatic client registration feed one workspace
-capability registry while saved policy remains separate from live availability.
-The [execution specification](SPEC-client-execution.md) records the migration.
-The current code still uses server-held tokens, provider transport and server-routed
-sends, including manual token entry for YouTube/VK. Client-only integration execution
-has not been implemented; details below document the existing host runtime.
+The [v2 contract](extension-contract.md) and [ADR-002](decisions/002-client-execution-and-workspace-capabilities.md)
+separate credential-free server logic from client-owned provider execution.
+The server has no provider credential store, secret-write API or HTTP/WebSocket
+handler. Provider manifests are `execution_side: "client"`; server discovery reads
+public metadata and displays `waiting_for_client`, without loading their modules.
+`acheflow-client` contains the native reactor and typed MCP adapter. See
+[client executor setup and limitations](client-executor.md).
 
 ## Build and installation
 
@@ -40,15 +33,19 @@ v2 guests alongside the v2 host rather than silently reinterpreting the old ABI.
 ```json
 {
   "id":"example", "name":"Example", "api_version":2, "module":"example.wasm",
+  "execution_side":"client",
   "capabilities":["panel","http","status","channel","chat","delivery"],
   "services":["https://api.example.org"], "subscriptions":["chat.send"],
   "settings":[{"id":"application","label":"Application ID","max_length":128}]
 }
 ```
 
-Each workspace saves `extensions[id].enabled` and the public `config` map. Old
+Each workspace saves `extensions[id].enabled` and the public `config` map in its
+client catalog/export. The server's active copy and capability policy are in memory;
+after restart, apply the saved client workspace again. See [persistence and
+conflicts](settings-persistence.md). Old
 `client_id` values migrate into `config.client_id`. New/legacy workspaces default
-to disabled. Applying/starting restores enabled guests; switching/deactivating
+to disabled. Applying/starting restores enabled server logic guests and client metadata; switching/deactivating
 stops the previous instances. Reapply preserves running guests. Disabled cards
 collapse, retain configuration and remove live panels/channels. Errors stay inside
 the owning card, including errors enabling an otherwise collapsed extension.
@@ -62,7 +59,8 @@ The public Rust contracts are in `acheflow-extension-api/src/integration.rs`,
 
 Guest inputs: `start`, one-second `tick`, panel `action`, `command`, subscribed
 `event`, `http_result`, `websocket_open`, `websocket`, `websocket_closed`, `gap`.
-`config` contains only this workspace's public settings. `storage` is private
+`config` contains only this workspace's public settings. Network inputs and secret
+handles are available exclusively in the client runtime. `storage` is private
 per-extension session metadata; `secrets` lists available opaque handle names.
 Only scene-capable guests receive a scene/revision snapshot.
 
@@ -138,19 +136,17 @@ including substitution, are bounded before allocation; reserved transport header
 cannot be overridden. Connections/sends have ten-second deadlines. Service welcome/reconnect/keepalive messages are
 interpreted by the guest. No redirects, HTTP, userinfo URLs or ungranted origins.
 `storage` stores a JSON `value` up to 64 KiB for this workspace/extension/session.
-Neither storage nor secrets enter UI/MCP snapshots or exported workspaces. Server
-restart requires account authorization again. Each store has at most 256 namespaces;
-secret stores allow at most 32 handles of 8 KiB per namespace.
+Neither local storage nor credentials enter UI/MCP snapshots or exported workspaces.
+The native runtime holds credentials only in memory, one workspace/account per instance;
+there is no durable vault yet. Secret stores allow at most 32 handles of 8 KiB.
+Credential replacement is local to the executor; dispose the old runtime and withdraw
+its registration before connecting another account/generation.
 
-A manifest setting may declare `"secret": true`. The shared UI renders a masked,
-initially empty input with explicit Save on server / Remove controls. Saving uses
-the write-only `set_extension_secret` control action (`id`, `key`, `value`, optional
-public `config`); an empty value removes that handle. Undeclared fields and secrets
-in public config are rejected. Snapshots expose `configured_secrets` handle names
-only. Manual updates stop the old guest before changing credentials, then restart
-it if enabled, so late requests cannot restore an old token. Debug formatting
-redacts the secret-bearing command value. Credentials remain in server memory until
-restart. This manual-input action is not advertised by the MCP command schema.
+The server accepts only declared public settings and rejects `secret: true` settings,
+removed manual token fields and unknown extension configuration. There is no manual
+Save on server / Remove credential UI, `set_extension_secret` action or
+`configured_secrets` snapshot field. Client OAuth and local account panels are not
+forwarded by the typed MCP adapter. Browser/native account UI integration is pending.
 
 wasmi 2.0.0 limits each call to 10 million fuel, 16 MiB linear memory, 1 MiB
 input/output and 64 effects. Host JSON/copy/template work also consumes fuel. Queues
@@ -170,6 +166,7 @@ remain testable, but are not the provider authoring path.
 ```sh
 python3 extensions/build.py
 cargo test --manifest-path extensions/Cargo.toml --locked
+cargo test -p acheflow-client --locked
 cargo test -p acheflow-control --locked
 cargo test -p acheflow-server --locked
 cargo test -p acheflow-ui --locked
@@ -180,3 +177,13 @@ and exercise fanout, receipts/echoes, partial failures, periodic/final polls,
 donations, interactions, configuration, restart, cancellation and stale-instance
 rejection. A boundary test rejects references to installed provider protocols in
 production host/UI source. Provider-shaped fixtures do not prove live account access.
+
+
+The client bridge currently forwards chat, audience, deletion and clear-chat events.
+The shared `send_chat` command uses exclusive client instructions, with receipts and
+merged echoes. Native provider poll commands, donations and provider interactions
+have not yet been added to this bridge; they remain tested as pure server domain
+logic and are not advertised as live client capabilities. Client runtime tests cover
+real provider startup without authorization, two independent WASM fixtures through
+real MCP, local identity/expiry/replay checks and cancellation of a real pending
+transport connection. They do not prove live OAuth or provider access.

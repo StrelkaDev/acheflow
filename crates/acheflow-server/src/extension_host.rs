@@ -1,17 +1,12 @@
 //! One generic WASM lifecycle for every installed extension.
-use crate::{
-    control::{ControlHost, now_ms},
-    extension_transport,
-};
+use crate::control::{ControlHost, now_ms};
 use acheflow_control::extensions::Guest;
 use acheflow_media_api::control::{ControlAction, ControlRequest, ExtensionStatus};
-use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
 use tokio_util::sync::CancellationToken;
 
 pub struct Running {
@@ -36,7 +31,13 @@ pub fn failed(host: &ControlHost, owner: &str, id: &str, error: String) {
             state: "failed".into(),
             error: Some(error),
             capabilities: extension.manifest.capabilities.clone(),
-            settings: extension.manifest.settings.clone(),
+            settings: extension
+                .manifest
+                .settings
+                .iter()
+                .filter(|s| !s.secret)
+                .cloned()
+                .collect(),
             ..Default::default()
         },
     );
@@ -49,6 +50,7 @@ pub async fn set_enabled(
 ) -> Result<(), String> {
     let extension = host.installed.get(id).ok_or("not_found: extension")?;
     let manifest = extension.manifest.clone();
+    manifest.validate()?;
     let mut running = host.guests.lock().await;
     host.disconnect_extension(owner, id);
     if let Some(old) = running.remove(id) {
@@ -59,12 +61,28 @@ pub async fn set_enabled(
         id: id.into(),
         name: manifest.name.clone(),
         capabilities: manifest.capabilities.clone(),
-        settings: manifest.settings.clone(),
-        state: if enabled { "running" } else { "stopped" }.into(),
+        settings: manifest
+            .settings
+            .iter()
+            .filter(|s| !s.secret)
+            .cloned()
+            .collect(),
+        state: if !enabled {
+            "stopped"
+        } else if manifest.execution_side
+            == acheflow_extension_api::integration::ExecutionSide::Client
+        {
+            "waiting_for_client"
+        } else {
+            "running"
+        }
+        .into(),
         ..Default::default()
     };
     host.extension_status(owner, status.clone());
-    if !enabled {
+    if !enabled
+        || manifest.execution_side == acheflow_extension_api::integration::ExecutionSide::Client
+    {
         return Ok(());
     }
     let guest = Arc::new(Mutex::new(Guest::load(
@@ -117,19 +135,7 @@ async fn run(
     let mut events = host.events.subscribe();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut socket: Option<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-    > = None;
     let key = (owner.to_owned(), id.to_owned());
-    let mut secrets = host
-        .secrets
-        .lock()
-        .await
-        .get(&key)
-        .cloned()
-        .unwrap_or_default();
     let mut storage = host
         .extension_storage
         .lock()
@@ -170,7 +176,6 @@ async fn run(
             )
             .unwrap();
             input["storage"] = storage.clone();
-            input["secrets"] = json!(secrets.keys().collect::<Vec<_>>());
             if manifest.capabilities.iter().any(|c| c == "scene") {
                 let state = host.snapshot(0, 1);
                 input["state"] = json!({"workspace_id":state.workspace_id,"revision":state.revision,"scenes":state.scenes});
@@ -181,80 +186,8 @@ async fn run(
                     return Ok(());
                 }
                 match effect["type"].as_str() {
-                    Some("http") => {
-                        let mut result=extension_transport::http(&effect,manifest,&mut secrets).await.unwrap_or_else(|error|json!({"type":"http_result","id":effect["id"],"status":0,"error":error,"payload":null}));
-                        if !host.extension_is_live(owner, id, instance) {
-                            return Ok(());
-                        }
-                        {
-                            let mut saved = host.secrets.lock().await;
-                            if !saved.contains_key(&key) && saved.len() >= 256 {
-                                return Err("extension credential namespace limit reached".into());
-                            }
-                            saved.insert(key.clone(), secrets.clone());
-                        }
-                        result["depth"] = json!(depth);
-                        pending.push_back(result);
-                    }
-                    Some("websocket") => {
-                        if let Some(payload) = effect.get("send") {
-                            let payload = extension_transport::resolve(payload, &secrets)?;
-                            let text = serde_json::to_string(&payload)
-                                .map_err(|_| "invalid WebSocket JSON")?;
-                            let connection = socket.as_mut().ok_or("WebSocket is not connected")?;
-                            tokio::time::timeout(
-                                Duration::from_secs(10),
-                                connection.send(Message::Text(text.into())),
-                            )
-                            .await
-                            .map_err(|_| "WebSocket send timed out")?
-                            .map_err(|_| "WebSocket send failed")?;
-                            pending.push_back(
-                                json!({"type":"websocket_sent","id":effect["id"],"depth":depth}),
-                            );
-                            continue;
-                        }
-                        if effect["close"] == true {
-                            socket = None;
-                            continue;
-                        }
-                        let url = extension_transport::allowed_url(
-                            effect["url"].as_str().ok_or("missing WebSocket URL")?,
-                            manifest,
-                            true,
-                        )?;
-                        let config =
-                            tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
-                                .max_message_size(Some(1024 * 1024))
-                                .max_frame_size(Some(1024 * 1024));
-                        let mut request = url
-                            .as_str()
-                            .into_client_request()
-                            .map_err(|_| "invalid WebSocket request")?;
-                        let headers = extension_transport::resolve(&effect["headers"], &secrets)?;
-                        if let Some(headers) = headers.as_object() {
-                            if headers.len() > 32 {
-                                return Err("too many request headers".into());
-                            }
-                            for (name, value) in headers {
-                                extension_transport::validate_header(name)?;
-                                let name =
-                                    tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(
-                                        name.as_bytes(),
-                                    )
-                                    .map_err(|_| "invalid WebSocket header")?;
-                                let value =
-                                    tokio_tungstenite::tungstenite::http::HeaderValue::from_str(
-                                        value.as_str().ok_or("invalid WebSocket header")?,
-                                    )
-                                    .map_err(|_| "invalid WebSocket header")?;
-                                request.headers_mut().insert(name, value);
-                            }
-                        }
-                        match tokio::time::timeout(Duration::from_secs(10),tokio_tungstenite::connect_async_with_config(request,Some(config),true)).await {
-                            Ok(Ok((connection,_)))=>{socket=Some(connection);pending.push_back(json!({"type":"websocket_open","depth":depth}));},
-                            _=>pending.push_back(json!({"type":"websocket_closed","error":"WebSocket connection failed","depth":depth})),
-                        }
+                    Some("http" | "websocket") => {
+                        return Err("server extensions cannot perform provider I/O".into());
                     }
                     Some("storage") => {
                         if serde_json::to_vec(&effect["value"])
@@ -325,13 +258,6 @@ async fn run(
                     if event["type"]!="command" || event["name"].as_str().is_some_and(|name|manifest.subscriptions.iter().any(|s|s==name)) {pending.push_back(event);}
                 },Ok(_)=>{},Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>return Err("Event cursor gap; restart the extension to reconnect".into()),Err(_)=>return Ok(()),
             },
-            message=async {if let Some(socket)=socket.as_mut(){socket.next().await}else{std::future::pending().await}}=>{
-                match message {
-                    Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text)))=>match serde_json::from_str::<Value>(&text){Ok(payload)=>pending.push_back(json!({"type":"websocket","payload":payload})),Err(_)=>return Err("invalid WebSocket JSON".into())},
-                    Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(data)))=>{if let Some(socket)=socket.as_mut(){tokio::time::timeout(Duration::from_secs(10),socket.send(Message::Pong(data))).await.map_err(|_|"WebSocket ping timed out")?.map_err(|_|"WebSocket ping failed")?;}},
-                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))|Some(Err(_))|None=>{socket=None;pending.push_back(json!({"type":"websocket_closed"}));},_=>{}
-                }
-            }
         }
     }
 }

@@ -238,7 +238,7 @@ mod tests {
     }
     #[test]
     fn origins_and_schemes_are_explicit_and_do_not_follow_provider_names() {
-        let manifest:GuestManifest=serde_json::from_value(json!({"id":"fixture","name":"Fixture","api_version":2,"module":"guest.wasm","capabilities":["http"],"services":["https://provider.example"]})).unwrap();
+        let manifest:GuestManifest=serde_json::from_value(json!({"id":"fixture","name":"Fixture","api_version":2,"module":"guest.wasm","execution_side":"client","capabilities":["http"],"services":["https://provider.example"]})).unwrap();
         assert!(allowed_url("https://provider.example/data", &manifest, false).is_ok());
         for url in [
             "https://other.example/data",
@@ -269,7 +269,7 @@ mod tests {
     }
     #[tokio::test]
     async fn a_guest_cannot_override_the_destination_host_header() {
-        let manifest:GuestManifest=serde_json::from_value(json!({"id":"fixture","name":"Fixture","api_version":2,"module":"guest.wasm","capabilities":["http"],"services":["https://provider.example"]})).unwrap();
+        let manifest:GuestManifest=serde_json::from_value(json!({"id":"fixture","name":"Fixture","api_version":2,"module":"guest.wasm","execution_side":"client","capabilities":["http"],"services":["https://provider.example"]})).unwrap();
         let error = http(
             &json!({"url":"https://provider.example/api","headers":{"Host":"other.example"}}),
             &manifest,

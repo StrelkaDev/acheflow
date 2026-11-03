@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted by the project owner, 2026-11-03. Implementation pending.
+Accepted by the project owner, 2026-11-03. Server boundary and native client/MCP libraries implemented; UI authorization remains pending.
 Supersedes [ADR-001](001-provider-authentication.md), including its server-held
 bot credentials and server-side provider execution.
 
@@ -15,8 +15,7 @@ credentials. This applies to bot accounts as well as personal accounts.
 
 Workspace capabilities can be configured manually or registered automatically by
 a connected client for its active workspace. Neither path transfers credentials
-or lets client data grant itself authority. The current server extension runtime,
-secret store and direct provider sends do not yet implement this model.
+or lets client data grant itself authority. The server loads only public metadata for client extensions and runs only credential-free logic guests.
 
 ## Decision
 
@@ -135,18 +134,23 @@ Content reaches a remote/managed AI service only when explicitly configured.
 
 ## Consequences and migration
 
-The earlier server-held bot model is superseded. Current manual token fields,
-server OAuth handling, provider HTTP/WebSocket execution and server-routed chat
-sends are legacy implementation awaiting migration. They must not be described as
-implementing this boundary. Existing authenticated MCP state/command tools are a
-starting point, not the completed registration/execution bridge.
+The earlier server-held bot model is removed: there is no server secret-write action,
+credential store or provider HTTP/WebSocket effect handler. Provider manifests are
+client-only. The owner explicitly chose removal before completing the new account UI;
+client extensions remain unavailable until a registered executor is connected.
 
-Migration order and acceptance criteria are in
-[the client execution specification](../SPEC-client-execution.md). In particular,
-client OAuth, direct sends, workspace registration, bounded instruction retrieval,
-results, cancellation and two independent providers must be verified before the
-old server credential path is removed. Test fixtures do not prove live account
-authorization. The optional managed service is future work.
+The native `acheflow-client` library owns WASM provider execution and bounded I/O.
+Authenticated MCP executor endpoints register public connections, ingest typed events,
+claim instructions and report results. Workspace policy is saved independently of live
+registrations. The shared chat command uses this outbox for client-owned channels.
+
+[The execution specification](../SPEC-client-execution.md) records implemented limits
+and remaining work. Two independent WASM fixture executors are verified through real
+loopback MCP, including receipts and echoes. The actual Twitch/YouTube/VK guests are
+also tested in the client runtime without accounts. Neither proves live OAuth or
+platform access. Browser execution, account UI, durable credentials/intent journals,
+and native provider polls across the new bridge remain pending. A managed executor
+service remains optional future work.
 
 ## References
 

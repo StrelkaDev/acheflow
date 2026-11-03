@@ -49,6 +49,13 @@ impl Analytics {
             }
         }
     }
+    pub fn disconnect_channel(&mut self, origin: &str, channel: &str) {
+        if let Some(sample) = self.samples.get_mut(&(origin.into(), channel.into())) {
+            sample.concurrent = None;
+            sample.observed_at_ms = 0;
+            sample.offline = false;
+        }
+    }
     pub fn snapshot(&self, now: u64) -> AudienceSnapshot {
         let mut snapshot = AudienceSnapshot {
             peak: self.peak,

@@ -200,6 +200,10 @@ fn persist(path: &Path, settings: &ServerSettings) -> Result<(), String> {
     crate::tls::load(&settings.http_tls)?;
     crate::tls::load(&settings.rtmp_tls)?;
     let bytes = serde_json::to_vec_pretty(settings).map_err(|e| e.to_string())?;
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Cannot create settings directory: {e}"))?;
+    }
     let temporary = path.with_extension("json.tmp");
     std::fs::write(&temporary, bytes).map_err(|e| format!("Cannot save settings: {e}"))?;
     std::fs::rename(&temporary, path).map_err(|e| format!("Cannot replace settings: {e}"))
@@ -290,5 +294,47 @@ mod tests {
         assert!(state.save(invalid).await.is_err());
         assert_eq!(load(&path).unwrap(), settings);
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+    #[tokio::test]
+    async fn custom_settings_path_is_created_and_restored_by_a_new_server_state() {
+        let root = std::env::temp_dir().join(format!(
+            "acheflow-server-settings-{}",
+            acheflow_media_api::workspace::new_token()
+        ));
+        let path = root.join("nested/server.json");
+        let state = SettingsState::from_args(Args {
+            config: path.clone(),
+            port: Some(22295),
+            rtmp_port: Some(2935),
+            ..Default::default()
+        })
+        .unwrap();
+        let settings = ServerSettings {
+            http_port: 22296,
+            rtmp_port: 2936,
+            ..Default::default()
+        };
+        state.save(settings.clone()).await.unwrap();
+        assert_eq!(state.active.http_port, 22295);
+        let restarted = SettingsState::from_args(Args {
+            config: path.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(restarted.status().await.saved, settings);
+        assert!(!restarted.status().await.restart_required);
+        let before = std::fs::read(&path).unwrap();
+        let invalid = ServerSettings {
+            http_port: 0,
+            ..settings
+        };
+        assert!(state.save(invalid).await.is_err());
+        assert_eq!(std::fs::read(path).unwrap(), before);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

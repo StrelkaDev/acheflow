@@ -3,6 +3,10 @@
 Status: implemented in the working tree; see [operational qualifications](controls.md). Module id: `twitch` in the
 [capability map](../CAPABILITY-MAP.md).
 
+Execution amendment (2026-11-03): this provider is `execution_side: client`.
+The server no longer runs its network/OAuth effects. See [the client boundary and
+remaining account UI work](client-executor.md); live authorization remains unverified.
+
 ## Objective
 
 Ship the first real platform integration as an executable Acheflow WASM extension:
@@ -22,7 +26,7 @@ Identify accounts, broadcasters and channels by Twitch ids. Use OAuth grants wit
 the scopes required by the selected installed/chat-client authorization model;
 document app registration, redirect/device flow and scopes after verification in
 the plan. Do not require users to paste tokens into chat or workspace JSON. Keep
-credential handles on the server; UI sees identity/status and reconnect actions.
+credential handles in the client executor; server UI sees public availability.
 
 Use EventSub for incoming chat and Twitch API for sends. Manage subscription,
 welcome/keepalive, reconnect handoff, revocation, cancellation and deduplication.

@@ -28,6 +28,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "acheflow-client"
+version = "0.1.2"
+dependencies = [
+ "acheflow-control",
+ "acheflow-extension-api",
+ "futures-util",
+ "reqwest",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "url",
+]
+
+[[package]]
 name = "acheflow-composition"
 version = "0.1.2"
 dependencies = [
@@ -64,6 +80,7 @@ dependencies = [
 name = "acheflow-extension-api"
 version = "0.1.2"
 dependencies = [
+ "schemars",
  "serde",
  "serde_json",
 ]
@@ -85,6 +102,7 @@ dependencies = [
 name = "acheflow-server"
 version = "0.1.2"
 dependencies = [
+ "acheflow-client",
  "acheflow-composition",
  "acheflow-control",
  "acheflow-extension-api",
@@ -92,7 +110,6 @@ dependencies = [
  "axum",
  "axum-server",
  "clap",
- "futures-util",
  "image",
  "openssl",
  "reqwest",
@@ -103,7 +120,6 @@ dependencies = [
  "subtle",
  "tokio",
  "tokio-openssl",
- "tokio-tungstenite",
  "tokio-util",
  "tower-http",
  "url",

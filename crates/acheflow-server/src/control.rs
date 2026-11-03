@@ -45,10 +45,8 @@ pub struct Services {
 
 pub struct ControlHost {
     pub runtime: RuntimeState,
+    pub client_execution: Mutex<acheflow_control::client_execution::ExecutionRegistry>,
     pub services: Mutex<Services>,
-    pub secrets: AsyncMutex<
-        std::collections::BTreeMap<(String, String), crate::extension_transport::Secrets>,
-    >,
     pub extension_storage: Mutex<std::collections::BTreeMap<(String, String), Value>>,
     pub extension_owner: Mutex<Option<String>>,
     pub(crate) command_lock: AsyncMutex<()>,
@@ -60,8 +58,8 @@ impl ControlHost {
     pub fn new(runtime: RuntimeState) -> Arc<Self> {
         Arc::new(Self {
             runtime,
+            client_execution: Mutex::new(Default::default()),
             services: Mutex::new(Services::default()),
-            secrets: AsyncMutex::new(Default::default()),
             extension_storage: Mutex::new(Default::default()),
             extension_owner: Mutex::new(None),
             command_lock: AsyncMutex::new(()),
@@ -75,6 +73,12 @@ impl ControlHost {
         let owner = workspace.as_ref().map(|w| w.id.clone());
         let mut state = self.services.lock().unwrap();
         if state.owner != owner || !state.initialized {
+            if let Some(previous) = &state.owner {
+                self.client_execution
+                    .lock()
+                    .unwrap()
+                    .withdraw_workspace(previous, now_ms());
+            }
             *state = Services {
                 initialized: true,
                 owner: owner.clone(),
@@ -86,24 +90,27 @@ impl ControlHost {
                         name: e.manifest.name.clone(),
                         state: "stopped".into(),
                         capabilities: e.manifest.capabilities.clone(),
-                        settings: e.manifest.settings.clone(),
+                        settings: e
+                            .manifest
+                            .settings
+                            .iter()
+                            .filter(|s| !s.secret)
+                            .cloned()
+                            .collect(),
                         ..Default::default()
                     })
                     .collect(),
                 ..Default::default()
             };
         }
-        let mut extensions = state.extensions.clone();
-        if let Ok(credentials) = self.secrets.try_lock() {
-            for extension in &mut extensions {
-                extension.configured_secrets = owner
-                    .as_ref()
-                    .and_then(|owner| credentials.get(&(owner.clone(), extension.id.clone())))
-                    .map(|secrets| secrets.keys().cloned().collect())
-                    .unwrap_or_default();
-            }
-        }
+        let executors =
+            crate::client_bridge::refresh(self, workspace.as_ref(), &mut state, now_ms());
         ControlSnapshot {
+            client_capabilities: workspace
+                .as_ref()
+                .map(|w| w.client_capabilities.clone())
+                .unwrap_or_default(),
+            client_executors: executors,
             extension_settings: workspace
                 .as_ref()
                 .map(|w| w.extensions.clone())
@@ -120,7 +127,7 @@ impl ControlHost {
             history: state.analytics.history().iter().cloned().collect(),
             polls: state.interaction.polls(now_ms()),
             commands: state.interaction.commands(),
-            extensions,
+            extensions: state.extensions.clone(),
             channels: state.integrations.channels(),
             donations: state.integrations.donations(),
             interactions: state.integrations.interactions(),
@@ -218,15 +225,16 @@ impl ControlHost {
         } else {
             None
         };
-        self.publish_inner(owner, origin, instance, effect, depth)
+        self.publish_inner(owner, origin, instance, effect, depth, false)
     }
-    fn publish_inner(
+    pub(crate) fn publish_inner(
         &self,
         owner: &str,
         origin: &str,
         instance: &str,
         effect: Value,
         depth: u8,
+        client_authorized: bool,
     ) -> Result<(), String> {
         if depth > 4 {
             return Err("extension event chain limit reached".into());
@@ -249,10 +257,11 @@ impl ControlHost {
         crate::integration_host::validate_effect(self, origin, &effect)?;
         let mut state = self.services.lock().unwrap();
         if state.owner.as_deref() != Some(owner)
-            || state
-                .instances
-                .get(origin)
-                .is_none_or(|current| current != instance)
+            || (!client_authorized
+                && state
+                    .instances
+                    .get(origin)
+                    .is_none_or(|current| current != instance))
         {
             return Err("extension instance is no longer active".into());
         }
@@ -566,29 +575,21 @@ impl ControlHost {
     }
     async fn apply(self: &Arc<Self>, request: &ControlRequest) -> Result<(), String> {
         match &request.action {
-            ControlAction::SetExtensionSecret {
-                id,
-                key,
-                value,
-                config,
-            } => {
-                if let Some(config) = config {
-                    crate::workspace_extensions::configure_extension(
-                        self,
-                        &request.workspace_id,
-                        id,
-                        config,
-                    )?;
-                }
-                crate::workspace_extensions::set_secret(
-                    self,
+            ControlAction::SetClientCapabilities { grants } => {
+                self.client_execution.lock().unwrap().set_policy(
                     &request.workspace_id,
-                    id,
-                    key,
-                    &value.0,
-                )
-                .await?;
+                    grants.clone(),
+                    now_ms(),
+                )?;
+                let mut workspace = self.runtime.workspace.write().unwrap();
+                let workspace = workspace
+                    .as_mut()
+                    .filter(|w| w.id == request.workspace_id)
+                    .ok_or("conflict: workspace changed")?;
+                workspace.client_capabilities = grants.clone();
+                workspace.edit_revision = request.expected_revision + 1;
             }
+
             ControlAction::ExtensionEvent {
                 id,
                 action_id,
@@ -733,6 +734,92 @@ pub(crate) mod tests {
         spatial::SpatialScene,
         workspace::{Orientation, Workspace},
     };
+    #[test]
+    fn client_executor_metadata_is_workspace_scoped_and_switching_withdraws_authority() {
+        use acheflow_extension_api::client_execution::*;
+        let (host, workspace) = host();
+        {
+            let mut saved = host.runtime.workspace.write().unwrap();
+            let saved = saved.as_mut().unwrap();
+            saved
+                .extensions
+                .entry("fixture".into())
+                .or_default()
+                .enabled = true;
+            saved.client_capabilities = vec![CapabilityGrant {
+                provider: "fixture".into(),
+                account_id: "bot".into(),
+                channel_id: "channel".into(),
+                capabilities: std::collections::BTreeSet::from([Capability::ChatRead]),
+            }];
+        }
+        let now = now_ms();
+        {
+            let mut registry = host.client_execution.lock().unwrap();
+            registry
+                .set_policy(
+                    &workspace.id,
+                    vec![CapabilityGrant {
+                        provider: "fixture".into(),
+                        account_id: "bot".into(),
+                        channel_id: "channel".into(),
+                        capabilities: std::collections::BTreeSet::from([Capability::ChatRead]),
+                    }],
+                    now,
+                )
+                .unwrap();
+            registry
+                .register(
+                    &workspace.id,
+                    "authenticated-client",
+                    ClientRegistration {
+                        version: CLIENT_EXECUTION_VERSION,
+                        generation: 1,
+                        connections: vec![Connection {
+                            id: "connection".into(),
+                            provider: "fixture".into(),
+                            account_id: "bot".into(),
+                            channel_id: "channel".into(),
+                            capabilities: std::collections::BTreeSet::from([Capability::ChatRead]),
+                        }],
+                    },
+                    now,
+                )
+                .unwrap();
+        }
+        let snapshot = host.snapshot(0, 1);
+        assert_eq!(snapshot.client_executors.len(), 1);
+        assert_eq!(
+            snapshot.client_executors[0].client_id,
+            "authenticated-client"
+        );
+        *host.runtime.workspace.write().unwrap() = Some(Workspace::default());
+        assert!(host.snapshot(0, 1).client_executors.is_empty());
+        assert!(
+            host.client_execution
+                .lock()
+                .unwrap()
+                .connections(&workspace.id, now + 1)
+                .is_empty()
+        );
+    }
+    #[tokio::test]
+    async fn client_side_extensions_cannot_be_activated_by_the_server_host() {
+        let (mut host, workspace) = host();
+        Arc::get_mut(&mut host)
+            .unwrap()
+            .installed
+            .get_mut("sample")
+            .unwrap()
+            .manifest
+            .execution_side = acheflow_extension_api::integration::ExecutionSide::Client;
+        let result =
+            crate::extension_host::set_enabled(host.clone(), &workspace.id, "sample", true).await;
+        result.unwrap();
+        assert!(host.snapshot(0, 1).panels.is_empty());
+        assert!(host.guests.lock().await.is_empty());
+        assert!(host.services.lock().unwrap().instances.is_empty());
+    }
     pub fn host() -> (Arc<ControlHost>, Workspace) {
         let runtime = crate::live::Runtime::new(
             Arc::new(AsyncMutex::new(Default::default())),

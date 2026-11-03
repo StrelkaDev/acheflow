@@ -4,14 +4,15 @@ Status: implemented in the working tree; see [operational qualifications](contro
 [capability map](../CAPABILITY-MAP.md).
 
 Architecture amendment, 2026-11-03:
-[ADR-002](decisions/002-client-execution-and-workspace-capabilities.md) adds the target
-of client-owned credentials/execution and a workspace capability registry populated
-manually or by a connected client. The [execution specification](SPEC-client-execution.md)
-defines the proposed registration/event/instruction/result bridge. The current
-state/command MCP adapter below does not yet implement that bridge. On MCP
-2026-07-28, instructions are returned to client-initiated calls; the server does not
-initiate arbitrary tool calls on a client. Legacy server-routed provider sends must
-be migrated to client execution before claiming this architecture is implemented.
+[ADR-002](decisions/002-client-execution-and-workspace-capabilities.md) assigns
+platform credentials/I/O to clients. A native client library and authenticated
+`/mcp/executor/<id>` endpoints now implement the typed registration/event/instruction/
+receipt bridge. Each executor endpoint is pinned to one identity/workspace and exposes
+only `acheflow_executor`. Operators configure public grants through
+`acheflow_command` / `set_client_capabilities`; clients cannot grant themselves rights.
+See [setup and remaining work](client-executor.md) and [the execution spec](SPEC-client-execution.md).
+MCP instructions are returned to client-initiated calls; the server never initiates
+arbitrary client tool calls. Server provider transport/credential paths are removed.
 
 ## Objective
 

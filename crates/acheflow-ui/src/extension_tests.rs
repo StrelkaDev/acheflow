@@ -23,19 +23,11 @@ fn app() -> Element {
                     id: "twitch".into(),
                     name: "Twitch".into(),
                     account: Some("other-account".into()),
-                    settings: vec![
-                        acheflow_extension_api::integration::Setting {
-                            id: "client_id".into(),
-                            label: "Application ID".into(),
-                            ..Default::default()
-                        },
-                        acheflow_extension_api::integration::Setting {
-                            id: "access_token".into(),
-                            label: "Access token".into(),
-                            secret: true,
-                            ..Default::default()
-                        },
-                    ],
+                    settings: vec![acheflow_extension_api::integration::Setting {
+                        id: "client_id".into(),
+                        label: "Application ID".into(),
+                        ..Default::default()
+                    }],
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -44,6 +36,7 @@ fn app() -> Element {
         error: use_signal(|| None),
         extension_errors: use_signal(std::collections::BTreeMap::new),
         busy: use_signal(|| false),
+        sync_conflict: use_signal(|| false),
     };
     use_context_provider(|| client);
     harness.client.set(Some(client));
@@ -87,52 +80,6 @@ fn exists(doc: &DioxusDocument, selector: &str) -> bool {
         .query_selector(selector)
         .unwrap()
         .is_some()
-}
-#[tokio::test]
-async fn secret_inputs_are_local_masked_and_cleared_when_the_workspace_changes() {
-    let harness = Rc::new(Harness::default());
-    let mut doc = DioxusDocument::new(
-        VirtualDom::new(app).with_root_context(harness.clone()),
-        DocumentConfig::default(),
-    );
-    doc.initial_build();
-    settle(&mut doc);
-    let mut client = harness.client.get().unwrap();
-    toggle(&mut doc);
-    assert!(exists(&doc, "input[type='password'][disabled]"));
-    let mut snapshot = client.state.read().clone().unwrap();
-    snapshot.workspace_id = Some(client.project.read().id.clone());
-    snapshot.extensions[0].configured_secrets = vec!["access_token".into()];
-    client.state.set(Some(snapshot));
-    settle(&mut doc);
-    assert!(exists(&doc, "input[type='password']:not([disabled])"));
-    let input = doc
-        .inner
-        .borrow()
-        .query_selector("input[type='password']")
-        .unwrap()
-        .unwrap();
-    doc.inner.borrow_mut().set_focus_to(input);
-    doc.handle_ui_event(UiEvent::Paste("fixture-token-not-real".into()));
-    settle(&mut doc);
-    assert!(
-        !serde_json::to_string(&*client.project.read())
-            .unwrap()
-            .contains("fixture-token-not-real")
-    );
-    assert!(
-        !client.project.read().extensions["twitch"]
-            .config
-            .contains_key("access_token")
-    );
-    let first = client.project.read().clone();
-    client.project.set(Workspace::default());
-    settle(&mut doc);
-    assert!(!exists(&doc, "input[type='password']"));
-    client.project.set(first);
-    settle(&mut doc);
-    // The field remounts empty; saved metadata never fills a credential value.
-    assert!(exists(&doc, "input[type='password'][value='']"));
 }
 #[tokio::test]
 async fn extension_command_errors_stay_in_the_owning_card_including_when_collapsed() {
@@ -271,4 +218,181 @@ async fn disabled_cards_hide_settings_and_toggling_or_switching_keeps_workspace_
         .enabled = false;
     settle(&mut doc);
     assert!(!exists(&doc, ".extension-panel"));
+}
+
+#[tokio::test]
+async fn client_waiting_card_keeps_public_settings_and_never_renders_credential_fields() {
+    let harness = Rc::new(Harness::default());
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(app).with_root_context(harness.clone()),
+        DocumentConfig::default(),
+    );
+    doc.initial_build();
+    settle(&mut doc);
+    toggle(&mut doc);
+    let mut client = harness.client.get().unwrap();
+    let mut snapshot = client.state.read().clone().unwrap();
+    snapshot.workspace_id = Some(client.project.read().id.clone());
+    snapshot.extensions[0].state = "waiting_for_client".into();
+    snapshot.extensions[0]
+        .settings
+        .push(acheflow_extension_api::integration::Setting {
+            id: "credential".into(),
+            label: "Must never render".into(),
+            secret: true,
+            ..Default::default()
+        });
+    client.state.set(Some(snapshot));
+    settle(&mut doc);
+    let document = doc.inner.borrow();
+    let count = document
+        .query_selector_all("#extension-twitch input")
+        .unwrap()
+        .len();
+    assert_eq!(
+        count, 1,
+        "only the public Application ID field should remain"
+    );
+    assert!(
+        document
+            .query_selector(".extension-card .badge")
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        document
+            .query_selector("input[type='password']")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn first_snapshot_cannot_acknowledge_remote_settings_over_an_unsynced_local_copy() {
+    use acheflow_extension_api::client_execution::{Capability, CapabilityGrant};
+    let harness = Rc::new(Harness::default());
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(app).with_root_context(harness.clone()),
+        DocumentConfig::default(),
+    );
+    doc.initial_build();
+    settle(&mut doc);
+    let mut client = harness.client.get().unwrap();
+    client.state.set(None);
+    client.project.write().edit_revision = 1;
+    client
+        .project
+        .write()
+        .extensions
+        .entry("twitch".into())
+        .or_default()
+        .config
+        .insert("client_id".into(), "localdraft".into());
+    let snapshot = ControlSnapshot {
+        workspace_id: Some(client.project.read().id.clone()),
+        edit_revision: 2,
+        revision: 2,
+        client_capabilities: vec![CapabilityGrant {
+            provider: "twitch".into(),
+            account_id: "bot".into(),
+            channel_id: "channel".into(),
+            capabilities: [Capability::ChatRead].into(),
+        }],
+        ..Default::default()
+    };
+    client.accept(snapshot.clone());
+    settle(&mut doc);
+    assert_eq!(
+        client.project.read().edit_revision,
+        1,
+        "unreconciled settings must keep their old revision"
+    );
+    assert_eq!(
+        client.project.read().extensions["twitch"].config["client_id"],
+        "localdraft"
+    );
+    assert!(client.error.read().is_some());
+    client.accept(snapshot);
+    settle(&mut doc);
+    assert_eq!(
+        client.project.read().edit_revision,
+        1,
+        "a repeated poll cannot clear the conflict"
+    );
+}
+
+#[tokio::test]
+async fn resolving_settings_conflicts_is_explicit_and_does_not_send_an_apply() {
+    use acheflow_extension_api::client_execution::{Capability, CapabilityGrant};
+    let harness = Rc::new(Harness::default());
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(app).with_root_context(harness.clone()),
+        DocumentConfig::default(),
+    );
+    doc.initial_build();
+    settle(&mut doc);
+    let mut client = harness.client.get().unwrap();
+    client.state.set(None);
+    client.project.write().edit_revision = 1;
+    client
+        .project
+        .write()
+        .extensions
+        .entry("twitch".into())
+        .or_default()
+        .config
+        .insert("client_id".into(), "localdraft".into());
+    let snapshot = ControlSnapshot {
+        workspace_id: Some(client.project.read().id.clone()),
+        edit_revision: 2,
+        revision: 2,
+        client_capabilities: vec![CapabilityGrant {
+            provider: "twitch".into(),
+            account_id: "bot".into(),
+            channel_id: "channel".into(),
+            capabilities: [Capability::ChatRead].into(),
+        }],
+        ..Default::default()
+    };
+    client.accept(snapshot.clone());
+    settle(&mut doc);
+    assert!((client.sync_conflict)());
+    assert_eq!(
+        doc.inner
+            .borrow()
+            .query_selector_all(".panel-note button")
+            .unwrap()
+            .len(),
+        2
+    );
+    client.resolve_sync_conflict(false);
+    settle(&mut doc);
+    assert!(!(client.sync_conflict)());
+    assert_eq!(client.project.read().edit_revision, 2);
+    assert_eq!(
+        client.project.read().extensions["twitch"].config["client_id"],
+        "localdraft"
+    );
+    assert!(client.project.read().client_capabilities.is_empty());
+    assert!(
+        !(client.busy)(),
+        "resolving is a local choice; Apply stays separate"
+    );
+    client.state.set(None);
+    client.project.write().edit_revision = 1;
+    client.accept(snapshot.clone());
+    settle(&mut doc);
+    client.resolve_sync_conflict(true);
+    settle(&mut doc);
+    assert_eq!(
+        client.project.read().client_capabilities,
+        snapshot.client_capabilities
+    );
+    assert_eq!(
+        client.project.read().extensions,
+        snapshot.extension_settings
+    );
+    assert_eq!(client.project.read().edit_revision, 2);
+    assert!(client.error.read().is_none());
+    assert!(!(client.busy)());
 }

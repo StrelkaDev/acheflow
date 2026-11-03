@@ -215,9 +215,16 @@ Browser workspaces auto-save in localStorage for the current origin. Native
 workspaces auto-save to `~/.acheflow/workspaces.json`; override this path with
 `ACHEFLOW_WORKSPACE_FILE`. Desktop writes use an atomic file replacement and
 owner-only permissions on Unix. The UI and workspace model are shared; the
-small storage adapter differs by target. There is no server synchronization yet;
-use JSON to transfer workspaces between browser and desktop. Concurrent windows
-use the most recent local write.
+small storage adapter differs by target. The same catalog now saves the global
+background-animation preference. Connected control updates merge public extension
+settings, capability policy and 3D state into the local workspace; conflicts preserve
+local drafts until an explicit choice. Use JSON to transfer workspaces between browser
+and desktop. Concurrent windows use the most recent local catalog write.
+
+The server's active workspace and public policy remain in memory: after a server
+restart, apply the saved client workspace again. Server listener/TLS path settings
+persist separately in the server JSON file. See [settings persistence and restore](docs/settings-persistence.md)
+for storage locations, Apply behavior, conflict recovery and verified restart limits.
 
 JSON exports include RTMP keys. Import rejects unsupported versions, malformed
 configuration, missing references, layers outside the canvas, unsupported output

@@ -9,8 +9,7 @@ integration/bot/OAuth and external AI credentials and platform I/O to clients.
 The server receives normalized events, applies logic and returns typed instructions
 for an authorized client to execute. Workspace capabilities may be configured
 manually through MCP metadata or registered by a connected client, without secrets.
-The current host credential and provider transport paths below are legacy behavior
-awaiting migration; paired client/server runtimes are specified in
+Server credential storage and provider transports have been removed. Execution is specified in
 [the execution specification](SPEC-client-execution.md). A later managed executor/AI
 service is optional and acts as a client, not a credential store in the logic server.
 
@@ -24,25 +23,25 @@ provider names, service URLs, OAuth response fields or transport implementations
 in production server/UI code. Discover installations from manifests, not an
 in-code list of providers. Provider code lives under extensions/.
 
-Manifest-declared secret fields are always captured/redacted regardless of the
-individual request effect. The host supplies bounded HTTP/WebSocket I/O, ticks, secret handles and declarative
-UI. HTTP results contain status and bounded JSON; captured secrets are redacted
-before entering guest memory and are never included in workspace JSON/snapshots.
-Credentials are scoped by workspace + extension; network calls remain restricted
-to manifest origins, with no redirects. Guests use the same sandbox and lifecycle.
+Manifests declare `execution_side: "server"` or `"client"`. The default is `server`,
+which rejects service origins, secret captures/settings and HTTP/WebSocket capabilities.
+There is no compatibility execution mode. A server logic guest may handle pure domain
+rules, bounded private noncredential storage and panels, without platform I/O.
 
-Settings marked `secret: true` are write-only server credentials. The shared host
-and UI implement this once for every manifest; provider-specific field declarations
-remain under `extensions/`. Manual writes use `set_extension_secret`, never public
-config or guest events. The UI receives only configured handle names. Replacing or
-removing a credential cancels the old guest before updating the scoped store and
-restarting an enabled instance. Values are held in server memory until restart;
-they are absent from workspace JSON, snapshots, panels and Debug output.
+The server discovers public metadata for client manifests but never loads their WASM.
+A native client runtime supplies bounded HTTP/WebSocket I/O and opaque secret handles
+for these guests. Manifest/effect captures redact credentials before guest delivery.
+Secrets remain local to one workspace/account runtime; network calls are restricted
+to declared origins with no redirects. OAuth/protocol definitions remain under
+`extensions/`. Client auth panels and token exchange responses never enter server
+snapshots or MCP events. Shared UI has no manual credential-entry/save action.
+Client `Connect account` UI and durable credential storage remain work in progress;
+see the implementation boundary in [SPEC-client-execution.md](SPEC-client-execution.md).
 
 ## Commands, events and lifecycle
 
-UI/MCP -> host domain command -> enabled capable channel owner -> provider API.
-Provider -> validated domain event -> host state -> shared native/browser UI.
+UI/MCP -> server domain command -> outbox -> client claim -> provider API -> receipt.
+Provider -> client normalized typed event -> server logic -> shared native/browser UI.
 Every delivery identifies workspace, extension instance, request/correlation ID,
 channel and timestamp. Stop cancels I/O and rejects late instance effects. It
 removes live channels and panels; saved configuration and historical data remain.
@@ -53,7 +52,8 @@ Channels declare capabilities. An empty target list means all available capable
 channels; an explicit unsupported/unavailable target fails visibly. Chat fanout
 creates one local message with per-target delivery status. Provider receipts and
 echo IDs reconcile that message rather than adding duplicate local echoes.
-Poll creation/closure is sent to the selected poll-capable channel owners. Each
+Native poll routing remains available for pure logic fixtures; client provider poll
+instructions have not yet been added and are not advertised as available. Each
 provider publishes initial, periodic and final votes with its external poll ID;
 the host aggregates counts and retains per-target errors/partial completion.
 There is no hidden replacement of native polls by chat commands.

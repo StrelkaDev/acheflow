@@ -9,6 +9,7 @@ pub struct ControlClient {
     pub error: Signal<Option<String>>,
     pub extension_errors: Signal<std::collections::BTreeMap<String, String>>,
     pub busy: Signal<bool>,
+    pub sync_conflict: Signal<bool>,
 }
 pub fn use_control_client(project: Signal<Workspace>) -> ControlClient {
     let mut client = ControlClient {
@@ -17,6 +18,7 @@ pub fn use_control_client(project: Signal<Workspace>) -> ControlClient {
         error: use_signal(|| None),
         extension_errors: use_signal(std::collections::BTreeMap::new),
         busy: use_signal(|| false),
+        sync_conflict: use_signal(|| false),
     };
     use_context_provider(|| client);
     let identity = use_memo(move || {
@@ -26,6 +28,7 @@ pub fn use_control_client(project: Signal<Workspace>) -> ControlClient {
     use_resource(move || {
         let owner = identity();
         client.state.set(None);
+        client.sync_conflict.set(false);
         client.error.set(None);
         client.extension_errors.write().clear();
         async move {
@@ -50,25 +53,72 @@ pub fn use_control_client(project: Signal<Workspace>) -> ControlClient {
     client
 }
 impl ControlClient {
-    fn accept(mut self, snapshot: ControlSnapshot) {
-        if snapshot.workspace_id.as_deref() == Some(self.project.peek().id.as_str()) {
-            if self.project.peek().edit_revision != snapshot.edit_revision {
-                self.project.write().edit_revision = snapshot.edit_revision;
+    pub(crate) fn accept(mut self, snapshot: ControlSnapshot) {
+        let previous = self
+            .state
+            .peek()
+            .clone()
+            .filter(|old| old.workspace_id == snapshot.workspace_id);
+        let owner = self.project.peek().id.clone();
+        if snapshot.workspace_id.as_deref() == Some(owner.as_str()) {
+            let mut workspace = self.project.write();
+            let had_conflict = *self.sync_conflict.peek();
+            let mut conflict = had_conflict;
+            match previous {
+                Some(previous) if previous.revision != snapshot.revision => {
+                    conflict |= merge_remote_spatial(&mut workspace, &previous, &snapshot);
+                    conflict |= merge_remote_extensions(&mut workspace, &previous, &snapshot);
+                }
+                None if workspace.edit_revision != snapshot.edit_revision => {
+                    conflict |= !matches_remote_settings(&workspace, &snapshot);
+                }
+                _ => {}
             }
-            let changed = self.state.peek().as_ref().is_some_and(|old| {
-                old.workspace_id == snapshot.workspace_id && old.revision != snapshot.revision
-            });
-            if changed && let Some(previous) = self.state.peek().clone() {
-                let mut workspace = self.project.write();
-                let scene_conflict = merge_remote_spatial(&mut workspace, &previous, &snapshot);
-                let extension_conflict =
-                    merge_remote_extensions(&mut workspace, &previous, &snapshot);
-                if scene_conflict || extension_conflict {
-                    self.error.set(Some("Workspace settings changed remotely. Apply your draft or reload it before editing.".into()));
+            if matches_remote_settings(&workspace, &snapshot) {
+                conflict = false;
+            }
+            if !conflict {
+                workspace.edit_revision = snapshot.edit_revision;
+            }
+            self.sync_conflict.set(conflict);
+            if had_conflict && !conflict {
+                self.error.set(None);
+            }
+            if conflict {
+                self.error.set(Some("Workspace settings changed on the server. Your local edits are preserved; choose which settings to use.".into()));
+            }
+        } else {
+            self.sync_conflict.set(false);
+        }
+        self.state.set(Some(snapshot));
+    }
+    /// Resolve against the last observed server state. Keeping local edits only
+    /// acknowledges that revision; Apply remains a separate explicit action.
+    pub fn resolve_sync_conflict(mut self, use_server: bool) {
+        let Some(snapshot) = self
+            .state
+            .peek()
+            .clone()
+            .filter(|s| s.workspace_id.as_deref() == Some(self.project.peek().id.as_str()))
+        else {
+            return;
+        };
+        if !*self.sync_conflict.peek() {
+            return;
+        }
+        let mut workspace = self.project.write();
+        if use_server {
+            workspace.extensions = snapshot.extension_settings;
+            workspace.client_capabilities = snapshot.client_capabilities;
+            for remote in snapshot.scenes {
+                if let Some(local) = workspace.scenes.iter_mut().find(|s| s.id == remote.id) {
+                    local.spatial = remote.spatial;
                 }
             }
         }
-        self.state.set(Some(snapshot));
+        workspace.edit_revision = snapshot.edit_revision;
+        self.sync_conflict.set(false);
+        self.error.set(None);
     }
     pub fn set_extension(mut self, id: String, enabled: bool) {
         self.extension_errors.write().remove(&id);
@@ -98,8 +148,7 @@ impl ControlClient {
         }
         match &mut action {
             ControlAction::ExtensionEvent { id, config, .. }
-            | ControlAction::SetExtension { id, config, .. }
-            | ControlAction::SetExtensionSecret { id, config, .. } => {
+            | ControlAction::SetExtension { id, config, .. } => {
                 *config = Some(
                     self.project
                         .peek()
@@ -112,9 +161,9 @@ impl ControlClient {
             _ => {}
         }
         let extension = match &action {
-            ControlAction::SetExtension { id, .. }
-            | ControlAction::ExtensionEvent { id, .. }
-            | ControlAction::SetExtensionSecret { id, .. } => Some(id.clone()),
+            ControlAction::SetExtension { id, .. } | ControlAction::ExtensionEvent { id, .. } => {
+                Some(id.clone())
+            }
             _ => None,
         };
         self.command_error(extension.as_deref(), None);
@@ -164,6 +213,16 @@ impl ControlClient {
         }
     }
 }
+fn matches_remote_settings(workspace: &Workspace, snapshot: &ControlSnapshot) -> bool {
+    workspace.extensions == snapshot.extension_settings
+        && workspace.client_capabilities == snapshot.client_capabilities
+        && snapshot.scenes.iter().all(|remote| {
+            workspace
+                .scenes
+                .iter()
+                .any(|local| local.id == remote.id && local.spatial == remote.spatial)
+        })
+}
 fn merge_remote_extensions(
     workspace: &mut Workspace,
     previous: &ControlSnapshot,
@@ -175,6 +234,15 @@ fn merge_remote_extensions(
         .chain(next.extension_settings.keys())
         .collect::<std::collections::BTreeSet<_>>();
     let mut conflict = false;
+    if previous.client_capabilities != next.client_capabilities {
+        if workspace.client_capabilities == previous.client_capabilities
+            || workspace.client_capabilities == next.client_capabilities
+        {
+            workspace.client_capabilities = next.client_capabilities.clone();
+        } else {
+            conflict = true;
+        }
+    }
     for id in ids {
         let base = previous
             .extension_settings
@@ -283,6 +351,32 @@ async fn fetch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn remote_capability_policy_is_preserved_without_overwriting_a_local_draft() {
+        use acheflow_extension_api::client_execution::{Capability, CapabilityGrant};
+        let mut workspace = Workspace::default();
+        let previous = ControlSnapshot::default();
+        let mut next = previous.clone();
+        next.client_capabilities = vec![CapabilityGrant {
+            provider: "fixture".into(),
+            account_id: "bot".into(),
+            channel_id: "channel".into(),
+            capabilities: [Capability::ChatRead].into(),
+        }];
+        assert!(!merge_remote_extensions(&mut workspace, &previous, &next));
+        assert_eq!(workspace.client_capabilities, next.client_capabilities);
+        let previous = next.clone();
+        workspace.client_capabilities[0]
+            .capabilities
+            .insert(Capability::ChatSend);
+        next.client_capabilities.clear();
+        assert!(merge_remote_extensions(&mut workspace, &previous, &next));
+        assert!(
+            workspace.client_capabilities[0]
+                .capabilities
+                .contains(&Capability::ChatSend)
+        );
+    }
     #[test]
     fn remote_toggles_preserve_public_client_id_drafts_and_report_conflicting_edits() {
         let mut workspace = Workspace::default();
