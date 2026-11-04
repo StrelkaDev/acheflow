@@ -38,11 +38,19 @@ for these guests. Manifest/effect captures redact credentials before guest deliv
 Secrets remain local to one workspace/account runtime; network calls are restricted
 to declared origins with no redirects. OAuth/protocol definitions remain under
 `extensions/`. Client auth panels and token exchange responses never enter server
-snapshots or MCP events. Shared UI has no manual credential-entry/save action.
-Client `Connect account` UI and durable credential storage remain work in progress;
-see the implementation boundary in [SPEC-client-execution.md](SPEC-client-execution.md).
+snapshots or MCP events. Client account panels and manual secret inputs are emitted
+by provider WASM guests; shared UI only renders their generic controls. OAuth flow,
+permissions, validation and renewal stay under `extensions/`. Committed native Mac
+credentials use the client's system vault; browser credentials remain session-local.
+See [local authorization](extension-authorization.md) and the remaining executor
+boundary in [SPEC-client-execution.md](SPEC-client-execution.md).
 
 ## Commands, events and lifecycle
+
+Panels can use generic `row` and `disclosure` widgets to group controls. A button's
+optional `primary` flag defaults to false. Layout stays guest-declared and the host
+renders the same wrapping rows and keyboard-operated disclosures on both targets.
+The 64-widget limit includes nested children; layout nesting is limited to 8 levels.
 
 UI/MCP -> server domain command -> outbox -> client claim -> provider API -> receipt.
 Provider -> client normalized typed event -> server logic -> shared native/browser UI.

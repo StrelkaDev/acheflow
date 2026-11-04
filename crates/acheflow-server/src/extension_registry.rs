@@ -6,6 +6,11 @@ pub struct Installed {
     pub manifest: GuestManifest,
     pub module: Vec<u8>,
 }
+#[derive(Default)]
+pub struct Discovery {
+    pub installed: BTreeMap<String, Installed>,
+    pub errors: Vec<String>,
+}
 pub fn discover() -> BTreeMap<String, Installed> {
     let root = std::env::var_os("ACHEFLOW_EXTENSIONS_DIR")
         .map(std::path::PathBuf::from)
@@ -23,25 +28,81 @@ pub fn discover() -> BTreeMap<String, Installed> {
     discover_at(&root)
 }
 pub fn discover_at(root: &Path) -> BTreeMap<String, Installed> {
-    let mut installed = BTreeMap::new();
-    if let Ok(entries) = std::fs::read_dir(root) {
-        for entry in entries.flatten().take(64) {
-            if !entry.path().join("manifest.json").is_file() {
+    let discovery = discover_catalog_at(root);
+    for error in discovery.errors {
+        eprintln!("Extension installation skipped: {error}");
+    }
+    discovery.installed
+}
+pub fn discover_catalog_at(root: &Path) -> Discovery {
+    let mut result = Discovery::default();
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => {
+            result.errors.push(format!(
+                "{}: extension directory is unavailable",
+                root.display()
+            ));
+            return result;
+        }
+    };
+    let Ok(mut directories) = entries
+        .take(65)
+        .map(|entry| entry.map(|e| e.path()))
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        result.errors.push(format!(
+            "{}: extension directory could not be fully read; catalog disabled",
+            root.display()
+        ));
+        return result;
+    };
+    if directories.len() > 64 {
+        result.errors.push(format!(
+            "{}: extension directory exceeds scan limit; catalog disabled",
+            root.display()
+        ));
+        return result;
+    }
+    directories.sort();
+    let mut sources = BTreeMap::<String, Vec<String>>::new();
+    for directory in directories {
+        if !directory.join("manifest.json").is_file() {
+            continue;
+        }
+        let extension = match load(&directory) {
+            Ok(Some(extension)) => extension,
+            Ok(None) => continue,
+            Err(error) => {
+                result
+                    .errors
+                    .push(format!("{}: {error}", directory.display()));
                 continue;
             }
-            match load(&entry.path()) {
-                Ok(Some(extension))
-                    if !installed.contains_key(&extension.manifest.id) && installed.len() < 8 =>
-                {
-                    installed.insert(extension.manifest.id.clone(), extension);
-                }
-                Ok(_) => {}
-                Err(error) => eprintln!("Extension installation skipped: {error}"),
-            }
+        };
+        let id = &extension.manifest.id;
+        let locations = sources.entry(id.clone()).or_default();
+        locations.push(directory.display().to_string());
+        if locations.len() > 1 {
+            result.installed.remove(id);
+            result.errors.push(format!(
+                "conflicting extension ID '{id}'; all installations disabled: {}",
+                locations.join(", ")
+            ));
+            continue;
         }
+        if result.installed.len() >= 8 {
+            result.errors.push(format!(
+                "{}: server catalog limit reached",
+                directory.display()
+            ));
+            continue;
+        }
+        result.installed.insert(id.clone(), extension);
     }
-    installed
+    result
 }
+
 fn load(directory: &Path) -> Result<Option<Installed>, String> {
     let directory = directory
         .canonicalize()
@@ -78,3 +139,7 @@ fn load(directory: &Path) -> Result<Option<Installed>, String> {
     Guest::load(&module, manifest.capabilities.clone())?;
     Ok(Some(Installed { manifest, module }))
 }
+
+#[cfg(test)]
+#[path = "extension_registry_tests.rs"]
+mod tests;

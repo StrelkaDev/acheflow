@@ -25,6 +25,7 @@ struct WireData {
 
 #[derive(Default)]
 pub struct VkLive {
+    authorization: guest_sdk::authorization::Authorization,
     channel: String,
     authorized: bool,
     channel_pending: bool,
@@ -103,6 +104,12 @@ impl VkLive {
         json!({"type":"http","id":id,"url":format!("https://apidev.live.vkvideo.ru/v1/{path}"),"headers":{"Authorization":{"secret":"access_token","prefix":"Bearer "}},"query":query})
     }
     pub fn handle(&mut self, input: Value) -> Vec<Value> {
+        if let Some(effects) = self
+            .authorization
+            .handle(&input, include_str!("../manifest.json"))
+        {
+            return effects;
+        }
         let now = input["now_ms"].as_u64().unwrap_or(0);
         let mut out = vec![];
         match input["type"].as_str().unwrap_or_default() {
@@ -147,7 +154,8 @@ impl VkLive {
                     self.channel_pending = true;
                     out.push(self.http("channel", "channel"));
                 }
-                if self.initialized
+                if guest_sdk::authorization::enabled(&input["config"], "read_chat")
+                    && self.initialized
                     && now >= self.next_chat
                     && !self.chat_pending
                     && self.messages.is_empty()
@@ -174,7 +182,9 @@ impl VkLive {
                         self.initialized = true;
                         let offline = data["channel"]["status"] == "offline";
                         out.push(json!({"type":"channel","channel":{"id":self.channel,"label":format!("VK Video Live / {}",data["channel"]["nick"].as_str().unwrap_or(&self.channel)),"capabilities":[]}}));
-                        out.push(json!({"type":"audience","sample":{"platform":"vklive","channel_id":self.channel,"stream_id":data["stream"]["id"],"observed_at_ms":now,"concurrent":if offline{json!(0)}else{data["stream"]["counters"]["viewers"].clone()},"offline":offline,"unique":null}}));
+                        if guest_sdk::authorization::enabled(&input["config"], "read_audience") {
+                            out.push(json!({"type":"audience","sample":{"platform":"vklive","channel_id":self.channel,"stream_id":data["stream"]["id"],"observed_at_ms":now,"concurrent":if offline{json!(0)}else{data["stream"]["counters"]["viewers"].clone()},"offline":offline,"unique":null}}));
+                        }
                         out.push(status("connected", None));
                     } else {
                         out.push(json!({"type":"failure","message":"VK Video Live channel lookup failed; retrying with backoff."}));

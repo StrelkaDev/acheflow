@@ -1,4 +1,5 @@
 mod audio_mixer;
+mod client_authorization;
 mod code_editor;
 mod control_client;
 mod dashboard;

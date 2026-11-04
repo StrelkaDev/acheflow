@@ -11,14 +11,26 @@ serde_json = "1"
 acheflow-extension-api = { path = "../acheflow-extension-api" }
 serde_json = "1"
 serde.workspace = true
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acheflow-control = { path = "../acheflow-control" }
-reqwest = { version = "0.13", default-features = false, features = ["json", "form", "query", "native-tls"] }
 url = "2"
+base64 = "0.22"
+sha2 = "0.9"
+getrandom = { version = "0.2", features = ["js"] }
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["json", "form", "query", "native-tls"] }
+webbrowser = "1"
 futures-util = "0.3"
 rmcp = { version = "=3.8.0", features = ["client", "transport-streamable-http-client-reqwest"] }
 tokio.workspace = true
 tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7"
 
 [lints]
 workspace = true

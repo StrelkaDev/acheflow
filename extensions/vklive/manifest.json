@@ -10,24 +10,85 @@
     "failure",
     "panel",
     "channel",
-    "status"
+    "status",
+    "crypto",
+    "browser",
+    "browser_module",
+    "secret_clear",
+    "storage",
+    "secret_begin",
+    "secret_commit",
+    "secret_discard"
   ],
   "services": [
-    "https://apidev.live.vkvideo.ru"
+    "https://apidev.live.vkvideo.ru",
+    "https://auth.live.vkvideo.ru"
   ],
   "subscriptions": [],
   "settings": [
+    {
+      "id": "client_id",
+      "label": "Application Client ID",
+      "help": "Public OAuth application identifier. Required for Connect with; manual tokens can be entered without it.",
+      "max_length": 256
+    },
     {
       "id": "channel",
       "label": "Channel",
       "help": "Channel slug from live.vkvideo.ru, without the URL.",
       "max_length": 128
+    },
+    {
+      "id": "read_chat",
+      "label": "Read chat",
+      "toggle": true,
+      "max_length": 5
+    },
+    {
+      "id": "read_audience",
+      "label": "Read audience",
+      "toggle": true,
+      "max_length": 5
     }
   ],
   "secret_fields": {
     "access_token": "/access_token",
-    "refresh_token": "/refresh_token"
+    "refresh_token": "/refresh_token",
+    "authorization_code": "/code",
+    "code_verifier": "/code_verifier",
+    "client_secret": "/client_secret"
   },
   "unique_viewers": false,
-  "execution_side": "client"
+  "execution_side": "client",
+  "authentication": {
+    "authorize_url": "https://auth.live.vkvideo.ru/app/oauth2/authorize",
+    "help": "Register an application in the VK Video Live developer console (sign-in may use VK ID). DevAPI issues a separate token. Public chat and audience reading do not require privileged scopes. Sending and native polls are not implemented.",
+    "features": [
+      {
+        "id": "read_chat",
+        "label": "Read chat",
+        "default_enabled": true
+      },
+      {
+        "id": "read_audience",
+        "label": "Read audience",
+        "default_enabled": true
+      }
+    ],
+    "permissions": [],
+    "scope_separator": ",",
+    "validation": {
+      "request": {
+        "url": "https://apidev.live.vkvideo.ru/v1/token",
+        "headers": {
+          "Authorization": {
+            "secret": "access_token",
+            "prefix": "Bearer "
+          }
+        }
+      },
+      "scope_path": "/data/scopes",
+      "account_path": "/data/user/nick"
+    }
+  }
 }

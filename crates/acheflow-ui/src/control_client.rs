@@ -12,6 +12,7 @@ pub struct ControlClient {
     pub sync_conflict: Signal<bool>,
 }
 pub fn use_control_client(project: Signal<Workspace>) -> ControlClient {
+    crate::client_authorization::provide_accounts(project);
     let mut client = ControlClient {
         project,
         state: use_signal(|| None),

@@ -1,5 +1,6 @@
 //! The only unsafe boundary: pointers into this WASM instance's own linear memory.
 pub use serde_json;
+pub mod authorization;
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "acheflow")]
 unsafe extern "C" {

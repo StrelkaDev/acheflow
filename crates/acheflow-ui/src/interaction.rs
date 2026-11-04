@@ -398,9 +398,10 @@ fn ExtensionCard(id: String, name: String, busy: bool) -> Element {
             }
             if enabled {
                 div {class:"padded extension-settings",id:body_id.clone(),
-                    for setting in status.settings.iter().filter(|s|!s.secret).cloned() {
+                    div{class:"extension-fields",for setting in status.settings.iter().filter(|s|!s.secret && !s.toggle).cloned() {
                         ExtensionSetting {key:"{setting.id}",extension:id.clone(),setting,local:false}
-                    }
+                    }}
+                    div{class:"extension-functions",for setting in status.settings.iter().filter(|s|!s.secret && s.toggle).cloned(){ExtensionSetting{key:"{setting.id}",extension:id.clone(),setting,local:false}}}
                     if active {
                         if let Some(account) = status.account {p {"Account: {account}"}}
                         if !capabilities.is_empty() {p {class:"form-help","Capabilities: {capabilities}"}}
@@ -434,6 +435,13 @@ fn ExtensionSetting(
         .cloned()
         .unwrap_or_default();
     drop(workspace);
+    if setting.toggle {
+        let enabled = value != "false";
+        return rsx! {div{class:"extension-setting-toggle",button{class:if enabled{"selected"}else{""},role:"switch","aria-checked":enabled.to_string(),onclick:move |_|{
+            let mut w=client.project.write();let map=if local{&mut w.client_extensions}else{&mut w.extensions};
+            map.entry(extension.clone()).or_default().config.insert(setting.id.clone(),(!enabled).to_string());
+        },span{class:"extension-function-mark","aria-hidden":"true",if enabled{"✓"}else{"−"}}"{setting.label}"}}};
+    }
     rsx! {label{class:"field",span{"{setting.label}"}input{r#type:"text",value:value.clone(),maxlength:setting.max_length as i64,oninput:move|event|{let mut w=client.project.write();let map=if local{&mut w.client_extensions}else{&mut w.extensions};map.entry(extension.clone()).or_default().config.insert(setting.id.clone(),event.value());}}if !setting.help.is_empty(){p{class:"form-help","{setting.help}"}}}}
 }
 
@@ -471,7 +479,9 @@ fn ClientIntegrationCard(id: String, name: String) -> Element {
                 }
             }
             if enabled{div{class:"padded extension-settings",id:"client-extension-{id}",
-                for setting in manifest.settings.iter().filter(|s|!s.secret).cloned(){ExtensionSetting{key:"{setting.id}",extension:id.clone(),setting,local:true}}
+                div{class:"extension-fields",for setting in manifest.settings.iter().filter(|s|!s.secret && !s.toggle).cloned(){ExtensionSetting{key:"{setting.id}",extension:id.clone(),setting,local:true}}}
+                div{class:"extension-functions",for setting in manifest.settings.iter().filter(|s|!s.secret && s.toggle).cloned(){ExtensionSetting{key:"{setting.id}",extension:id.clone(),setting,local:true}}}
+                crate::client_authorization::ClientAuthorization{key:"{client.project.read().id}:{id}",id:id.clone(),name:name.clone()}
                 if !connected {p{class:"form-help","An authorized client executor must connect before messages can be collected or sent."}}
             }}
         }

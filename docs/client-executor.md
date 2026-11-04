@@ -17,10 +17,12 @@ and account tokens must never be sent to the logic server.
   and provider echoes update the normal shared chat history.
 
 This is a library for integrating a native UI or executor application. There is
-currently no completed standalone executor binary or main-UI account connection
-flow. Enabling a provider on the server alone does not collect or send anything.
-Browser runtime, OAuth completion/renewal for every platform, durable credential
-storage, native polls and generic external MCP tool registration remain pending.
+currently no completed standalone executor binary. Main-UI account panels now run
+the providers' WASM authorization and local storage, as described in
+[extension authorization](extension-authorization.md); they do not start an executor.
+Enabling a provider on the server alone does not collect or send anything.
+A browser media executor, live-account OAuth qualification, durable intent storage,
+native polls and generic external MCP tool registration remain pending.
 Moderation DTOs exist; the built-in provider runtime rejects unsupported moderation
 actions. Separately implemented executors must advertise only handlers they support.
 

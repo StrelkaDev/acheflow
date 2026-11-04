@@ -13,7 +13,7 @@ fn main() {
         .filter(|p| p.is_file())
         .collect();
     manifests.sort();
-    let mut generated = String::from("pub const BUNDLED: &[(&str, &[u8])] = &[\n");
+    let mut generated = String::from("pub const BUNDLED: &[(&str, &[u8], Option<&str>)] = &[\n");
     let mut count = 0;
     for path in manifests {
         println!("cargo:rerun-if-changed={}", path.display());
@@ -39,10 +39,26 @@ fn main() {
             "client module exceeds 4 MiB"
         );
         println!("cargo:rerun-if-changed={}", module.display());
+        let browser_auth = if let Some(name) = value["authentication"]["browser_module"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+        {
+            assert!(!name.contains(['/', '\\']) && !name.contains("..") && name.ends_with(".js"));
+            let file = path.parent().unwrap().join(name).canonicalize().unwrap();
+            assert!(
+                file.starts_with(path.parent().unwrap().canonicalize().unwrap())
+                    && fs::metadata(&file).unwrap().len() <= 32768
+            );
+            println!("cargo:rerun-if-changed={}", file.display());
+            format!("Some(include_str!({file:?}))")
+        } else {
+            "None".into()
+        };
         generated.push_str(&format!(
-            "(include_str!({:?}), include_bytes!({:?})),\n",
+            "(include_str!({:?}), include_bytes!({:?}), {}),\n",
             path.canonicalize().unwrap(),
-            module.canonicalize().unwrap()
+            module.canonicalize().unwrap(),
+            browser_auth
         ));
     }
     generated.push_str("];\n");

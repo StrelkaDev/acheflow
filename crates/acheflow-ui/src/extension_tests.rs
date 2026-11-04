@@ -19,6 +19,7 @@ fn mixed_app() -> Element {
 fn test_app(include_clients: bool) -> Element {
     let harness = consume_context::<Rc<Harness>>();
     let project = use_signal(Workspace::default);
+    crate::client_authorization::provide_accounts(project);
     crate::live_client::use_live_client(project);
     let client = ControlClient {
         project,
@@ -418,11 +419,13 @@ async fn resolving_settings_conflicts_is_explicit_and_does_not_send_an_apply() {
 }
 
 fn local_client_app() -> Element {
+    // Local panel storage is provided by the client root, including in offline tests.
     let harness = consume_context::<Rc<Harness>>();
     let project = use_signal(|| Workspace {
         server_url: "http://127.0.0.1:9".into(),
         ..Default::default()
     });
+    crate::client_authorization::provide_accounts(project);
     crate::live_client::use_live_client(project);
     let client = ControlClient {
         project,
@@ -488,6 +491,131 @@ async fn client_installations_are_editable_offline_and_never_mutate_server_setti
     assert_eq!(
         client.project.read().client_extensions[id].config[field],
         "local-public-app"
+    );
+}
+
+#[tokio::test]
+async fn local_guest_panel_keeps_manual_tokens_out_of_workspace_and_server_payloads() {
+    let harness = Rc::new(Harness::default());
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(local_client_app).with_root_context(harness.clone()),
+        DocumentConfig::default(),
+    );
+    doc.initial_build();
+    settle(&mut doc);
+    toggle(&mut doc);
+    assert!(!exists(
+        &doc,
+        ".client-authorization input[type='password']"
+    ));
+    let disclosure = doc
+        .inner
+        .borrow()
+        .query_selector(".client-authorization button[aria-expanded='false']")
+        .unwrap()
+        .expect("manual token fields start collapsed");
+    doc.inner.borrow_mut().set_focus_to(disclosure);
+    press_tab_key(&mut doc, NamedKey::Enter, Code::Enter);
+    assert!(exists(&doc, ".client-authorization input[type='password']"));
+    let panel = doc
+        .inner
+        .borrow()
+        .query_selector(".client-authorization")
+        .unwrap()
+        .unwrap();
+    let text = doc.inner.borrow().get_node(panel).unwrap().text_content();
+    assert!(text.contains("Connect with Twitch"));
+    assert!(text.contains("Use tokens"));
+    let input = doc
+        .inner
+        .borrow()
+        .query_selector(".client-authorization input[type='password']")
+        .unwrap()
+        .unwrap();
+    doc.inner.borrow_mut().set_focus_to(input);
+    doc.handle_ui_event(UiEvent::Paste("fake-local-token-for-test".into()));
+    settle(&mut doc);
+    let disclosure = doc
+        .inner
+        .borrow()
+        .query_selector(".client-authorization button[aria-expanded='true']")
+        .unwrap()
+        .unwrap();
+    doc.inner.borrow_mut().set_focus_to(disclosure);
+    press_tab_key(&mut doc, NamedKey::Enter, Code::Enter);
+    assert!(!exists(
+        &doc,
+        ".client-authorization input[type='password']"
+    ));
+    press_tab_key(&mut doc, NamedKey::Enter, Code::Enter);
+    let restored = doc
+        .inner
+        .borrow()
+        .query_selector(".client-authorization input[type='password']")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        doc.inner
+            .borrow()
+            .get_node(restored)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .attrs()
+            .iter()
+            .find(|attribute| attribute.name.local.to_string() == "value")
+            .map(|attribute| attribute.value.as_ref()),
+        Some("fake-local-token-for-test")
+    );
+    let mut client = harness.client.get().unwrap();
+    let workspace = client.project.read().clone();
+    assert!(
+        !serde_json::to_string(&workspace)
+            .unwrap()
+            .contains("fake-local-token-for-test")
+    );
+    assert!(
+        !serde_json::to_string(&workspace.server_configuration())
+            .unwrap()
+            .contains("fake-local-token-for-test")
+    );
+    client.project.set(Workspace {
+        server_url: "http://127.0.0.1:9".into(),
+        ..Default::default()
+    });
+    settle(&mut doc);
+    assert!(!exists(
+        &doc,
+        ".client-authorization input[type='password']"
+    ));
+    client.project.set(workspace);
+    settle(&mut doc);
+    let disclosure = doc
+        .inner
+        .borrow()
+        .query_selector(".client-authorization button[aria-expanded='false']")
+        .unwrap()
+        .expect("new workspace instance starts collapsed");
+    doc.inner.borrow_mut().set_focus_to(disclosure);
+    press_tab_key(&mut doc, NamedKey::Enter, Code::Enter);
+    let input = doc
+        .inner
+        .borrow()
+        .query_selector(".client-authorization input[type='password']")
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        doc.inner
+            .borrow()
+            .get_node(input)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .attrs()
+            .iter()
+            .find(|attribute| attribute.name.local.to_string() == "value")
+            .map(|attribute| attribute.value.as_ref()),
+        Some("fake-local-token-for-test")
     );
 }
 
@@ -641,6 +769,78 @@ fn styled_scope_app() -> Element {
     let content = mixed_app();
     const CSS: &str = include_str!("dashboard.css");
     rsx! {style{"{CSS}"}{content}}
+}
+#[tokio::test]
+async fn compact_extension_controls_share_rows_and_wrap_without_horizontal_overflow() {
+    use blitz_traits::shell::Viewport;
+    for width in [1000, 320] {
+        let harness = Rc::new(Harness::default());
+        let mut doc = DioxusDocument::new(
+            VirtualDom::new(styled_scope_app).with_root_context(harness.clone()),
+            DocumentConfig {
+                font_ctx: Some(dioxus_native::build_single_font_ctx(include_bytes!(
+                    "../assets/DejaVuSans.woff2"
+                ))),
+                ..Default::default()
+            },
+        );
+        doc.initial_build();
+        doc.inner.borrow_mut().set_viewport(Viewport {
+            window_size: (width, 1200),
+            ..Default::default()
+        });
+        settle(&mut doc);
+        let mut client = harness.client.get().unwrap();
+        client
+            .project
+            .write()
+            .client_extensions
+            .entry("youtube".into())
+            .or_default()
+            .enabled = true;
+        settle(&mut doc);
+        let document = doc.inner.borrow();
+        let controls = document
+            .query_selector_all("#client-extension-youtube .extension-functions button")
+            .unwrap();
+        let first = document
+            .get_node(controls[0])
+            .unwrap()
+            .absolute_position(0., 0.);
+        let points: Vec<_> = controls
+            .iter()
+            .map(|id| document.get_node(*id).unwrap().absolute_position(0., 0.))
+            .collect();
+        if width == 1000 {
+            assert!(points.iter().all(|point| (point.y - first.y).abs() < 1.));
+        } else {
+            assert!(points.iter().any(|point| point.y > first.y + 10.));
+        }
+        for id in controls {
+            let node = document.get_node(id).unwrap();
+            let right = node.absolute_position(0., 0.).x + node.final_layout().size.width;
+            assert!(
+                right <= width as f32 + 1.,
+                "control extends past viewport: {right}"
+            );
+        }
+        let fields = document
+            .query_selector_all("#client-extension-youtube .extension-fields > .field")
+            .unwrap();
+        let first = document
+            .get_node(fields[0])
+            .unwrap()
+            .absolute_position(0., 0.);
+        let second = document
+            .get_node(fields[1])
+            .unwrap()
+            .absolute_position(0., 0.);
+        if width == 1000 {
+            assert!((first.y - second.y).abs() < 1.);
+        } else {
+            assert!(second.y > first.y + 10.);
+        }
+    }
 }
 #[tokio::test]
 async fn clicking_an_inactive_scope_tab_moves_focus_before_the_next_arrow_key() {

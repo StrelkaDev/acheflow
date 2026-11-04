@@ -68,6 +68,10 @@ impl ProviderRuntime {
     pub fn identity(&self) -> &Identity {
         &self.identity
     }
+    pub(crate) fn restore_local(&mut self, secrets: Secrets, storage: Value) {
+        self.secrets = secrets;
+        self.storage = storage;
+    }
     pub async fn turn(&mut self, input: Value, now: u64) -> Result<Vec<Value>, String> {
         let mut pending = VecDeque::from([input]);
         let mut output = vec![];

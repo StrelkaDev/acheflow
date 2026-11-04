@@ -1,11 +1,11 @@
 //! All Twitch API/OAuth/EventSub knowledge stays in this independently compiled guest.
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-const SCOPES: &str = "user:read:chat user:write:chat channel:manage:polls";
 const API: &str = "https://api.twitch.tv/helix/";
 const SOCKET: &str = "wss://eventsub.wss.twitch.tv/ws";
 #[derive(Default)]
 pub struct Twitch {
+    authorization: guest_sdk::authorization::Authorization,
     client_id: String,
     user: String,
     login: String,
@@ -92,7 +92,21 @@ impl Twitch {
         ]
     }
     pub fn handle(&mut self, input: Value) -> Vec<Value> {
+        if let Some(effects) = self
+            .authorization
+            .handle(&input, include_str!("../manifest.json"))
+        {
+            return effects;
+        }
         let now = input["now_ms"].as_u64().unwrap_or(0);
+        let manifest: Value =
+            serde_json::from_str(include_str!("../manifest.json")).expect("bundled manifest");
+        let required_scopes =
+            guest_sdk::authorization::scopes(&manifest, &input["config"]).join(" ");
+        let read_chat = guest_sdk::authorization::enabled(&input["config"], "read_chat");
+        let read_audience = guest_sdk::authorization::enabled(&input["config"], "read_audience");
+        let send_chat = guest_sdk::authorization::enabled(&input["config"], "send_chat");
+        let manage_polls = guest_sdk::authorization::enabled(&input["config"], "manage_polls");
         self.client_id = input["config"]["client_id"]
             .as_str()
             .unwrap_or_default()
@@ -126,7 +140,7 @@ impl Twitch {
                 self.pending.clear();
                 out.push(json!({"type":"websocket","close":true}));
                 out.push(status("connecting", None, ""));
-                out.push(json!({"type":"http","id":"device","method":"POST","url":"https://id.twitch.tv/oauth2/device","form":{"client_id":self.client_id,"scopes":SCOPES},"capture":{"device_code":"/device_code"}}));
+                out.push(json!({"type":"http","id":"device","method":"POST","url":"https://id.twitch.tv/oauth2/device","form":{"client_id":self.client_id,"scopes":required_scopes},"capture":{"device_code":"/device_code"}}));
             }
             "http_result" => {
                 let id = input["id"].as_str().unwrap_or_default();
@@ -182,7 +196,7 @@ impl Twitch {
                 } else if id == "validate" {
                     if code != 200
                         || value["client_id"] != self.client_id
-                        || !SCOPES.split_whitespace().all(|scope| {
+                        || !required_scopes.split_whitespace().all(|scope| {
                             value["scopes"]
                                 .as_array()
                                 .is_some_and(|scopes| scopes.iter().any(|s| s == scope))
@@ -195,11 +209,14 @@ impl Twitch {
                     if self.user.is_empty() || self.user.len() > 128 {
                         return self.error("The service did not return an account identity.");
                     }
+                    self.expires =
+                        now.saturating_add(value["expires_in"].as_u64().unwrap_or(3600) * 1000);
+                    out.push(json!({"type":"storage","value":{"expires":self.expires}}));
                     let was_authed = self.authed;
                     self.authed = true;
-                    out.push(json!({"type":"channel","channel":{"id":self.user,"label":format!("Twitch / {}",self.login),"capabilities":["chat.send","poll.create"],"constraints":{"chat.max_chars":500,"poll.max_options":5,"poll.min_duration_seconds":15,"poll.max_duration_seconds":1800,"poll.max_question_chars":45,"poll.max_option_chars":25}}}));
+                    out.push(json!({"type":"channel","channel":{"id":self.user,"label":format!("Twitch / {}",self.login),"capabilities":([send_chat.then_some("chat.send"),manage_polls.then_some("poll.create")].into_iter().flatten().collect::<Vec<_>>()),"constraints":{"chat.max_chars":500,"poll.max_options":5,"poll.min_duration_seconds":15,"poll.max_duration_seconds":1800,"poll.max_question_chars":45,"poll.max_option_chars":25}}}));
                     out.push(self.panel());
-                    if !was_authed {
+                    if !was_authed && read_chat {
                         self.next_socket = 0;
                         self.last_socket = now;
                         out.push(json!({"type":"websocket","url":SOCKET}));
@@ -319,7 +336,7 @@ impl Twitch {
                 let name = input["name"].as_str().unwrap_or_default();
                 let channel = input["channel_id"].as_str().unwrap_or_default();
                 if name == "chat.send" {
-                    if !self.authed {
+                    if !self.authed || !send_chat {
                         return vec![
                             json!({"type":"delivery","request_id":input["request_id"],"channel_id":channel,"sent":false,"external_id":null,"error":"Connect the account first"}),
                         ];
@@ -328,6 +345,15 @@ impl Twitch {
                     self.pending.insert(id.clone(),json!({"kind":"send","request_id":input["request_id"],"channel_id":channel}));
                     out.push(self.http(&id,"POST","chat/messages",json!({"broadcaster_id":channel,"sender_id":self.user,"message":input["text"]})));
                 } else if matches!(name, "poll.create" | "poll.close") {
+                    if !manage_polls {
+                        return vec![self.poll_update(
+                            input["poll_id"].as_u64().unwrap_or(0),
+                            channel,
+                            &Value::Null,
+                            Some("Polls are disabled in extension settings.".into()),
+                            0,
+                        )];
+                    }
                     let poll_id = input["poll_id"].as_u64().unwrap_or(0);
                     let options = input["options"].as_array().map(Vec::len).unwrap_or(0);
                     let seconds = input["duration_seconds"].as_u64().unwrap_or(0);
@@ -385,32 +411,39 @@ impl Twitch {
                     }
                     if now >= self.next_auth && !self.auth_pending {
                         self.auth_pending = true;
-                        out.push(self.tokens("tokens",json!({"client_id":self.client_id,"device_code":secret("device_code",""),"grant_type":"urn:ietf:params:oauth:grant-type:device_code","scopes":SCOPES})));
+                        out.push(self.tokens("tokens",json!({"client_id":self.client_id,"device_code":secret("device_code",""),"grant_type":"urn:ietf:params:oauth:grant-type:device_code","scopes":required_scopes})));
                     }
                 }
                 if self.authed {
-                    if now >= self.expires.saturating_sub(60000) && !self.refresh_pending {
+                    if self.expires > 0
+                        && now >= self.expires.saturating_sub(60000)
+                        && !self.refresh_pending
+                        && input["secrets"]
+                            .as_array()
+                            .is_some_and(|keys| keys.iter().any(|key| key == "refresh_token"))
+                    {
                         self.refresh_pending = true;
                         out.push(self.tokens("refresh",json!({"client_id":self.client_id,"refresh_token":secret("refresh_token",""),"grant_type":"refresh_token"})));
                     }
-                    if now >= self.next_viewers {
+                    if read_audience && now >= self.next_viewers {
                         self.next_viewers = now + 30000;
                         let mut effect = self.http("viewers", "GET", "streams", Value::Null);
                         effect["query"] = json!({"user_id":self.user});
                         out.push(effect);
                     }
-                    if self.next_socket > 0 && now >= self.next_socket {
+                    if read_chat && self.next_socket > 0 && now >= self.next_socket {
                         self.next_socket = 0;
                         self.resuming = false;
                         out.push(json!({"type":"websocket","url":SOCKET}));
-                    } else if self.heartbeat > 0
+                    } else if read_chat
+                        && self.heartbeat > 0
                         && now.saturating_sub(self.last_socket) > self.heartbeat + 5000
                     {
                         self.last_socket = now;
                         self.resuming = false;
                         out.push(json!({"type":"websocket","url":SOCKET}));
                     }
-                    if now >= self.next_polls {
+                    if manage_polls && now >= self.next_polls {
                         self.next_polls = now + 5000;
                         for (id, poll) in self.polls.clone() {
                             let key = format!("poll:get:{id}");

@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 acheflow-client = { path = "../acheflow-client" }
 futures-util = "0.3"
 base64 = "0.22"
+url = "2"
 acheflow-composition = { path = "../acheflow-composition" }
 # Pin the UI engine to the exact upstream API validated for native and WASM.
 acheflow-extension-api = { path = "../acheflow-extension-api" }

@@ -12,26 +12,122 @@
     "failure",
     "panel",
     "channel",
-    "status"
+    "status",
+    "crypto",
+    "browser",
+    "browser_module",
+    "secret_clear",
+    "storage",
+    "secret_begin",
+    "secret_commit",
+    "secret_discard"
   ],
   "services": [
-    "https://www.googleapis.com"
+    "https://www.googleapis.com",
+    "https://accounts.google.com",
+    "https://oauth2.googleapis.com"
   ],
   "subscriptions": [
     "chat.send"
   ],
   "settings": [
     {
+      "id": "client_id",
+      "label": "Application Client ID",
+      "help": "Public OAuth application identifier. Required for Connect with; manual tokens can be entered without it.",
+      "max_length": 256
+    },
+    {
       "id": "video_id",
       "label": "Video ID",
       "help": "ID from the YouTube watch URL. Leave empty to discover an active broadcast for the authorized account.",
       "max_length": 128
+    },
+    {
+      "id": "read_chat",
+      "label": "Read chat",
+      "toggle": true,
+      "max_length": 5
+    },
+    {
+      "id": "read_audience",
+      "label": "Read audience",
+      "toggle": true,
+      "max_length": 5
+    },
+    {
+      "id": "send_chat",
+      "label": "Send chat",
+      "toggle": true,
+      "max_length": 5
     }
   ],
   "secret_fields": {
     "access_token": "/access_token",
-    "refresh_token": "/refresh_token"
+    "refresh_token": "/refresh_token",
+    "authorization_code": "/code",
+    "code_verifier": "/code_verifier",
+    "client_secret": "/client_secret"
   },
   "unique_viewers": false,
-  "execution_side": "client"
+  "execution_side": "client",
+  "authentication": {
+    "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+    "help": "Enable YouTube Data API v3. Native: use a Desktop OAuth client and enter its secret locally. Browser: use a Web OAuth client with this page origin authorized; sign-in uses Google Identity Services without an application secret. Sending requires youtube.force-ssl; read-only uses youtube.readonly.",
+    "features": [
+      {
+        "id": "read_chat",
+        "label": "Read chat",
+        "default_enabled": true
+      },
+      {
+        "id": "read_audience",
+        "label": "Read audience",
+        "default_enabled": true
+      },
+      {
+        "id": "send_chat",
+        "label": "Send chat",
+        "default_enabled": true
+      }
+    ],
+    "permissions": [
+      {
+        "scope": "https://www.googleapis.com/auth/youtube.force-ssl",
+        "any": [
+          "send_chat"
+        ]
+      },
+      {
+        "scope": "https://www.googleapis.com/auth/youtube.readonly",
+        "unless": [
+          "send_chat"
+        ]
+      }
+    ],
+    "token_url": "https://oauth2.googleapis.com/token",
+    "native_pkce": true,
+    "browser_module": "youtube-oauth.js",
+    "validation": {
+      "request": {
+        "url": "https://oauth2.googleapis.com/tokeninfo",
+        "query": {
+          "access_token": {
+            "secret": "access_token",
+            "prefix": ""
+          }
+        }
+      },
+      "scope_path": "/scope",
+      "client_path": "/aud",
+      "expires_path": "/expires_in",
+      "account_path": "/sub"
+    },
+    "scope_implies": {
+      "https://www.googleapis.com/auth/youtube.readonly": [
+        "https://www.googleapis.com/auth/youtube.force-ssl",
+        "https://www.googleapis.com/auth/youtube"
+      ]
+    }
+  }
 }

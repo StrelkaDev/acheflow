@@ -11,6 +11,7 @@ schema = ["dep:schemars"]
 schemars = { version = "1.2", optional = true }
 serde.workspace = true
 serde_json = "1"
+url = "2"
 
 [lints]
 workspace = true

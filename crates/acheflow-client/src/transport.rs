@@ -1,7 +1,9 @@
 //! Bounded provider-neutral transport. Protocols and OAuth live in guests.
 use acheflow_control::extensions::GuestManifest;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, time::Duration};
+use std::collections::BTreeMap;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
 
 pub type Secrets = BTreeMap<String, String>;
 pub fn allowed_url(
@@ -22,6 +24,7 @@ pub fn allowed_url(
     }
     Ok(url)
 }
+#[cfg(not(target_arch = "wasm32"))]
 pub fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -140,6 +143,7 @@ pub fn capture(payload: &mut Value, paths: &Value, secrets: &mut Secrets) -> Res
     }
     Ok(())
 }
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn http(
     effect: &Value,
     manifest: &GuestManifest,
@@ -214,6 +218,68 @@ pub async fn http(
     Ok(
         json!({"type":"http_result","id":effect["id"],"status":status,"payload":payload,"retry_after":retry}),
     )
+}
+#[cfg(target_arch = "wasm32")]
+pub async fn http(
+    effect: &Value,
+    manifest: &GuestManifest,
+    secrets: &mut Secrets,
+) -> Result<Value, String> {
+    use wasm_bindgen::prelude::*;
+    #[wasm_bindgen(inline_js = r#"
+    export async function local_request(encoded) {
+      const e=JSON.parse(encoded), url=new URL(e.url);
+      for(const [k,v] of Object.entries(e.query||{}))url.searchParams.set(k,String(v));
+      const headers=new Headers(e.headers||{}), options={method:e.method||'GET',headers,redirect:'error',credentials:'omit',cache:'no-store',signal:AbortSignal.timeout(10000)};
+      if(e.form){options.body=new URLSearchParams(e.form);headers.set('Content-Type','application/x-www-form-urlencoded');}
+      else if(e.body!=null){options.body=JSON.stringify(e.body);headers.set('Content-Type','application/json');}
+      const response=await fetch(url,options), reader=response.body?.getReader();
+      let bytes=0, parts=[];
+      if(reader)try {for(;;){const {done,value}=await reader.read();if(done)break;bytes+=value.length;if(bytes>1048576){await reader.cancel();throw new Error('Response too large');}parts.push(value);}}finally{reader.releaseLock();}
+      const all=new Uint8Array(bytes);let offset=0;for(const part of parts){all.set(part,offset);offset+=part.length;}
+      const text=new TextDecoder().decode(all);
+      return JSON.stringify({type:'http_result',id:e.id,status:response.status,payload:text?JSON.parse(text):null,retry_after:response.headers.get('retry-after')});
+    }
+    "#)]
+    extern "C" {
+        #[wasm_bindgen(catch)]
+        fn local_request(encoded: &str) -> Result<js_sys::Promise, JsValue>;
+    }
+    allowed_url(
+        effect["url"].as_str().ok_or("Missing service URL.")?,
+        manifest,
+        false,
+    )?;
+    if !matches!(
+        effect["method"].as_str().unwrap_or("GET"),
+        "GET" | "POST" | "PATCH" | "PUT" | "DELETE"
+    ) {
+        return Err("Unsupported HTTP method.".into());
+    }
+    let request = resolve(effect, secrets)?;
+    if let Some(headers) = request["headers"].as_object() {
+        if headers.len() > 32 {
+            return Err("Too many headers.".into());
+        }
+        for name in headers.keys() {
+            validate_header(name)?;
+        }
+    }
+    let promise = local_request(&serde_json::to_string(&request).map_err(|_| "Invalid request.")?)
+        .map_err(|_| "Platform request interrupted.")?;
+    let result = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(|_| "Platform request interrupted.")?;
+    let mut result: Value = serde_json::from_str(&result.as_string().ok_or("Invalid response.")?)
+        .map_err(|_| "Invalid response.")?;
+    capture(
+        &mut result["payload"],
+        &serde_json::to_value(&manifest.secret_fields)
+            .map_err(|_| "Invalid credential mapping.")?,
+        secrets,
+    )?;
+    capture(&mut result["payload"], &effect["capture"], secrets)?;
+    Ok(result)
 }
 #[cfg(test)]
 mod tests {

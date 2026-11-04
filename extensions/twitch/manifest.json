@@ -15,7 +15,14 @@
     "channel",
     "poll",
     "storage",
-    "status"
+    "status",
+    "crypto",
+    "browser",
+    "browser_module",
+    "secret_clear",
+    "secret_begin",
+    "secret_commit",
+    "secret_discard"
   ],
   "services": [
     "https://api.twitch.tv",
@@ -35,13 +42,105 @@
       "label": "Application Client ID",
       "help": "Public application Client ID. Account authorization is handled by this extension.",
       "max_length": 128
+    },
+    {
+      "id": "read_chat",
+      "label": "Read chat",
+      "toggle": true,
+      "max_length": 5
+    },
+    {
+      "id": "read_audience",
+      "label": "Read audience",
+      "toggle": true,
+      "max_length": 5
+    },
+    {
+      "id": "send_chat",
+      "label": "Send chat",
+      "toggle": true,
+      "max_length": 5
+    },
+    {
+      "id": "manage_polls",
+      "label": "Manage polls",
+      "toggle": true,
+      "max_length": 5
     }
   ],
   "unique_viewers": false,
   "secret_fields": {
     "access_token": "/access_token",
     "refresh_token": "/refresh_token",
-    "device_code": "/device_code"
+    "device_code": "/device_code",
+    "authorization_code": "/code",
+    "code_verifier": "/code_verifier",
+    "client_secret": "/client_secret"
   },
-  "execution_side": "client"
+  "execution_side": "client",
+  "authentication": {
+    "authorize_url": "https://id.twitch.tv/oauth2/authorize",
+    "help": "Register a public Twitch application and its callback URI. Only enabled functions request permissions.",
+    "features": [
+      {
+        "id": "read_chat",
+        "label": "Read chat",
+        "default_enabled": true
+      },
+      {
+        "id": "read_audience",
+        "label": "Read audience",
+        "default_enabled": true
+      },
+      {
+        "id": "send_chat",
+        "label": "Send chat",
+        "default_enabled": true
+      },
+      {
+        "id": "manage_polls",
+        "label": "Manage polls",
+        "default_enabled": true
+      }
+    ],
+    "permissions": [
+      {
+        "scope": "user:read:chat",
+        "any": [
+          "read_chat"
+        ]
+      },
+      {
+        "scope": "user:write:chat",
+        "any": [
+          "send_chat"
+        ]
+      },
+      {
+        "scope": "channel:manage:polls",
+        "any": [
+          "manage_polls"
+        ]
+      }
+    ],
+    "validation": {
+      "request": {
+        "url": "https://id.twitch.tv/oauth2/validate",
+        "headers": {
+          "Authorization": {
+            "secret": "access_token",
+            "prefix": "OAuth "
+          },
+          "Client-Id": {
+            "config": "client_id"
+          }
+        }
+      },
+      "scope_path": "/scopes",
+      "client_path": "/client_id",
+      "expires_path": "/expires_in",
+      "account_path": "/login"
+    },
+    "token_url": "https://id.twitch.tv/oauth2/token"
+  }
 }

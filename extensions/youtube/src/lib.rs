@@ -20,6 +20,7 @@ struct WirePayload {
 
 #[derive(Default)]
 pub struct YouTube {
+    authorization: guest_sdk::authorization::Authorization,
     video: String,
     chat: String,
     page: String,
@@ -100,7 +101,16 @@ impl YouTube {
         }
     }
     pub fn handle(&mut self, mut input: Value) -> Vec<Value> {
+        if let Some(effects) = self
+            .authorization
+            .handle(&input, include_str!("../manifest.json"))
+        {
+            return effects;
+        }
         let now = input["now_ms"].as_u64().unwrap_or(0);
+        let read_chat = guest_sdk::authorization::enabled(&input["config"], "read_chat");
+        let read_audience = guest_sdk::authorization::enabled(&input["config"], "read_audience");
+        let send_chat = guest_sdk::authorization::enabled(&input["config"], "send_chat");
         let mut out = vec![];
         match input["type"].as_str().unwrap_or_default() {
             "start" => {
@@ -123,7 +133,7 @@ impl YouTube {
                 self.authorized = input["secrets"]
                     .as_array()
                     .is_some_and(|keys| keys.iter().any(|s| s == "access_token"));
-                out.push(json!({"type":"panel","panel":{"extension_id":"youtube","title":"YouTube","widgets":[{"type":"button","id":"refresh","label":"Find live broadcast"},{"type":"label","text":"Requires an OAuth access token with youtube.force-ssl scope."}]}}));
+                out.push(json!({"type":"panel","panel":{"extension_id":"youtube","title":"YouTube","widgets":[{"type":"button","id":"refresh","label":"Find live broadcast"},{"type":"label","text":"Authorize the account for the functions enabled in extension settings."}]}}));
                 if self.authorized {
                     out.push(self.discover());
                 } else {
@@ -142,7 +152,8 @@ impl YouTube {
                 if now >= self.next_video && !self.video_pending {
                     out.push(self.discover());
                 }
-                if !self.chat.is_empty()
+                if read_chat
+                    && !self.chat.is_empty()
                     && now >= self.next_chat
                     && !self.chat_pending
                     && self.messages.is_empty()
@@ -160,6 +171,7 @@ impl YouTube {
                 let request = input["request_id"].as_str().unwrap_or_default();
                 let channel = input["channel_id"].as_str().unwrap_or_default();
                 if !self.authorized
+                    || !send_chat
                     || self.chat.is_empty()
                     || channel != self.video
                     || self.pending.len() >= 128
@@ -211,9 +223,11 @@ impl YouTube {
                                 .as_str()
                                 .and_then(|s| s.parse::<u64>().ok());
                             let offline = details["actualEndTime"].is_string();
-                            out.push(json!({"type":"audience","sample":{"platform":"youtube","channel_id":self.video,"stream_id":self.video,"observed_at_ms":now,"concurrent":concurrent,"offline":offline,"unique":null}}));
+                            if read_audience {
+                                out.push(json!({"type":"audience","sample":{"platform":"youtube","channel_id":self.video,"stream_id":self.video,"observed_at_ms":now,"concurrent":concurrent,"offline":offline,"unique":null}}));
+                            }
                             if !self.chat.is_empty() {
-                                out.push(json!({"type":"channel","channel":{"id":self.video,"label":format!("YouTube / {}",video["snippet"]["title"].as_str().unwrap_or(&self.video)),"capabilities":["chat.send"],"constraints":{"chat.max_chars":200}}}));
+                                out.push(json!({"type":"channel","channel":{"id":self.video,"label":format!("YouTube / {}",video["snippet"]["title"].as_str().unwrap_or(&self.video)),"capabilities":if send_chat {vec!["chat.send"]}else{vec![]},"constraints":{"chat.max_chars":200}}}));
                                 out.push(status("connected", None));
                             } else {
                                 out.push(status(

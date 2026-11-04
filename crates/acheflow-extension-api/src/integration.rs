@@ -13,6 +13,8 @@ pub struct Setting {
     pub max_length: usize,
     #[serde(default)]
     pub secret: bool,
+    #[serde(default)]
+    pub toggle: bool,
 }
 impl Default for Setting {
     fn default() -> Self {
@@ -22,6 +24,7 @@ impl Default for Setting {
             help: String::new(),
             max_length: setting_limit(),
             secret: false,
+            toggle: false,
         }
     }
 }
@@ -55,6 +58,8 @@ pub struct GuestManifest {
     pub settings: Vec<Setting>,
     #[serde(default)]
     pub unique_viewers: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<Value>,
 }
 impl GuestManifest {
     pub fn validate(&self) -> Result<(), String> {
@@ -63,12 +68,23 @@ impl GuestManifest {
         }
         if self.execution_side == ExecutionSide::Server
             && (!self.services.is_empty()
+                || self.authentication.is_some()
                 || !self.secret_fields.is_empty()
                 || self.settings.iter().any(|s| s.secret)
-                || self
-                    .capabilities
-                    .iter()
-                    .any(|c| matches!(c.as_str(), "http" | "websocket")))
+                || self.capabilities.iter().any(|c| {
+                    matches!(
+                        c.as_str(),
+                        "http"
+                            | "websocket"
+                            | "crypto"
+                            | "browser"
+                            | "browser_module"
+                            | "secret_clear"
+                            | "secret_begin"
+                            | "secret_commit"
+                            | "secret_discard"
+                    )
+                }))
         {
             return Err(
                 "server logic extensions cannot request provider transport or credentials".into(),
@@ -98,6 +114,13 @@ impl GuestManifest {
             if !matches!(
                 capability.as_str(),
                 "http"
+                    | "crypto"
+                    | "browser"
+                    | "browser_module"
+                    | "secret_clear"
+                    | "secret_begin"
+                    | "secret_commit"
+                    | "secret_discard"
                     | "websocket"
                     | "chat"
                     | "audience"

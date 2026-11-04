@@ -58,9 +58,11 @@ and verify fanout, receipts, echo reconciliation and replay protection. Actual p
 guests are separately exercised without accounts. This is a library integration, not
 a finished account-connection UI or always-on executor application.
 
-Still pending: native/browser `Connect account` integration, application-registration
-setup, platform-specific OAuth completion/renewal, durable local credential/intent
-storage, browser transport, arbitrary MCP tool descriptors and native poll instructions.
+Local account panels now execute provider-owned WASM authorization, with native Mac
+system storage and memory-only browser credentials; see [authorization setup and
+verification limits](extension-authorization.md). They do not start the always-on
+executor. Still pending: live-account qualification, durable intent storage, a browser
+media executor, arbitrary MCP tool descriptors and native poll instructions.
 The server intersects saved policy with requested capabilities and reserves host/server
 logic identities. The executor is responsible for advertising only implemented handlers;
 unsupported moderation actions remain rejected by the built-in native provider runtime.
