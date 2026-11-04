@@ -83,6 +83,8 @@ pub(crate) fn ClientAuthorization(id: String, name: String) -> Element {
             )
         }
     });
+    #[cfg(not(target_arch = "wasm32"))]
+    let native = use_signal(|| native::Mailbox::new(error));
     use_effect(move || {
         let _ = identity();
         if let Some(running) = task.take() {
@@ -100,7 +102,11 @@ pub(crate) fn ClientAuthorization(id: String, name: String) -> Element {
         task,
         restart,
         identity,
+        #[cfg(not(target_arch = "wasm32"))]
+        native,
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    native::register(id.clone(), signals);
     let installed = &catalog.installed[&id];
     #[cfg(target_arch = "wasm32")]
     let mut adapter = use_signal(|| None::<wasm_bindgen::JsValue>);
@@ -159,6 +165,8 @@ struct PanelSignals {
     task: Signal<Option<Task>>,
     restart: Signal<u64>,
     identity: Memo<Owner>,
+    #[cfg(not(target_arch = "wasm32"))]
+    native: Signal<native::Mailbox>,
 }
 fn use_initialization(
     id: String,
@@ -179,12 +187,14 @@ fn use_initialization(
         let manifest = installed.manifest.clone();
         let module = installed.module.clone();
         move || {
-            let _ = restart();
+            let _version = restart();
             let owner = identity();
             let id = id.clone();
             let manifest = manifest.clone();
             let module = module.clone();
             let existing = sessions.write().remove(&(owner.0.clone(), id.clone()));
+            #[cfg(not(target_arch = "wasm32"))]
+            signals.native.peek().begin_initialization();
             busy.set(true);
             async move {
                 let result = async {
@@ -202,11 +212,17 @@ fn use_initialization(
                         effects,
                         #[cfg(target_arch = "wasm32")]
                         None,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        signals.native.peek().clone(),
+                        #[cfg(not(target_arch = "wasm32"))]
+                        native::Context::new(signals, owner.clone(), _version),
                     )
                     .await
                 }
                 .await;
-                if identity() == owner {
+                if identity() == owner && restart() == _version {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    signals.native.peek().finish_initialization();
                     match result {
                         Ok((mut session, next)) => {
                             if let Err(reason) = session.flush_storage() {
@@ -232,13 +248,11 @@ fn dispatch(
     #[cfg(target_arch = "wasm32")] adapter: Option<wasm_bindgen::JsValue>,
 ) {
     let PanelSignals {
-        client,
         mut sessions,
         mut panel,
         mut error,
-        mut busy,
+        busy,
         mut drafts,
-        mut task,
         identity,
         ..
     } = signals;
@@ -301,15 +315,49 @@ fn dispatch(
             return;
         }
     };
-    let provider = provider.clone();
+    start_operation(
+        provider,
+        session,
+        effects,
+        signals,
+        #[cfg(target_arch = "wasm32")]
+        started,
+    );
+}
+fn start_operation(
+    provider: String,
+    session: LocalSession,
+    effects: Vec<Value>,
+    signals: PanelSignals,
+    #[cfg(target_arch = "wasm32")] started: Option<browser::Login>,
+) {
+    let PanelSignals {
+        client,
+        mut sessions,
+        mut panel,
+        mut error,
+        mut busy,
+        mut task,
+        identity,
+        ..
+    } = signals;
+    let owner = identity();
     busy.set(true);
     error.set(String::new());
+    #[cfg(not(target_arch = "wasm32"))]
+    let native_mailbox = signals.native.peek().clone();
+    #[cfg(not(target_arch = "wasm32"))]
+    let native_context = native::Context::new(signals, owner.clone(), (signals.restart)());
     task.set(Some(spawn(async move {
         let result = drive(
             session,
             effects,
             #[cfg(target_arch = "wasm32")]
             started,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_mailbox,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_context,
         )
         .await;
         if identity() == owner
@@ -374,6 +422,10 @@ fn use_ticks(id: String, signals: PanelSignals) {
                         effects,
                         #[cfg(target_arch = "wasm32")]
                         None,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        signals.native.peek().clone(),
+                        #[cfg(not(target_arch = "wasm32"))]
+                        native::Context::new(signals, owner.clone(), (signals.restart)()),
                     )
                     .await;
                     if identity.peek().clone() == owner {
@@ -421,6 +473,7 @@ fn render_widget(widget: PanelWidget, signals: PanelSignals, action: Callback<St
         _ => rsx! {p{class:"field-error","Unsupported local panel widget."}},
     }
 }
+#[cfg(target_arch = "wasm32")]
 async fn drive(
     mut session: LocalSession,
     effects: Vec<Value>,
@@ -478,3 +531,7 @@ async fn drive(
 }
 #[cfg(target_arch = "wasm32")]
 mod browser;
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
+#[cfg(not(target_arch = "wasm32"))]
+use native::drive;

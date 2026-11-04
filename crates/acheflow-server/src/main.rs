@@ -12,6 +12,9 @@ mod browser_access;
 mod client_bridge;
 mod compositor;
 mod control;
+mod extension_forwarding;
+#[cfg(test)]
+mod extension_forwarding_tests;
 mod extension_host;
 mod extension_registry;
 mod ffmpeg;
@@ -21,6 +24,7 @@ mod integration_host;
 mod integration_tests;
 mod live;
 mod mcp;
+mod native_activation;
 mod output;
 #[cfg(test)]
 mod pipeline_tests;
@@ -32,8 +36,14 @@ mod workspace_extensions;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let args = settings::Args::parse();
+    let receiver = match native_activation::prepare(&args).await? {
+        native_activation::Launch::Serve(receiver) => receiver,
+        #[cfg(unix)]
+        native_activation::Launch::HandedOff => return Ok(()),
+    };
     let cors = browser_access::from_env()?;
-    let settings = settings::SettingsState::from_args(settings::Args::parse())?;
+    let settings = settings::SettingsState::from_args(args)?;
     let config = &settings.active;
     let http_tls = tls::load(&config.http_tls)?;
     let rtmp_tls = tls::load(&config.rtmp_tls)?;
@@ -65,6 +75,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         std::sync::Arc::new(tokio::sync::Mutex::new(capabilities));
     let runtime = live::Runtime::new(media_state.clone(), rtmp_listener.local_addr()?.to_string());
     let control_host = control::ControlHost::new(runtime.clone());
+    let native_task = receiver.map(|receiver| tokio::spawn(receiver.run(control_host.clone())));
     let mcp_host = control_host.clone();
     let mcp_task = tokio::spawn(async move {
         if let Err(error) = mcp::serve(mcp_host).await {
@@ -141,6 +152,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     shutdown_task.abort();
     runtime.close().await;
+    if let Some(task) = native_task {
+        let _ = task.await;
+    }
     let _ = mcp_task.await;
     let _ = rtmp_task.await;
     result?;

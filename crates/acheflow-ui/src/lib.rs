@@ -12,6 +12,8 @@ mod layer_editor;
 mod live;
 mod live_client;
 mod media;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_activation;
 mod project;
 mod scene_canvas;
 mod scene_geometry;
@@ -33,6 +35,9 @@ mod workspaces;
 
 /// The same component tree, stylesheet, font and shader are used on both targets.
 pub fn launch() {
+    launch_with_contexts(vec![]);
+}
+fn launch_with_contexts(contexts: Vec<Box<dyn Fn() -> Box<dyn std::any::Any> + Send + Sync>>) {
     let font_ctx =
         dioxus_native::build_single_font_ctx(include_bytes!("../assets/DejaVuSans.woff2"));
     let config = dioxus_native::Config::new().with_font_ctx(font_ctx);
@@ -42,7 +47,58 @@ pub fn launch() {
             .with_title("Acheflow")
             .with_surface_size(winit::dpi::LogicalSize::new(1280.0, 860.0)),
     );
-    dioxus_native::launch_cfg(dashboard::dashboard, vec![], vec![Box::new(config)]);
+    dioxus_native::launch_cfg(dashboard::dashboard, contexts, vec![Box::new(config)]);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn launch_native() -> Result<(), String> {
+    use acheflow_launcher::Command;
+    #[cfg(not(unix))]
+    use acheflow_launcher::{ActivationError, Request};
+    let command =
+        acheflow_launcher::parse_args(std::env::args_os().skip(1)).map_err(|e| e.to_string())?;
+    let request = match command {
+        Command::Help => {
+            println!(
+                "Acheflow desktop\n  --show\n  --forward <HTTPS URL or application URI>\n  --forward-stdin\n  --version"
+            );
+            return Ok(());
+        }
+        Command::Version => {
+            println!("Acheflow {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Command::Run(request) => request,
+        Command::ReadStdin => {
+            acheflow_launcher::read_link(std::io::stdin().lock()).map_err(|e| e.to_string())?
+        }
+    };
+    #[cfg(unix)]
+    {
+        use acheflow_extension_api::forwarding::ForwardRecipient;
+        use acheflow_launcher::{Startup, default_directory, start};
+        let request = request
+            .normalize(ForwardRecipient::Client)
+            .map_err(|e| e.to_string())?;
+        let directory = default_directory().map_err(|e| e.to_string())?;
+        match start(ForwardRecipient::Client, request, &directory).map_err(|e| e.to_string())? {
+            Startup::HandedOff => Ok(()),
+            Startup::Primary(primary) => {
+                let inbox = primary.inbox();
+                launch_with_contexts(vec![Box::new(move || Box::new(inbox.clone()))]);
+                drop(primary);
+                Ok(())
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    match request {
+        Request::Show => {
+            launch();
+            Ok(())
+        }
+        Request::Forward { .. } => Err(ActivationError::Unsupported.to_string()),
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

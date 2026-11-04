@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Acheflow Server Link
+Exec=acheflow-link server %u
+NoDisplay=true
+Terminal=false
+MimeType=x-scheme-handler/acheflow-server;

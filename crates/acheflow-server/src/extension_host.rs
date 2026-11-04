@@ -12,6 +12,19 @@ use tokio_util::sync::CancellationToken;
 pub struct Running {
     cancel: CancellationToken,
     join: tokio::task::JoinHandle<()>,
+    owner: String,
+    instance: String,
+    forward: tokio::sync::mpsc::Sender<Value>,
+}
+impl Running {
+    pub(crate) fn forward(&self, owner: &str, instance: &str, input: Value) -> Result<(), String> {
+        if self.owner != owner || self.instance != instance || self.cancel.is_cancelled() {
+            return Err("unavailable: forwarding instance changed".into());
+        }
+        self.forward
+            .try_send(input)
+            .map_err(|_| "unavailable: forwarding inbox is full or stopped".into())
+    }
 }
 pub fn failed(host: &ControlHost, owner: &str, id: &str, error: String) {
     let Some(extension) = host.installed.get(id) else {
@@ -93,8 +106,11 @@ pub async fn set_enabled(
     let owner = owner.to_owned();
     let id = id.to_owned();
     let installed_id = manifest.id.clone();
+    let instance_id = instance.clone();
+    let owner_id = owner.clone();
+    let (forward, inbox) = tokio::sync::mpsc::channel(32);
     let join = tokio::spawn(async move {
-        let result = tokio::select! {_=task_cancel.cancelled()=>return,result=run(&task_host,&owner,&id,&instance,guest,&manifest)=>result};
+        let result = tokio::select! {_=task_cancel.cancelled()=>return,result=run(&task_host,&owner,&id,&instance,guest,&manifest,inbox)=>result};
         if let Err(error) = result
             && task_host.extension_is_live(&owner, &id, &instance)
         {
@@ -102,7 +118,16 @@ pub async fn set_enabled(
             task_host.disconnect_extension(&owner, &id);
         }
     });
-    running.insert(installed_id, Running { cancel, join });
+    running.insert(
+        installed_id,
+        Running {
+            cancel,
+            join,
+            owner: owner_id,
+            instance: instance_id,
+            forward,
+        },
+    );
     Ok(())
 }
 async fn invoke(guest: &Arc<Mutex<Guest>>, input: Value) -> Result<Vec<Value>, String> {
@@ -123,6 +148,7 @@ async fn run(
     instance: &str,
     guest: Arc<Mutex<Guest>>,
     manifest: &acheflow_control::extensions::GuestManifest,
+    mut forward: tokio::sync::mpsc::Receiver<Value>,
 ) -> Result<(), String> {
     let mut events = host.events.subscribe();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -244,6 +270,7 @@ async fn run(
             continue;
         }
         tokio::select! {
+            input=forward.recv()=>match input {Some(input)=>pending.push_back(input),None=>return Ok(())},
             _=tick.tick()=>pending.push_back(json!({"type":"tick"})),
             event=events.recv()=>match event {
                 Ok(event) if event["workspace_id"]==owner && (event["target"]==id || (event["target"].is_null() && event["origin"]!=id && event["name"].as_str().is_some_and(|name|manifest.subscriptions.iter().any(|s|s==name))))=>{

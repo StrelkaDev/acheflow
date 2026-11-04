@@ -14,6 +14,12 @@ use tokio::sync::Mutex;
 #[derive(Debug, Default, Parser)]
 #[command(version, about = "Acheflow stream server")]
 pub struct Args {
+    /// Enable same-user native link reception (one server per runtime directory).
+    #[arg(long)]
+    pub native_links: bool,
+    /// Read an exact forwarding URL from stdin; hand off or start a native-link server.
+    #[arg(long)]
+    pub forward_stdin: bool,
     /// Server settings JSON file.
     #[arg(long, env = "ACHEFLOW_CONFIG", default_value = "acheflow-server.json")]
     pub config: PathBuf,

@@ -215,6 +215,14 @@ impl Authorization {
             "local_browser" if self.pending => {
                 self.local_browser(&manifest, input, now, &mut output)
             }
+            "local_forward"
+                if self.pending
+                    && input["mode"] == "callback"
+                    && input["action"] == "oauth"
+                    && input["tail"] == "callback" =>
+            {
+                self.local_browser(&manifest, input, now, &mut output)
+            }
             "local_http" => self.local_http(&manifest, input, now, &mut output),
             "local_tick"
                 if self.authorized
@@ -314,6 +322,13 @@ impl Authorization {
                     ("access_type", "offline".into()),
                     ("prompt", "consent".into()),
                 ]);
+            }
+            if manifest["forwarding"].as_array().is_some_and(|actions| {
+                actions
+                    .iter()
+                    .any(|a| a["id"] == "oauth" && a["mode"] == "callback")
+            }) {
+                output.push(json!({"type":"forward_wait","action":"oauth","field":"state","token":self.state,"timeout_ms":300_000}));
             }
             output.push(json!({"type":"browser","id":"auth:browser","url":query(auth["authorize_url"].as_str().unwrap_or_default(),fields),"capture":manifest["secret_fields"]}));
         }

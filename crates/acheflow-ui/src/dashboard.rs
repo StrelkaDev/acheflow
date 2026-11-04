@@ -31,6 +31,8 @@ pub fn dashboard() -> Element {
     let live = use_live_client(project);
     let _control = crate::control_client::use_control_client(project);
     crate::interaction::use_chat_draft(project);
+    #[cfg(not(target_arch = "wasm32"))]
+    let activation_notice = crate::native_activation::provide(project, page);
     rsx! {
         style {{include_str!("dashboard.css")}}
         div {class:"app",
@@ -50,6 +52,10 @@ pub fn dashboard() -> Element {
                 }
             }
             div {class:"workspace",
+                {native_activation_notice(
+                    #[cfg(not(target_arch = "wasm32"))]
+                    activation_notice,
+                )}
                 if effects(){SparksBackground {backend}}
                 Workspaces {project,catalog,storage_status,open:workspace_open}
                 div {class:if live.running(){"workspace-body with-live-chat"}else{"workspace-body"},
@@ -81,6 +87,17 @@ pub fn dashboard() -> Element {
                 }
             }
         }
+    }
+}
+
+fn native_activation_notice(#[cfg(not(target_arch = "wasm32"))] value: Signal<String>) -> Element {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        rsx! {crate::native_activation::Notice{value}}
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        VNode::empty()
     }
 }
 #[component]

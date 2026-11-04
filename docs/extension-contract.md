@@ -47,6 +47,15 @@ boundary in [SPEC-client-execution.md](SPEC-client-execution.md).
 
 ## Commands, events and lifecycle
 
+Manifests may declare `forwarding` actions (`id`, `mode: event|callback`), up to 16
+unique action IDs. Undeclared actions are rejected. Client callbacks require a
+capability-checked `forward_wait` effect bound to a host-issued crypto nonce,
+workspace and live instance; accepted callbacks are consumed once. Declared secret
+fields are captured before local guest delivery. Server guests support event
+forwarding only, through private bounded per-instance queues. Forwarding does not
+activate disabled guests or grant provider I/O to server logic. See
+[forwarding addresses and delivery](forwarding.md).
+
 Panels can use generic `row` and `disclosure` widgets to group controls. A button's
 optional `primary` flag defaults to false. Layout stays guest-declared and the host
 renders the same wrapping rows and keyboard-operated disclosures on both targets.

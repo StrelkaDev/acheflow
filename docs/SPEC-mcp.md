@@ -48,6 +48,12 @@ identity, typed arguments and expected revision where relevant. Read access does
 not imply permission to send chat, alter scene or manage extensions. Exclude token,
 stream-key, arbitrary shell, file/network and raw credential-export tools.
 
+`acheflow_command` also accepts `forward_extension` with a canonical server `/fwd/`
+URL and the expected live extension `instance_id` from the snapshot. It uses the
+same workspace, revision and stable request-ID checks as other commands. Only a
+manifest-declared server event reaches that instance's bounded private inbox;
+client callbacks and provider credentials are not routed through this command.
+
 Map domain errors to structured tool results with stable codes and bounded
 explanations; keep JSON-RPC/protocol errors distinct. Mutations carry a stable
 request id. Atomically reject concurrent duplicates, reject reuse with different

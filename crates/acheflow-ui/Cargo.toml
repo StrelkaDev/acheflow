@@ -35,6 +35,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acheflow-launcher = { path = "../acheflow-launcher" }
 winit = "=0.31.0-beta.4"
 tokio.workspace = true
 

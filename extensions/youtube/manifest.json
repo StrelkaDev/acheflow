@@ -20,7 +20,8 @@
     "storage",
     "secret_begin",
     "secret_commit",
-    "secret_discard"
+    "secret_discard",
+    "forward_wait"
   ],
   "services": [
     "https://www.googleapis.com",
@@ -129,5 +130,11 @@
         "https://www.googleapis.com/auth/youtube"
       ]
     }
-  }
+  },
+  "forwarding": [
+    {
+      "id": "oauth",
+      "mode": "callback"
+    }
+  ]
 }

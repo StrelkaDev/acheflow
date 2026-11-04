@@ -6,6 +6,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 
+#[path = "local_forwarding.rs"]
+mod forwarding;
+
 /// Intentionally has no Debug or Serialize implementation.
 #[derive(Default)]
 pub struct LocalState {
@@ -23,6 +26,7 @@ pub struct LocalSession {
     vault_key: Option<String>,
     dirty: bool,
     workspace_id: Option<String>,
+    forwarding: forwarding::LocalForwarding,
 }
 impl LocalSession {
     pub fn new(
@@ -34,6 +38,8 @@ impl LocalSession {
         if manifest.execution_side != acheflow_extension_api::integration::ExecutionSide::Client {
             return Err("Local panels require a client installation.".into());
         }
+        let mut forwarding = forwarding::LocalForwarding::default();
+        forwarding.start()?;
         Ok(Self {
             guest: Guest::load(module, manifest.capabilities.clone())?,
             manifest,
@@ -44,6 +50,7 @@ impl LocalSession {
             vault_key: None,
             dirty: false,
             workspace_id: None,
+            forwarding,
         })
     }
     pub fn bind_workspace(&mut self, workspace: &str) -> Result<(), String> {
@@ -53,6 +60,10 @@ impl LocalSession {
             .is_some_and(|owner| owner != workspace)
         {
             return Err("Local session belongs to another workspace.".into());
+        }
+        if self.workspace_id.is_none() {
+            // A request started before binding cannot later acquire a workspace.
+            self.forwarding.cancel();
         }
         self.workspace_id = Some(workspace.into());
         Ok(())
@@ -132,6 +143,46 @@ impl LocalSession {
         environment: &Value,
         now: u64,
     ) -> Result<Vec<Value>, String> {
+        if input["type"] == "local_forward" {
+            return Err("forwarded events require a checked forwarding context".into());
+        }
+        self.step_inner(input, environment, now)
+    }
+    fn step_inner(
+        &mut self,
+        input: Value,
+        environment: &Value,
+        now: u64,
+    ) -> Result<Vec<Value>, String> {
+        let result = self.run_step(input, environment, now);
+        if result.is_err() {
+            self.stop();
+        }
+        result
+    }
+    fn run_step(
+        &mut self,
+        input: Value,
+        environment: &Value,
+        now: u64,
+    ) -> Result<Vec<Value>, String> {
+        if !self.forwarding.active
+            && !matches!(input["type"].as_str(), Some("local_start" | "local_stop"))
+        {
+            return Err("Local extension session is stopped.".into());
+        }
+        match input["type"].as_str() {
+            Some("local_start") => {
+                self.forwarding.start()?;
+                self.staged = None;
+            }
+            Some("local_stop") => {
+                self.stop();
+                return Ok(vec![]);
+            }
+            Some("local_browser") => self.forwarding.cancel(),
+            _ => {}
+        }
         let mut pending = VecDeque::from([input]);
         let mut output = vec![];
         for _ in 0..128 {
@@ -149,6 +200,10 @@ impl LocalSession {
             input["storage"] = self.state.storage.clone();
             input["environment"] = environment.clone();
             input["now_ms"] = json!(now);
+            input["api_version"] = json!(acheflow_extension_api::API_VERSION);
+            input["workspace_id"] = json!(self.workspace_id);
+            input["extension_id"] = json!(self.manifest.id);
+            input["instance_id"] = json!(self.forwarding.instance_id);
             for effect in self.guest.call(input)? {
                 match effect["type"].as_str() {
                     Some("crypto") => {
@@ -166,8 +221,11 @@ impl LocalSession {
                             .insert(id.into(), verifier);
                         getrandom::getrandom(&mut bytes)
                             .map_err(|_| "Secure random generator unavailable.")?;
-                        pending.push_back(json!({"type":"local_crypto","id":effect["id"],"nonce":URL_SAFE_NO_PAD.encode(bytes),"challenge":challenge}));
+                        let nonce = URL_SAFE_NO_PAD.encode(bytes);
+                        self.forwarding.issued_nonce = Some(nonce.clone());
+                        pending.push_back(json!({"type":"local_crypto","id":effect["id"],"nonce":nonce,"challenge":challenge}));
                     }
+                    Some("forward_wait") => self.forwarding.wait(&self.manifest, &effect, now)?,
                     Some("storage") => {
                         if serde_json::to_vec(&effect["value"])
                             .map_err(|_| "Invalid local storage.")?
@@ -180,10 +238,12 @@ impl LocalSession {
                         self.dirty = true;
                     }
                     Some("secret_begin") => {
+                        self.forwarding.cancel();
                         self.staged
                             .get_or_insert_with(|| self.state.secrets.clone());
                     }
                     Some("secret_commit") => {
+                        self.forwarding.cancel();
                         if let Some(mut staged) = self.staged.take() {
                             if let Some(keep) = effect["keep"].as_array() {
                                 staged.retain(|key, _| keep.iter().any(|value| value == key));
@@ -193,9 +253,11 @@ impl LocalSession {
                         }
                     }
                     Some("secret_discard") => {
+                        self.forwarding.cancel();
                         self.staged = None;
                     }
                     Some("secret_clear") => {
+                        self.forwarding.cancel();
                         self.state.secrets.clear();
                         self.staged = None;
                         self.dirty = true;

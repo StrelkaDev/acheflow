@@ -9,6 +9,7 @@ acheflow-composition = { path = "../acheflow-composition", features=["headless"]
 acheflow-media-api = { path = "../acheflow-media-api" }
 acheflow-control = { path = "../acheflow-control" }
 acheflow-extension-api = { path = "../acheflow-extension-api", features=["schema"] }
+acheflow-launcher = { path = "../acheflow-launcher" }
 rmcp = { version = "=3.8.0", features = ["transport-streamable-http-server", "schemars"] }
 axum.workspace = true
 axum-server = { version = "0.8", default-features = false, features = ["tls-openssl"] }

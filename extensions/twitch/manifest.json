@@ -22,7 +22,8 @@
     "secret_clear",
     "secret_begin",
     "secret_commit",
-    "secret_discard"
+    "secret_discard",
+    "forward_wait"
   ],
   "services": [
     "https://api.twitch.tv",
@@ -142,5 +143,11 @@
       "account_path": "/login"
     },
     "token_url": "https://id.twitch.tv/oauth2/token"
-  }
+  },
+  "forwarding": [
+    {
+      "id": "oauth",
+      "mode": "callback"
+    }
+  ]
 }

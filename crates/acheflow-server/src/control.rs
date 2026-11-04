@@ -128,7 +128,15 @@ impl ControlHost {
             history: state.analytics.history().iter().cloned().collect(),
             polls: state.interaction.polls(now_ms()),
             commands: state.interaction.commands(),
-            extensions: state.extensions.clone(),
+            extensions: state
+                .extensions
+                .iter()
+                .cloned()
+                .map(|mut status| {
+                    status.instance_id = state.instances.get(&status.id).cloned();
+                    status
+                })
+                .collect(),
             channels: state.integrations.channels(),
             donations: state.integrations.donations(),
             interactions: state.integrations.interactions(),
@@ -497,7 +505,18 @@ impl ControlHost {
         self: &Arc<Self>,
         request: ControlRequest,
     ) -> Result<ControlSnapshot, String> {
+        self.execute_while(request, || true).await
+    }
+    /// Native receipts must still be live after waiting for command/guest locks.
+    pub(crate) async fn execute_while(
+        self: &Arc<Self>,
+        request: ControlRequest,
+        is_live: impl Fn() -> bool + Send + Sync,
+    ) -> Result<ControlSnapshot, String> {
         let _command = self.command_lock.lock().await;
+        if !is_live() {
+            return Err("unavailable: request expired".into());
+        }
         if !self.owns(&request.workspace_id) {
             return Err("conflict: workspace is not active".into());
         }
@@ -505,7 +524,7 @@ impl ControlHost {
         if !self.reserve(&request)? {
             return Ok(self.snapshot(0, 200));
         }
-        let result = self.apply(&request).await;
+        let result = self.apply(&request, &is_live).await;
         self.complete(&request, &result);
         result?;
         Ok(self.snapshot(0, 200))
@@ -576,8 +595,23 @@ impl ControlHost {
             + 1;
         Ok(())
     }
-    async fn apply(self: &Arc<Self>, request: &ControlRequest) -> Result<(), String> {
+    async fn apply(
+        self: &Arc<Self>,
+        request: &ControlRequest,
+        is_live: &(impl Fn() -> bool + Send + Sync),
+    ) -> Result<(), String> {
         match &request.action {
+            ControlAction::ForwardExtension { url, instance_id } => {
+                crate::extension_forwarding::deliver(
+                    self,
+                    &request.workspace_id,
+                    instance_id,
+                    url,
+                    &request.request_id,
+                    is_live,
+                )
+                .await?;
+            }
             ControlAction::SetClientCapabilities { grants } => {
                 self.client_execution.lock().unwrap().set_policy(
                     &request.workspace_id,

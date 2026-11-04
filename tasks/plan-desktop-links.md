@@ -139,6 +139,17 @@ not extra Client IDs within the same project, provide independent project quotas
 Acceptance: no shared user access tokens or confidential secrets are distributed;
 provider approval, quota and live credentials are recorded before enabling defaults.
 
+### Future — DL-13: Unified executable and URI dispatcher
+
+Use one `acheflow://` scheme with an explicit client/server recipient carried
+inside the URI. Consolidate launch into one executable supporting server-only
+operation or a desktop client that starts its server when needed. Define the
+exact URI layout and flags in that task; do not infer them from the temporary
+platform adapters. Preserve recipient, workspace, instance and callback checks.
+Plan migration from the separate client/server scheme handlers. The HTTPS domains
+retain their agreed site/browser/client/server roles. This is explicitly future
+work and does not expand DL-06 or the current binary packaging scope.
+
 ## Delivery discipline
 
 Track progress in [todo-desktop-links.md](todo-desktop-links.md). Keep existing

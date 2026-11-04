@@ -119,6 +119,9 @@ label input { width:100%; flex:none; }
 .key-toggle { align-self:flex-start; padding:5px 10px; font-size:11px; }
 .fps-choices { gap:6px; } .fps-choices button { padding:5px 9px; }
 .field-error { font-size:11px; color:#ffc48e; line-height:1.5; }
+.activation-notice { position:relative; z-index:2; margin:16px 24px 0; padding:12px 16px; display:flex; align-items:center; justify-content:space-between; gap:16px; }
+.activation-notice span { font-size:13px; line-height:1.5; }
+.activation-notice button { flex-shrink:0; }
 .codec-picker { grid-column:1 / -1; }
 .encoder-inventory { margin-top:16px; max-height:240px; overflow-y:auto; border:1px solid #354155; border-radius:6px; }
 .encoder-inventory-row { display:grid; grid-template-columns:minmax(130px,1fr) 70px 80px minmax(0,2fr); gap:12px; padding:10px; border-bottom:1px solid #283141; font-size:11px; overflow-wrap:anywhere; }

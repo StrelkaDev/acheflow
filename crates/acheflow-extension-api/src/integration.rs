@@ -60,6 +60,8 @@ pub struct GuestManifest {
     pub unique_viewers: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authentication: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forwarding: Vec<crate::forwarding::ForwardAction>,
 }
 impl GuestManifest {
     pub fn validate(&self) -> Result<(), String> {
@@ -71,20 +73,7 @@ impl GuestManifest {
                 || self.authentication.is_some()
                 || !self.secret_fields.is_empty()
                 || self.settings.iter().any(|s| s.secret)
-                || self.capabilities.iter().any(|c| {
-                    matches!(
-                        c.as_str(),
-                        "http"
-                            | "websocket"
-                            | "crypto"
-                            | "browser"
-                            | "browser_module"
-                            | "secret_clear"
-                            | "secret_begin"
-                            | "secret_commit"
-                            | "secret_discard"
-                    )
-                }))
+                || self.capabilities.iter().any(|c| client_only_capability(c)))
         {
             return Err(
                 "server logic extensions cannot request provider transport or credentials".into(),
@@ -111,36 +100,29 @@ impl GuestManifest {
             return Err("extension manifest limit reached".into());
         }
         for capability in &self.capabilities {
-            if !matches!(
-                capability.as_str(),
-                "http"
-                    | "crypto"
-                    | "browser"
-                    | "browser_module"
-                    | "secret_clear"
-                    | "secret_begin"
-                    | "secret_commit"
-                    | "secret_discard"
-                    | "websocket"
-                    | "chat"
-                    | "audience"
-                    | "delete"
-                    | "delivery"
-                    | "failure"
-                    | "panel"
-                    | "scene"
-                    | "channel"
-                    | "poll"
-                    | "donation"
-                    | "interaction"
-                    | "status"
-                    | "storage"
-                    | "read.chat"
-                    | "read.audience"
-                    | "read.poll"
-                    | "read.donation"
-                    | "read.interaction"
-            ) {
+            if !client_only_capability(capability)
+                && !matches!(
+                    capability.as_str(),
+                    "chat"
+                        | "audience"
+                        | "delete"
+                        | "delivery"
+                        | "failure"
+                        | "panel"
+                        | "scene"
+                        | "channel"
+                        | "poll"
+                        | "donation"
+                        | "interaction"
+                        | "status"
+                        | "storage"
+                        | "read.chat"
+                        | "read.audience"
+                        | "read.poll"
+                        | "read.donation"
+                        | "read.interaction"
+                )
+            {
                 return Err("unknown extension capability".into());
             }
         }
@@ -151,6 +133,7 @@ impl GuestManifest {
         {
             return Err("invalid secret capture declaration".into());
         }
+        self.validate_forwarding()?;
         let mut ids = std::collections::BTreeSet::new();
         for setting in &self.settings {
             if !valid_id(&setting.id, 64)
@@ -194,7 +177,50 @@ impl GuestManifest {
         }
         Ok(())
     }
+    fn validate_forwarding(&self) -> Result<(), String> {
+        use crate::forwarding::{ForwardMode, valid_forward_action};
+        if self.forwarding.len() > 16 {
+            return Err("extension manifest limit reached".into());
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for action in &self.forwarding {
+            if !valid_forward_action(&action.id) || !ids.insert(&action.id) {
+                return Err("invalid or duplicate forwarding action".into());
+            }
+            if action.mode != ForwardMode::Callback {
+                continue;
+            }
+            if self.execution_side != ExecutionSide::Client {
+                return Err("callback forwarding belongs to client extensions".into());
+            }
+            if !["crypto", "forward_wait"]
+                .iter()
+                .all(|required| self.capabilities.iter().any(|c| c == required))
+            {
+                return Err(
+                    "callback forwarding requires crypto and forward_wait capabilities".into(),
+                );
+            }
+        }
+        Ok(())
+    }
 }
+fn client_only_capability(capability: &str) -> bool {
+    matches!(
+        capability,
+        "http"
+            | "websocket"
+            | "crypto"
+            | "browser"
+            | "browser_module"
+            | "secret_clear"
+            | "secret_begin"
+            | "secret_commit"
+            | "secret_discard"
+            | "forward_wait"
+    )
+}
+
 pub fn valid_provider_id(id: &str) -> bool {
     valid_id(id, 64) && !id.contains([':', '.']) && !matches!(id, "acheflow" | "ui")
 }

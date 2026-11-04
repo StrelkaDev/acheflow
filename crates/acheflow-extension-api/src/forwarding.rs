@@ -4,9 +4,30 @@
 //! guest. Receivers must check manifest declarations and the live instance before
 //! delivery. Callback payloads can contain credentials and must not enter logs.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub const MAX_FORWARD_URL_BYTES: usize = 16 * 1024;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardMode {
+    #[default]
+    Event,
+    Callback,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardAction {
+    pub id: String,
+    #[serde(default)]
+    pub mode: ForwardMode,
+}
+
+pub fn valid_forward_action(id: &str) -> bool {
+    crate::integration::valid_id(id, 64) && !id.contains([':', '.'])
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ForwardRecipient {
@@ -49,6 +70,7 @@ pub enum ForwardError {
     InvalidAddress,
     WrongRecipient,
     InvalidRoute,
+    InvalidParameters,
 }
 impl fmt::Display for ForwardError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -57,6 +79,7 @@ impl fmt::Display for ForwardError {
             Self::InvalidAddress => "invalid forwarding address",
             Self::WrongRecipient => "forwarding address belongs to another application",
             Self::InvalidRoute => "invalid extension forwarding route",
+            Self::InvalidParameters => "invalid or ambiguous forwarding parameters",
         })
     }
 }
@@ -82,10 +105,7 @@ impl ForwardLink {
         let mut segments = route.splitn(3, '/');
         let extension_id = segments.next().unwrap_or_default();
         let action = segments.next().unwrap_or_default();
-        if !crate::integration::valid_provider_id(extension_id)
-            || !crate::integration::valid_id(action, 64)
-            || action.contains([':', '.'])
-        {
+        if !crate::integration::valid_provider_id(extension_id) || !valid_forward_action(action) {
             return Err(ForwardError::InvalidRoute);
         }
         let tail = segments.next();
@@ -100,6 +120,49 @@ impl ForwardLink {
             query: url.query().map(str::to_owned),
             fragment: url.fragment().map(str::to_owned),
         })
+    }
+
+    pub fn declaration<'a>(
+        &self,
+        manifest: &'a crate::integration::GuestManifest,
+    ) -> Result<&'a ForwardAction, String> {
+        use crate::integration::ExecutionSide;
+        let recipient = match manifest.execution_side {
+            ExecutionSide::Client => ForwardRecipient::Client,
+            ExecutionSide::Server => ForwardRecipient::Server,
+        };
+        if self.recipient != recipient || self.extension_id != manifest.id {
+            return Err("forwarding recipient does not match the installation".into());
+        }
+        manifest
+            .forwarding
+            .iter()
+            .find(|action| action.id == self.action)
+            .ok_or_else(|| "forwarding action is not declared by the installation".into())
+    }
+
+    /// Generic form fields; duplicate names are refused across query and fragment.
+    /// Hosts must capture declared credentials before delivering this to a guest.
+    pub fn parameters(&self) -> Result<serde_json::Value, ForwardError> {
+        let mut fields = serde_json::Map::new();
+        for encoded in [&self.query, &self.fragment].into_iter().flatten() {
+            for (key, value) in url::form_urlencoded::parse(encoded.as_bytes()) {
+                if key.is_empty()
+                    || key.len() > 128
+                    || value.len() > 8192
+                    || key.chars().any(char::is_control)
+                    || fields.len() >= 64
+                    || fields.contains_key(key.as_ref())
+                {
+                    return Err(ForwardError::InvalidParameters);
+                }
+                fields.insert(
+                    key.into_owned(),
+                    serde_json::Value::String(value.into_owned()),
+                );
+            }
+        }
+        Ok(serde_json::Value::Object(fields))
     }
 }
 
@@ -161,6 +224,103 @@ fn valid_encoding(text: &str, path: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn callback_parameters_are_bounded_and_unambiguous_across_query_and_fragment() {
+        let parse = |suffix: &str| {
+            ForwardLink::parse_for(
+                &format!("https://client.acheflow.com/fwd/example/open{suffix}"),
+                ForwardRecipient::Client,
+            )
+            .unwrap()
+            .parameters()
+        };
+        assert_eq!(
+            parse("?state=one#state=two"),
+            Err(ForwardError::InvalidParameters)
+        );
+        assert_eq!(
+            parse("?code=one&code=two"),
+            Err(ForwardError::InvalidParameters)
+        );
+        assert_eq!(
+            parse(&format!("?{}=x", "k".repeat(129))),
+            Err(ForwardError::InvalidParameters)
+        );
+        assert_eq!(
+            parse(&format!("?code={}", "x".repeat(8193))),
+            Err(ForwardError::InvalidParameters)
+        );
+        let fields = (0..64)
+            .map(|n| format!("k{n}=v"))
+            .collect::<Vec<_>>()
+            .join("&");
+        assert_eq!(
+            parse(&format!("?{fields}"))
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .len(),
+            64
+        );
+        assert_eq!(
+            parse(&format!("?{fields}&extra=v")),
+            Err(ForwardError::InvalidParameters)
+        );
+        assert_eq!(
+            parse("?code=a%2Bb&state=x%3Dy").unwrap(),
+            serde_json::json!({"code":"a+b","state":"x=y"})
+        );
+    }
+
+    #[test]
+    fn manifests_declare_unique_actions_and_cannot_give_server_guests_callbacks() {
+        use crate::integration::GuestManifest;
+        let base = serde_json::json!({"id":"example","name":"Example","api_version":crate::API_VERSION,"module":"example.wasm","capabilities":[],"services":[],"forwarding":[{"id":"open","mode":"event"}]});
+        let manifest: GuestManifest = serde_json::from_value(base.clone()).unwrap();
+        manifest.validate().unwrap();
+        let server = ForwardLink::parse_for(
+            "https://server.acheflow.com/fwd/example/open",
+            ForwardRecipient::Server,
+        )
+        .unwrap();
+        assert_eq!(
+            server.declaration(&manifest).unwrap().mode,
+            ForwardMode::Event
+        );
+        let client = ForwardLink::parse_for(
+            "https://client.acheflow.com/fwd/example/open",
+            ForwardRecipient::Client,
+        )
+        .unwrap();
+        assert!(client.declaration(&manifest).is_err());
+        let undeclared = ForwardLink::parse_for(
+            "https://server.acheflow.com/fwd/example/other",
+            ForwardRecipient::Server,
+        )
+        .unwrap();
+        assert!(undeclared.declaration(&manifest).is_err());
+        for actions in [
+            serde_json::json!([{"id":"open"},{"id":"open"}]),
+            serde_json::json!([{"id":"../open"}]),
+            serde_json::json!([{"id":"oauth","mode":"callback"}]),
+            serde_json::Value::Array(
+                (0..17)
+                    .map(|n| serde_json::json!({"id":format!("open{n}")}))
+                    .collect(),
+            ),
+        ] {
+            let mut value = base.clone();
+            value["forwarding"] = actions;
+            let invalid: GuestManifest = serde_json::from_value(value).unwrap();
+            assert!(invalid.validate().is_err());
+        }
+        let mut legacy = base;
+        legacy.as_object_mut().unwrap().remove("forwarding");
+        let manifest: GuestManifest = serde_json::from_value(legacy).unwrap();
+        manifest.validate().unwrap();
+        assert!(manifest.forwarding.is_empty());
+    }
 
     #[test]
     fn forwards_provider_payload_without_interpreting_oauth_fields() {

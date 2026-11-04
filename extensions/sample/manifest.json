@@ -9,5 +9,11 @@
   "services": [],
   "subscriptions": [],
   "settings": [],
-  "execution_side": "server"
+  "execution_side": "server",
+  "forwarding": [
+    {
+      "id": "increment",
+      "mode": "event"
+    }
+  ]
 }

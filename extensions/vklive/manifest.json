@@ -18,7 +18,8 @@
     "storage",
     "secret_begin",
     "secret_commit",
-    "secret_discard"
+    "secret_discard",
+    "forward_wait"
   ],
   "services": [
     "https://apidev.live.vkvideo.ru",
@@ -90,5 +91,11 @@
       "scope_path": "/data/scopes",
       "account_path": "/data/user/nick"
     }
-  }
+  },
+  "forwarding": [
+    {
+      "id": "oauth",
+      "mode": "callback"
+    }
+  ]
 }

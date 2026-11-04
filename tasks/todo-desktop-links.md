@@ -4,7 +4,7 @@ Details and acceptance criteria: [plan-desktop-links.md](plan-desktop-links.md).
 
 - [x] DL-01: Reject all duplicate extension IDs and report their sources.
 - [x] DL-02: Define and parse client/server `/fwd/<extension_id>/<action>/...` links.
-- [ ] DL-03: Deliver manifest-declared forwarding events with lifecycle isolation.
+- [x] DL-03: Deliver manifest-declared forwarding events with lifecycle isolation.
 - [ ] DL-04: Receive native client links on cold and warm startup.
 - [ ] DL-05: Receive native server links without moving provider auth to the server.
 - [ ] DL-06: Prepare OS handlers, domain association and HTTPS fallback pages.
@@ -14,10 +14,11 @@ Details and acceptance criteria: [plan-desktop-links.md](plan-desktop-links.md).
 - [ ] DL-10: Add desktop Settings / Server controls and lifecycle preferences.
 - [ ] DL-11: Package matching client/server binaries and installation instructions.
 - [ ] DL-12: Later register official provider applications and request needed quotas.
+- [ ] DL-13 (future): Use `acheflow://` with explicit recipient routing and one executable supporting server-only or client with an on-demand server.
 
 ## Checkpoints
 
-- [ ] Forwarding: catalog ambiguity, parser and two real guest delivery tests pass.
+- [x] Forwarding: catalog ambiguity, parser and two real guest delivery tests pass.
 - [ ] Authorization/chat: guest rebuild, isolation and streaming regressions pass.
 - [ ] Desktop: owned-process lifecycle and native/browser settings checks pass.
 - [ ] Distribution: package artifacts and local activation smoke tests pass.
@@ -43,3 +44,108 @@ Repowise was refreshed; after simplifying the discovery paths, its live change
 review has no high-severity findings. Remaining medium findings concern parser/
 catalog branch counts and bounded test-fixture I/O. No live provider registration
 or domain activation was tested.
+
+## DL-03 implementation — 2026-11-04
+
+Manifests declare unique event/callback actions. Local forwarding verifies the
+active workspace/instance and, for callbacks, a single-use host-issued correlation
+with bounded expiry. Credentials are captured before guest delivery. Ordinary
+events cannot modify staged authorization secrets. Stop, disconnect, first workspace
+binding and restart revoke the relevant grants; failed/stopped sessions refuse late
+results. Existing local authorization before an explicit local_start remains valid.
+
+Server forwarding uses the normal workspace/revision/request-dedup control boundary
+and private bounded queues belonging to a specific live guest instance. Snapshots
+expose the instance ID; replacement instances cannot receive old queued events.
+Provider callback interpretation remains in the guest SDK, with source and WASM
+artifacts rebuilt together. Both local and server deliveries carry request identity.
+
+Verification: 209 workspace tests passed, 0 failed, 11 existing ignored; guest
+workspace 4 passed. The affected client/server suites were rerun after the final
+request-identity change and passed. Native workspace/all-target and UI/client WASM
+Clippy passed with -D warnings, along with formatting and whitespace checks.
+Real Twitch/YouTube guests cover isolation, credential staging, expiry, replay,
+disconnect, restart and pre-bind requests; two real server guest instances cover
+targeting, stopped/replaced instances, workspace checks and request idempotence.
+The Event credential-substitution regression failed before its fix and passed after.
+
+Repowise was refreshed. Its review still flags the existing complex manifest
+validator and medium parser/reactor complexity; the new validation, correlation and
+credential boundaries were reviewed and exercised by the tests above. Native OS
+activation, signed domain association and live platform consent are still DL-04–06.
+
+## DL-04 implementation — 2026-11-04 (verification pending)
+
+Added `acheflow-launcher` with per-recipient single-instance election, a private
+bounded Unix IPC inbox, stale-socket recovery and delivery receipts. The native UI
+routes activation to enabled installed sessions, focuses its window, selects
+Extensions and reports missing/conflicting/disabled recipients. Requests retain
+workspace/configuration/instance identity while waiting; expired or cancelled
+requests cannot reach a replacement session. Pending browser operations accept
+correlated forwarding without cancelling the legitimate wait on invalid input.
+
+Added a thin Swift URL-event adapter and a development macOS bundle builder. The
+main `.app` owns the GUI; a separate nested helper passes the URL through stdin.
+Neither helper nor Rust diagnostics log callback URLs. Signed domain association
+and production handler registration remain DL-06.
+
+Verification: native launcher/UI all-target Clippy and UI WASM Clippy passed with
+`-D warnings`; Swift type-check and the development bundle build passed. A queued
+request starvation regression was reproduced and passed after its fix. New IPC
+and UI mailbox suites compile, but their complete runtime execution remains
+unverified: sandbox restrictions prevented socket listening and the requested
+outside-sandbox process-suite run was declined. A native visual smoke check is
+also pending, so DL-04 remains unchecked. The isolated test app was stopped.
+
+## DL-05 implementation — 2026-11-04 (process verification pending)
+
+The server accepts `--native-links` for an explicitly enabled local receiver and
+`--forward-stdin` for URL handoff/cold start. Ordinary standalone startup remains
+unchanged. The receiver shares the private IPC/election implementation but owns a
+separate server endpoint. It starts after server listener/control initialization;
+an unconfigured fresh server rejects links rather than creating a workspace or
+enabling an extension.
+
+Each event captures the current workspace, revision and live guest instance and
+uses the existing control command boundary. Expiry/cancellation is rechecked after
+both command and guest-inbox lock waits. No remote forwarding endpoint, provider
+authorization or shell execution was added. Shutdown interrupts native waits.
+
+Eight forwarding tests with two real WASM guests pass, including native targeting,
+wrong recipients, missing/disabled actions, expired requests, queued workspace
+switches and existing restart/idempotence boundaries. The command-lock expiry
+regression failed before its fix and passed afterward. The complete local-process
+activation suite remains unverified under the restrictions recorded for DL-04;
+DL-05 remains unchecked until that acceptance check is available.
+
+The six existing control-service tests also pass. Native server all-target Clippy,
+CLI help/build, native launcher/UI Clippy, UI WASM Clippy, Swift type-check,
+formatting and whitespace checks passed. No dependency versions were changed;
+the lockfile additions register the new local crate and its consumers. Repowise
+was refreshed: the new native activation paths have no high-severity findings
+after simplifying the UI event driver. Remaining medium findings concern branch
+counts in the URL adapter, main-thread router and instance election.
+
+## DL-06 local artifacts — 2026-11-04 (external rollout pending)
+
+- [x] Normalize only the recipient's own platform URI scheme into canonical HTTPS.
+- [x] Prepare unsigned macOS client/server URL adapters with separate identities.
+- [x] Prepare Linux desktop entries and a fixed-executable stdin adapter.
+- [x] Generate separate fallback sites and optional matching Apple AASA/entitlements.
+- [x] Verify explicit-click/history cleanup behavior and desktop/narrow layouts.
+- [x] Document signing, profile, hosting, registration and current limitations.
+- [ ] Verify signed installed handlers, live domains/AASA and full process activation.
+- [ ] Implement and validate Windows activation before advertising Windows handlers.
+
+Details: [native-links-installation.md](../docs/native-links-installation.md).
+Current custom schemes are transport aliases only; canonical HTTPS delivery and
+all manifest/workspace/instance/correlation checks remain in force. No domain was
+published, identity signed or user's scheme handler registered. Eight focused
+Rust/JS/Python checks pass; native affected Clippy/builds and Swift checks pass.
+The static fallback was visually checked at desktop and 320px widths, including
+invalid-origin rejection and a dummy valid-link fixture with stubbed OS navigation.
+The full task remains unchecked until external acceptance is available.
+
+The user's follow-up is recorded as future DL-13: one `acheflow://` scheme with
+explicit recipient routing and one binary with server-only or client/on-demand
+server modes. Its exact URL grammar and flags are deferred to that task.

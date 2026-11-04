@@ -95,6 +95,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "acheflow-launcher"
+version = "0.1.3"
+dependencies = [
+ "acheflow-extension-api",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "acheflow-media-api"
 version = "0.1.3"
 dependencies = [
@@ -115,6 +126,7 @@ dependencies = [
  "acheflow-composition",
  "acheflow-control",
  "acheflow-extension-api",
+ "acheflow-launcher",
  "acheflow-media-api",
  "axum",
  "axum-server",
@@ -141,6 +153,7 @@ dependencies = [
  "acheflow-client",
  "acheflow-composition",
  "acheflow-extension-api",
+ "acheflow-launcher",
  "acheflow-media-api",
  "anyrender",
  "base64 0.22.1",

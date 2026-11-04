@@ -14,6 +14,8 @@ pub struct ExtensionStatus {
     pub capabilities: Vec<String>,
     pub account: Option<String>,
     #[serde(default)]
+    pub instance_id: Option<String>,
+    #[serde(default)]
     pub settings: Vec<acheflow_extension_api::integration::Setting>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -42,6 +44,10 @@ pub struct ControlSnapshot {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlAction {
+    ForwardExtension {
+        url: String,
+        instance_id: String,
+    },
     SetClientCapabilities {
         grants: Vec<acheflow_extension_api::client_execution::CapabilityGrant>,
     },

@@ -5,7 +5,9 @@ pub struct Sample {
 }
 impl Sample {
     pub fn handle(&mut self, input: Value) -> Vec<Value> {
-        if input["type"] == "action" && input["action_id"] == "increment" {
+        if (input["type"] == "action" && input["action_id"] == "increment")
+            || (input["type"] == "forwarded" && input["action"] == "increment")
+        {
             self.count += 1;
         }
         vec![
