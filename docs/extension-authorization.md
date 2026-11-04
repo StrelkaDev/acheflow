@@ -15,13 +15,22 @@ become Workspace fields, server commands, snapshots or MCP events.
 
 ## Setup
 
-Register your own platform application and enter its public Client ID in the
-extension settings. Enable only the functions you need. The panel displays the
-requested permissions and, where required, the exact callback to register.
+Enable an installed extension and expand **Application setup** in its card.
+Each provider declares console/documentation links, platform-specific instructions
+and public fields bound to its own setting IDs. Enter your application's public
+Client ID there and enable only the functions you need. The guest displays the
+requested permissions and the exact active callback or authorized origin with
+**Copy**. If the clipboard is unavailable, select the read-only address manually.
+These declarations use the shared typed application-setup contract; the UI has no
+provider list, console URL or provider-specific setting binding.
 
 - Native macOS: callback `http://127.0.0.1:21941/oauth/callback`. An authorization
   attempt owns this loopback listener and opens the system browser. Cancellation
   releases it. Register the callback exactly for Twitch and VK Video Live.
+- Twitch: use an application supporting the implicit grant (Confidential type).
+  Twitch Public clients are restricted to device authorization. The current
+  implicit flow requires no application secret; device authorization is not
+  offered by this guest. Verify email and enable 2FA before app registration.
 - Browser: serve the bundled `oauth-callback.html` alongside the app and register
   that URI for redirect-based providers. Allow sign-in popups. Reverse-proxy base
   paths are preserved. Browser traffic goes directly to declared provider services;
@@ -47,7 +56,7 @@ silently revoked; revoke it in the platform account settings when needed.
 Manual access-token entry remains available under **Enter tokens manually** in each
 guest's panel. **Application setup** contains provider registration instructions
 and the local application-secret field where required. Native panels
-can also accept an optional refresh token. A manual token is validated by the
+can also accept an optional refresh token when their flow supports it. A manual token is validated by the
 provider before being committed. Browser panels accept access tokens only. Tokens
 without a refresh mechanism require reconnection after expiry.
 
@@ -80,8 +89,10 @@ provider app registration, live renewal and platform permissions still require
 separate testing with configured applications/accounts.
 
 Sources: [Twitch OAuth](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/),
+[Twitch app registration](https://dev.twitch.tv/docs/authentication/register-app/),
 [Twitch scopes](https://dev.twitch.tv/docs/authentication/scopes/),
 [Google desktop OAuth](https://developers.google.com/identity/protocols/oauth2/native-app),
 [Google browser token model](https://developers.google.com/identity/oauth2/web/guides/use-token-model),
+[Google browser client setup](https://developers.google.com/identity/oauth2/web/guides/get-google-api-clientid),
 [VK Video Live authorization](https://dev.live.vkvideo.ru/docs/main/authorization),
 [VK chat methods](https://dev.live.vkvideo.ru/docs/method/chat).

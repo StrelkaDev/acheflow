@@ -11,16 +11,16 @@ chunks. The history endpoint exposes a window of at most 200 messages, rather
 than a continuation cursor; a disjoint full window produces a visible gap warning.
 Receiving chat via this polling endpoint cannot guarantee lossless high-rate chat.
 
-The guest expects an opaque `access_token` for a user or application. Register an
-application in the VK Video Live developer console and obtain its token using the
-documented OAuth flow. Enable the extension, enter the channel slug, paste the
-token into its masked Access token field, then choose Save on server. This is a
-write-only credential field: snapshots and exported workspaces never contain the
-value. Credentials remain in server memory until restart and are separate for
-each workspace and provider. Remove deletes the token. Saving or removing a token
-restarts an enabled guest. No built-in OAuth login or automatic refresh is claimed.
-Expired authorization fails the instance and removes live channels; save a new
-token to reconnect.
+Enable the extension, enter the channel slug and expand **Application setup**.
+The guest supplies developer-portal/authorization links, native/browser application
+instructions, the exact active redirect with **Copy**, and its public Client ID
+field. This DevAPI implicit flow uses no application secret. VK ID may handle
+portal sign-in but does not replace the separate DevAPI token. **Connect with VK
+Video Live** requests account consent; manual access-token entry remains available.
+Credentials stay local to the client: native committed accounts use the system
+vault and browser tokens last only for the session. No automatic refresh is
+claimed for this flow. Reconnect after expiry. See
+[local authorization](../../docs/extension-authorization.md).
 
 Channels advertise no outbound capabilities. The official send endpoint returns
 an empty receipt, which cannot reliably link an outgoing host message to its

@@ -2,6 +2,138 @@ use acheflow_client::{catalog::ClientCatalog, local::LocalSession};
 use std::collections::BTreeMap;
 
 #[test]
+fn provider_setup_uses_active_platform_addresses_and_only_required_local_secrets() {
+    use acheflow_extension_api::ExtensionPanel;
+    use serde_json::json;
+    let catalog = ClientCatalog::bundled();
+    for provider in ["twitch", "youtube", "vklive"] {
+        let installed = &catalog.installed[provider];
+        assert!(
+            installed
+                .manifest
+                .settings
+                .iter()
+                .any(|s| s.id == "client_id" && !s.secret)
+        );
+        for browser in [false, true] {
+            let callback = if browser {
+                "https://app.example/base/oauth-callback.html"
+            } else {
+                acheflow_client::browser::CALLBACK
+            };
+            let environment =
+                json!({"browser":browser,"callback_uri":callback,"origin":"https://app.example"});
+            let mut session = LocalSession::new(
+                installed.manifest.clone(),
+                &installed.module,
+                BTreeMap::new(),
+            )
+            .unwrap();
+            let effects = session
+                .step(json!({"type":"local_start"}), &environment, 1000)
+                .unwrap();
+            let panel = &effects.iter().find(|e| e["type"] == "panel").unwrap()["panel"];
+            let _: ExtensionPanel =
+                serde_json::from_value(panel.clone()).expect("host can render guest declarations");
+            let setup = panel["widgets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|w| w["label"] == "Application setup")
+                .unwrap();
+            let widgets = setup["widgets"].as_array().unwrap();
+            assert!(
+                widgets
+                    .iter()
+                    .any(|w| w["type"] == "link"
+                        && w["url"].as_str().unwrap().starts_with("https://")),
+                "{provider}: developer-console links missing"
+            );
+            let address = widgets
+                .iter()
+                .find(|w| w["type"] == "copy_text")
+                .expect("exact address with copy action");
+            assert_eq!(
+                address["value"],
+                if browser && provider == "youtube" {
+                    "https://app.example"
+                } else {
+                    callback
+                }
+            );
+            assert_eq!(
+                widgets
+                    .iter()
+                    .any(|w| w["type"] == "secret_input" && w["id"] == "client_secret"),
+                !browser && provider == "youtube"
+            );
+            let failure = session
+                .step(
+                    json!({"type":"local_action","action_id":"connect"}),
+                    &environment,
+                    1001,
+                )
+                .unwrap();
+            assert!(!failure.iter().any(|e| matches!(
+                e["type"].as_str(),
+                Some("browser" | "browser_module" | "http")
+            )));
+            assert!(
+                serde_json::to_string(&failure)
+                    .unwrap()
+                    .contains("public Client ID")
+            );
+            session
+                .config
+                .insert("client_id".into(), "public-id".into());
+            if !browser && provider == "youtube" {
+                let failure = session
+                    .step(
+                        json!({"type":"local_action","action_id":"connect"}),
+                        &environment,
+                        1002,
+                    )
+                    .unwrap();
+                assert!(!failure.iter().any(|e| e["type"] == "browser"));
+                assert!(
+                    serde_json::to_string(&failure)
+                        .unwrap()
+                        .contains("Application secret")
+                );
+                session
+                    .set_secret("client_secret", "local-only-marker".into())
+                    .unwrap();
+            }
+            let effects = session
+                .step(
+                    json!({"type":"local_action","action_id":"connect"}),
+                    &environment,
+                    1003,
+                )
+                .unwrap();
+            if browser && provider == "youtube" {
+                assert!(effects.iter().any(|e| e["type"] == "browser_module"));
+            } else {
+                let request = effects.iter().find(|e| e["type"] == "browser").unwrap();
+                let url = url::Url::parse(request["url"].as_str().unwrap()).unwrap();
+                assert_eq!(
+                    url.query_pairs()
+                        .find(|(k, _)| k == "redirect_uri")
+                        .unwrap()
+                        .1,
+                    callback
+                );
+            }
+            assert!(
+                !serde_json::to_string(&effects)
+                    .unwrap()
+                    .contains("local-only-marker")
+            );
+        }
+    }
+}
+
+#[test]
 fn real_wasm_guests_respect_disabled_write_functions_and_read_only_tokens() {
     use acheflow_control::extensions::Guest;
     use serde_json::json;
@@ -62,6 +194,11 @@ fn local_panels_and_scopes_are_emitted_by_two_independent_wasm_guests() {
             .step(json!({"type":"local_start"}), &environment, 1000)
             .unwrap();
         assert!(panels.iter().any(|e| e["type"] == "panel"));
+        if provider == "youtube" {
+            session
+                .set_secret("client_secret", "fixture-local-secret".into())
+                .unwrap();
+        }
         let effects = session
             .step(
                 json!({"type":"local_action","action_id":"connect"}),

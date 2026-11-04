@@ -417,7 +417,7 @@ fn ExtensionCard(id: String, name: String, busy: bool) -> Element {
 }
 
 #[component]
-fn ExtensionSetting(
+pub(crate) fn ExtensionSetting(
     extension: String,
     setting: acheflow_extension_api::integration::Setting,
     local: bool,
@@ -479,7 +479,7 @@ fn ClientIntegrationCard(id: String, name: String) -> Element {
                 }
             }
             if enabled{div{class:"padded extension-settings",id:"client-extension-{id}",
-                div{class:"extension-fields",for setting in manifest.settings.iter().filter(|s|!s.secret && !s.toggle).cloned(){ExtensionSetting{key:"{setting.id}",extension:id.clone(),setting,local:true}}}
+                div{class:"extension-fields",for setting in manifest.settings.iter().filter(|s|!s.secret && !s.toggle && !manifest.application_setup.as_ref().is_some_and(|setup|setup.settings.contains(&s.id))).cloned(){ExtensionSetting{key:"{setting.id}",extension:id.clone(),setting,local:true}}}
                 div{class:"extension-functions",for setting in manifest.settings.iter().filter(|s|!s.secret && s.toggle).cloned(){ExtensionSetting{key:"{setting.id}",extension:id.clone(),setting,local:true}}}
                 crate::client_authorization::ClientAuthorization{key:"{client.project.read().id}:{id}",id:id.clone(),name:name.clone()}
                 if !connected {p{class:"form-help","An authorized client executor must connect before messages can be collected or sent."}}

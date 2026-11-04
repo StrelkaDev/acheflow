@@ -8,7 +8,7 @@ Details and acceptance criteria: [plan-desktop-links.md](plan-desktop-links.md).
 - [ ] DL-04: Receive native client links on cold and warm startup.
 - [ ] DL-05: Receive native server links without moving provider auth to the server.
 - [ ] DL-06: Prepare OS handlers, domain association and HTTPS fallback pages.
-- [ ] DL-07: Add complete provider-owned application setup instructions and controls.
+- [x] DL-07: Add complete provider-owned application setup instructions and controls.
 - [ ] DL-08: Use YouTube streaming chat with resumption and cancellation.
 - [ ] DL-09: Launch and monitor an owned local server process.
 - [ ] DL-10: Add desktop Settings / Server controls and lifecycle preferences.
@@ -149,3 +149,33 @@ The full task remains unchecked until external acceptance is available.
 The user's follow-up is recorded as future DL-13: one `acheflow://` scheme with
 explicit recipient routing and one binary with server-only or client/on-demand
 server modes. Its exact URL grammar and flags are deferred to that task.
+
+## DL-07 implementation — 2026-11-04
+
+Added a typed `application_setup` extension API contract. Console links,
+native/browser instructions, active callback/origin selection, public setting IDs
+and required native secret IDs belong to each provider manifest. Validation rejects
+unknown/duplicate bindings, unsafe links, excessive metadata and browser secrets.
+Real provider guests emit generic controls; the UI resolves fields by the current
+installed/enabled extension ID and declared setting ID, preserving local settings.
+No provider names, OAuth URLs or provider dispatch tables were added to host code.
+
+Twitch, YouTube and VK Video Live now supply their own setup. YouTube browser uses
+the actual JavaScript origin and no application secret; native keeps Desktop
+loopback + PKCE and reports a missing local secret before opening the browser.
+Address copying supports native/browser clipboards and inline failure messages.
+Public setting and secret drafts retain their existing workspace/lifetime boundary.
+
+Verification: 235 workspace tests passed, 0 failed, 11 existing ignored; 5 guest
+tests passed. Real WASM checks cover three providers on both environments, exact
+addresses, flow selection, permissions and setup failures. UI tests exercise two
+independent guests, ID-bound settings, keyboard controls, clipboard failure and
+320/1000px layouts. Native/browser builds, all-target workspace/guest Clippy,
+UI WASM Clippy with `-D warnings`, formatting and whitespace checks passed.
+Native and actual WebGPU browser setup panels and successful Copy controls were
+visually checked using isolated test workspaces. The existing native route test
+fixture now enters the app scope where its context is provided.
+
+Repowise review prompted smaller validation methods. Remaining findings concern
+test length and moderate validator branching. No live account consent or provider
+application registration was performed. Unified URI/binary work remains DL-13.

@@ -81,7 +81,7 @@
   "execution_side": "client",
   "authentication": {
     "authorize_url": "https://id.twitch.tv/oauth2/authorize",
-    "help": "Register a public Twitch application and its callback URI. Only enabled functions request permissions.",
+    "help": "Use your own Twitch OAuth application. Only enabled functions request permissions.",
     "features": [
       {
         "id": "read_chat",
@@ -149,5 +149,34 @@
       "id": "oauth",
       "mode": "callback"
     }
-  ]
+  ],
+  "application_setup": {
+    "links": [
+      {
+        "label": "Twitch developer console",
+        "url": "https://dev.twitch.tv/console/apps"
+      },
+      {
+        "label": "Registering a Twitch application",
+        "url": "https://dev.twitch.tv/docs/authentication/register-app/"
+      }
+    ],
+    "native": {
+      "instructions": "Register an application for the implicit grant flow (Confidential client type; Public clients are device-flow only). Add the exact OAuth redirect URI below. Copy its public Client ID into Application Client ID in Application setup. This flow does not use an application secret. Verify your email and enable two-factor authentication first. Allow the enabled permissions on the consent screen.",
+      "address": {
+        "source": "callback_uri",
+        "label": "OAuth redirect URI"
+      }
+    },
+    "browser": {
+      "instructions": "Register an application for the implicit grant flow (Confidential client type; Public clients are device-flow only). Add the exact OAuth redirect URI below, including its path. Copy its public Client ID into Application Client ID in Application setup. No application secret is needed. Allow popups and the enabled permissions.",
+      "address": {
+        "source": "callback_uri",
+        "label": "OAuth redirect URI"
+      }
+    },
+    "settings": [
+      "client_id"
+    ]
+  }
 }

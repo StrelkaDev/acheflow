@@ -65,6 +65,11 @@ impl Attempt {
     }
 
     fn connect(&mut self, now: u64) {
+        if self.session.manifest.id == "youtube" {
+            self.session
+                .set_secret("client_secret", "fixture-local-secret".into())
+                .unwrap();
+        }
         let effects = self
             .session
             .step(

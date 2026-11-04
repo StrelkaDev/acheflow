@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod application_setup;
 pub mod audience;
 pub mod client_execution;
 pub mod forwarding;
@@ -37,6 +38,11 @@ impl TryFrom<PanelDocument> for ExtensionPanel {
                     return false;
                 };
                 *remaining = next;
+                if let PanelWidget::CopyText { value, .. } = widget
+                    && value.len() > 8192
+                {
+                    return false;
+                }
                 if let PanelWidget::Row { widgets } | PanelWidget::Disclosure { widgets, .. } =
                     widget
                     && !bounded(widgets, depth + 1, remaining)
@@ -47,7 +53,7 @@ impl TryFrom<PanelDocument> for ExtensionPanel {
             true
         }
         if !bounded(&document.widgets, 0, &mut 64) {
-            return Err("extension panel exceeds widget or nesting limit".into());
+            return Err("extension panel exceeds widget, value or nesting limit".into());
         }
         Ok(Self {
             extension_id: document.extension_id,
@@ -73,6 +79,13 @@ pub enum PanelWidget {
     },
     Label {
         text: String,
+    },
+    CopyText {
+        label: String,
+        value: String,
+    },
+    SettingInput {
+        id: String,
     },
     Metric {
         label: String,
@@ -131,5 +144,14 @@ mod panel_layout_tests {
         let widget: PanelWidget =
             serde_json::from_value(json!({"type":"button","id":"run","label":"Run"})).unwrap();
         assert!(matches!(widget, PanelWidget::Button { primary: false, .. }));
+    }
+    #[test]
+    fn copy_values_are_bounded_public_text() {
+        for (size, valid) in [(8192, true), (8193, false)] {
+            let panel = serde_json::from_value::<ExtensionPanel>(
+                json!({"extension_id":"fixture","title":"Setup","widgets":[{"type":"copy_text","label":"Callback","value":"x".repeat(size)}]}),
+            );
+            assert_eq!(panel.is_ok(), valid);
+        }
     }
 }

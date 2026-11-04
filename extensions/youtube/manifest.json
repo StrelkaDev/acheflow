@@ -136,5 +136,45 @@
       "id": "oauth",
       "mode": "callback"
     }
-  ]
+  ],
+  "application_setup": {
+    "links": [
+      {
+        "label": "Google Auth Platform clients",
+        "url": "https://console.cloud.google.com/auth/clients"
+      },
+      {
+        "label": "Enable YouTube Data API v3",
+        "url": "https://console.cloud.google.com/apis/library/youtube.googleapis.com"
+      },
+      {
+        "label": "OAuth consent and test users",
+        "url": "https://console.cloud.google.com/auth/audience"
+      }
+    ],
+    "native": {
+      "instructions": "Select a Cloud project and enable YouTube Data API v3. Configure the OAuth consent screen and add your account as a test user while the app is in Testing. Create a Desktop app OAuth client. Copy its Client ID into Application Client ID in Application setup and its generated secret into the local field below. The active loopback redirect is shown for this Desktop flow; do not create a Web client or a hosted redirect for native sign-in. PKCE is used. A read-only connection needs youtube.readonly; sending chat needs youtube.force-ssl.",
+      "address": {
+        "source": "callback_uri",
+        "label": "Active Desktop loopback redirect"
+      },
+      "secrets": [
+        {
+          "id": "client_secret",
+          "label": "Application secret (local only)",
+          "required": true
+        }
+      ]
+    },
+    "browser": {
+      "instructions": "Select a Cloud project, enable YouTube Data API v3, configure OAuth consent and add test users while in Testing. Create a Web application OAuth client. Add the exact origin below to Authorized JavaScript origins and copy its Client ID into Application Client ID in Application setup. Google Identity Services opens a popup; no redirect URI or application secret is used for this token flow. Allow popups. A read-only connection needs youtube.readonly; sending chat needs youtube.force-ssl.",
+      "address": {
+        "source": "origin",
+        "label": "Authorized JavaScript origin"
+      }
+    },
+    "settings": [
+      "client_id"
+    ]
+  }
 }

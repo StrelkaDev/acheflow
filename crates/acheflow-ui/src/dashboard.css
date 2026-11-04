@@ -428,3 +428,7 @@ button.selected { background:var(--accent-surface); color:var(--accent-text); bo
 .extension-scope-tabs { padding:0 0 12px; margin-bottom:20px; background:transparent; }
 .extension-scope-panel[hidden] { display:none; }
 .extension-scope-context { margin:0 0 18px; overflow-wrap:anywhere; }
+.extension-copy-field { display:flex; flex-wrap:wrap; align-items:end; gap:8px; margin:8px 0; }
+.extension-copy-field > .field { flex:1 1 240px; min-width:0; }
+.extension-disclosure-content a { color:var(--accent-text); overflow-wrap:anywhere; }
+.extension-disclosure-content a:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }

@@ -103,7 +103,7 @@ impl Fixture {
         self.harness.signals.get().unwrap()
     }
     fn scope<R>(&self, f: impl FnOnce() -> R) -> R {
-        self.doc.vdom.in_scope(ScopeId::ROOT, f)
+        self.doc.vdom.in_scope(ScopeId::APP, f)
     }
     fn settle(&mut self) {
         for _ in 0..40 {
@@ -162,6 +162,11 @@ fn connect(session: &mut LocalSession) -> String {
     session
         .step(json!({"type":"local_start"}), &environment(), now())
         .unwrap();
+    if session.manifest.id == "youtube" {
+        session
+            .set_secret("client_secret", "fixture-local-secret".into())
+            .unwrap();
+    }
     let effects = session
         .step(
             json!({"type":"local_action","action_id":"connect"}),

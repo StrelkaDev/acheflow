@@ -3,10 +3,10 @@
 Follow [the v2 contract](../docs/extension-contract.md) and
 [the protocol/reference guide](../docs/extensions.md).
 
-The [YouTube](youtube/README.md) and [VK Video Live](vklive/README.md) guests use
-manual OAuth token entry through manifest-declared secret fields. They remain
-disabled by default. Credentials are scoped to workspace + extension and held in
-server memory until restart; public settings and workspace exports omit them.
+Client providers remain disabled by default. Their real WASM guests own account
+panels and authorization; credentials stay local to the client. Public settings
+are scoped to workspace + extension and never include secret values. See
+[local authorization](../docs/extension-authorization.md).
 
 1. Copy the small `sample/` Rust crate into your own directory and give it a unique
    package/manifest ID. Add its crate to this Cargo workspace.
@@ -25,3 +25,11 @@ server memory until restart; public settings and workspace exports omit them.
 Its binary is installed under the server's test fixtures by the same build script.
 Check in version-matched WASM artifacts along with source/lockfiles so a host can
 load installations without requiring an on-server compiler.
+
+For application setup, declare `application_setup` using the shared
+`acheflow-extension-api::application_setup::ApplicationSetup` schema. Its
+`settings` entries reference public manifest setting IDs, and native `secrets`
+reference declared secret slots. Each platform supplies its own instructions and
+optional active address source. The SDK emits generic setting/copy controls; the
+host resolves them against the current installed/enabled extension. Another
+provider needs only its manifest and guest, with no shared UI or server edit.

@@ -8,17 +8,20 @@ Chat pagination respects `pollingIntervalMillis`; a minimum 200-message API page
 is decoded incrementally inside the existing WASM fuel limit. Send timeouts are
 reported as unknown and are never automatically retried.
 
-The guest expects the opaque `access_token` secret with the
-`https://www.googleapis.com/auth/youtube.force-ssl` scope. Enable the extension,
-enter the video ID if needed, paste an OAuth access token into its masked Access
-token field, and choose Save on server. Obtain the token through Google's OAuth
-flow for your registered application; an API key or client secret is not an access
-token. Saving starts a fresh guest with the latest public settings. The field is
-write-only and remains empty after saving; the server returns configured status
-only. Credentials remain in server memory until restart, independently for every
-workspace and provider. Remove deletes the token and restarts the enabled guest.
-Authorization expiry fails the instance and removes live channels. Replace the
-token to reconnect. No automatic token refresh or built-in OAuth login is claimed.
+Enable the extension and expand **Application setup**. Its guest supplies links
+to Google Auth Platform clients, API enablement and test-user configuration.
+Native sign-in uses a Desktop OAuth client, its local application secret, the
+active loopback callback and S256 PKCE. Browser sign-in uses a Web application
+Client ID and the exact current JavaScript origin through Google Identity
+Services; it never requests an application secret. Public Client ID and optional
+video ID remain workspace-local settings. Requested scopes follow enabled
+functions: `youtube.readonly` for reading, `youtube.force-ssl` for chat sending.
+
+**Connect with YouTube** validates returned permissions and application identity.
+Manual access-token entry is also available. Native refresh tokens are renewed
+locally; committed native credentials use the system vault and browser credentials
+last only for that session. No credentials are sent to the Acheflow server.
+See [local authorization](../../docs/extension-authorization.md).
 
 Native polls, donations, video output configuration and unique-viewer analytics
 are not exposed by this version. API quota limits still apply to polling.

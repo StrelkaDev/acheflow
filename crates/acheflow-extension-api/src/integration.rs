@@ -60,6 +60,8 @@ pub struct GuestManifest {
     pub unique_viewers: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authentication: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_setup: Option<crate::application_setup::ApplicationSetup>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forwarding: Vec<crate::forwarding::ForwardAction>,
 }
@@ -145,6 +147,7 @@ impl GuestManifest {
                 return Err("invalid extension setting".into());
             }
         }
+        self.validate_application_setup()?;
         for topic in &self.subscriptions {
             if !matches!(
                 topic.as_str(),

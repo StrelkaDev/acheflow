@@ -5,6 +5,7 @@ resolver = "3"
 [workspace.dependencies]
 serde_json = { version = "1", features = ["raw_value"] }
 guest-sdk = { path = "guest-sdk" }
+acheflow-extension-api = { path = "../crates/acheflow-extension-api" }
 
 [profile.release]
 opt-level = "s"

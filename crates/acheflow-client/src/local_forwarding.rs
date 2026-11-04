@@ -191,6 +191,11 @@ mod tests {
             session
                 .step(json!({"type":"local_start"}), &environment, 1000)
                 .unwrap();
+            if id == "youtube" {
+                session
+                    .set_secret("client_secret", "fixture-local-secret".into())
+                    .unwrap();
+            }
             let effects = session
                 .step(
                     json!({"type":"local_action","action_id":"connect"}),

@@ -50,7 +50,10 @@ fn environment() -> Value {
             .and_then(|url| url.join("oauth-callback.html").ok())
             .map(|url| url.to_string())
             .unwrap_or_default();
-        json!({"browser":true,"callback_uri":callback})
+        let origin = web_sys::window()
+            .and_then(|w| w.location().origin().ok())
+            .unwrap_or_default();
+        json!({"browser":true,"callback_uri":callback,"origin":origin})
     }
 }
 #[component]
@@ -145,7 +148,7 @@ pub(crate) fn ClientAuthorization(id: String, name: String) -> Element {
     rsx! {div{class:"client-authorization",
         if let Some(panel)=panel.read().as_ref(){
             h3{"{panel.title}"}
-            for widget in panel.widgets.clone(){{render_widget(widget,signals,action)}}
+            for widget in panel.widgets.clone(){{render_widget(widget,id.clone(),signals,action)}}
         }
         p{class:"form-help extension-storage-note",if cfg!(target_arch="wasm32"){"Tokens stay in this browser session and are never sent to the server."}else{"Tokens are kept in the system credential store. Disconnect removes the saved account."}}
         if busy(){p{role:"status","Waiting for {name}…"}if task.read().is_some(){button{onclick:move|_|{if let Some(task)=task.take(){task.cancel();}busy.set(false);restart+=1;error.set("Operation cancelled.".into());},"Cancel"}}}
@@ -448,20 +451,46 @@ fn use_ticks(id: String, signals: PanelSignals) {
         }
     });
 }
-fn render_widget(widget: PanelWidget, signals: PanelSignals, action: Callback<String>) -> Element {
+#[component]
+fn LocalSetting(extension: String, id: String) -> Element {
+    let catalog = use_context::<Rc<ClientCatalog>>();
+    let setting = catalog
+        .installed
+        .get(&extension)
+        .and_then(|installed| {
+            installed
+                .manifest
+                .settings
+                .iter()
+                .find(|s| s.id == id && !s.secret && !s.toggle)
+        })
+        .cloned();
+    match setting {
+        Some(setting) => rsx! {crate::interaction::ExtensionSetting{extension,setting,local:true}},
+        None => rsx! {p{class:"field-error",role:"alert","Unknown public extension setting."}},
+    }
+}
+
+fn render_widget(
+    widget: PanelWidget,
+    extension: String,
+    signals: PanelSignals,
+    action: Callback<String>,
+) -> Element {
     let PanelSignals {
         busy, mut drafts, ..
     } = signals;
     match widget {
         PanelWidget::Label { text } => rsx! {p{class:"form-help","{text}"}},
         PanelWidget::Button { id, label, primary } => {
-            rsx! {button{class:if primary{"local-extension-action primary"}else{"local-extension-action"},disabled:busy(),onclick:move|_|action.call(id.clone()),"{label}"}}
+            let key_id = id.clone();
+            rsx! {button{class:if primary{"local-extension-action primary"}else{"local-extension-action"},disabled:busy(),onclick:move|_|action.call(id.clone()),onkeydown:move|event|{if event.key()==Key::Named(NamedKey::Enter)||event.key()==Key::Character(" ".into()){event.prevent_default();action.call(key_id.clone());}},"{label}"}}
         }
         PanelWidget::Row { widgets } => {
-            rsx! {div{class:"extension-action-row",for widget in widgets{{render_widget(widget,signals,action)}}}}
+            rsx! {div{class:"extension-action-row",for widget in widgets{{render_widget(widget,extension.clone(),signals,action)}}}}
         }
         PanelWidget::Disclosure { label, widgets } => {
-            rsx! {crate::extension_panel::PanelDisclosure{label,widgets,render:Callback::new(move|widget|render_widget(widget,signals,action))}}
+            rsx! {crate::extension_panel::PanelDisclosure{label,widgets,render:Callback::new(move|widget|render_widget(widget,extension.clone(),signals,action))}}
         }
         PanelWidget::SecretInput { id, label } => {
             rsx! {label{class:"field",span{"{label}"}input{r#type:"password",autocomplete:"off",disabled:busy(),maxlength:8192,value:drafts.read().get(&id).cloned().unwrap_or_default(),oninput:move|event|{drafts.write().insert(id.clone(),event.value());}}}}
@@ -469,7 +498,11 @@ fn render_widget(widget: PanelWidget, signals: PanelSignals, action: Callback<St
         PanelWidget::Link { label, url } => {
             rsx! {a{href:url,target:"_blank",rel:"noopener noreferrer","{label}"}}
         }
+        PanelWidget::SettingInput { id } => rsx! {LocalSetting{extension,id}},
         PanelWidget::Metric { label, value } => rsx! {p{"{label}: {value}"}},
+        PanelWidget::CopyText { label, value } => {
+            rsx! {crate::extension_panel::CopyText{label,value}}
+        }
         _ => rsx! {p{class:"field-error","Unsupported local panel widget."}},
     }
 }

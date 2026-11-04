@@ -1,6 +1,9 @@
 //! Extension-side OAuth state machine. The client supplies only bounded primitives.
 use serde_json::{Value, json};
 
+#[path = "application_setup.rs"]
+mod application_setup;
+
 #[derive(Default)]
 pub struct Authorization {
     state: String,
@@ -70,21 +73,11 @@ impl Authorization {
     fn panel(&self, manifest: &Value, input: &Value) -> Value {
         let auth = &manifest["authentication"];
         let permissions = scopes(manifest, &input["config"]);
-        let mut setup = vec![json!({"type":"label","text":auth["help"]})];
-        if !(input["environment"]["browser"] == true
-            && auth["browser_module"]
-                .as_str()
-                .is_some_and(|module| !module.is_empty()))
-        {
-            setup.push(json!({"type":"label","text":format!("Register this callback URI: {}",input["environment"]["callback_uri"].as_str().unwrap_or_default())}));
-        }
+        let setup = application_setup::widgets(manifest, input);
         let mut fields =
             vec![json!({"type":"secret_input","id":"access_token","label":"Access token"})];
-        if input["environment"]["browser"] != true {
+        if input["environment"]["browser"] != true && auth["native_pkce"] == true {
             fields.push(json!({"type":"secret_input","id":"refresh_token","label":"Refresh token (optional)"}));
-            if auth["native_pkce"] == true {
-                setup.push(json!({"type":"secret_input","id":"client_secret","label":"Application secret (local only)"}));
-            }
         }
         let mut widgets = vec![
             json!({"type":"label","text":if permissions.is_empty(){"Requested permissions: no privileged scopes.".into()}else{format!("Requested permissions: {}",permissions.join(", "))}}),
@@ -252,6 +245,8 @@ impl Authorization {
                     || client.chars().any(char::is_whitespace)
                 {
                     self.fail("Enter the application's public Client ID first.");
+                } else if let Some(message) = application_setup::missing_secret(manifest, input) {
+                    self.fail(&message);
                 } else {
                     self.pending = true;
                     self.authorized = false;

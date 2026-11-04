@@ -440,6 +440,106 @@ fn local_client_app() -> Element {
     harness.client.set(Some(client));
     rsx! {crate::interaction::ExtensionsPage{}}
 }
+
+#[tokio::test]
+async fn application_setup_renders_guest_links_addresses_and_local_failures_in_each_card() {
+    for provider in ["twitch", "youtube"] {
+        let harness = Rc::new(Harness::default());
+        let mut doc = DioxusDocument::new(
+            VirtualDom::new(local_client_app).with_root_context(harness.clone()),
+            DocumentConfig::default(),
+        );
+        doc.initial_build();
+        settle(&mut doc);
+        let mut client = harness.client.get().unwrap();
+        client
+            .project
+            .write()
+            .client_extensions
+            .entry(provider.into())
+            .or_default()
+            .enabled = true;
+        settle(&mut doc);
+        let card = format!("#client-extension-{provider}");
+        let disclosure = doc
+            .inner
+            .borrow()
+            .query_selector_all(&format!("{card} .extension-disclosure-toggle"))
+            .unwrap()[1];
+        doc.inner.borrow_mut().set_focus_to(disclosure);
+        press_tab_key(&mut doc, NamedKey::Enter, Code::Enter);
+        assert!(exists(&doc, &format!("{card} a[href^='https://']")));
+        let address = doc
+            .inner
+            .borrow()
+            .query_selector(&format!("{card} .extension-copy-field input[readonly]"))
+            .unwrap()
+            .unwrap();
+        let document = doc.inner.borrow();
+        let attrs = document
+            .get_node(address)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .attrs();
+        assert!(attrs.iter().any(|a| a.name.local.to_string() == "value"
+            && a.value.as_str() == acheflow_client::browser::CALLBACK));
+        drop(document);
+        assert_eq!(
+            exists(
+                &doc,
+                &format!("{card} .extension-disclosure-content input[type='password']")
+            ),
+            provider == "youtube"
+        );
+        let copy = doc
+            .inner
+            .borrow()
+            .query_selector(&format!("{card} .extension-copy-field button"))
+            .unwrap()
+            .unwrap();
+        doc.inner.borrow_mut().set_focus_to(copy);
+        press_tab_key(&mut doc, NamedKey::Enter, Code::Enter);
+        assert!(
+            exists(
+                &doc,
+                &format!("{card} .extension-copy-field [role='alert']")
+            ),
+            "missing clipboard reports an inline error"
+        );
+        assert!(client.error.read().is_none());
+        let connect = doc
+            .inner
+            .borrow()
+            .query_selector(&format!("{card} .local-extension-action.primary"))
+            .unwrap()
+            .unwrap();
+        doc.inner.borrow_mut().set_focus_to(connect);
+        press_tab_key(&mut doc, NamedKey::Enter, Code::Enter);
+        let content = doc.inner.borrow().query_selector(&card).unwrap().unwrap();
+        assert!(
+            doc.inner
+                .borrow()
+                .get_node(content)
+                .unwrap()
+                .text_content()
+                .contains("public Client ID")
+        );
+        assert!(client.project.read().extensions.is_empty());
+    }
+}
+fn open_application_setup(doc: &mut DioxusDocument, provider: &str) {
+    let disclosure = doc
+        .inner
+        .borrow()
+        .query_selector_all(&format!(
+            "#client-extension-{provider} .extension-disclosure-toggle"
+        ))
+        .unwrap()[1];
+    doc.inner.borrow_mut().set_focus_to(disclosure);
+    press_tab_key(doc, NamedKey::Enter, Code::Enter);
+}
+
 #[tokio::test]
 async fn client_installations_are_editable_offline_and_never_mutate_server_settings() {
     let harness = Rc::new(Harness::default());
@@ -458,10 +558,11 @@ async fn client_installations_are_editable_offline_and_never_mutate_server_setti
     assert!(client.project.read().client_extensions[id].enabled);
     assert!(client.project.read().extensions.is_empty());
     assert!(!(client.busy)());
+    open_application_setup(&mut doc, id);
     let input = doc
         .inner
         .borrow()
-        .query_selector(&format!("#client-extension-{id} input"))
+        .query_selector(&format!("#client-extension-{id} input:not([readonly])"))
         .unwrap()
         .unwrap();
     doc.inner.borrow_mut().set_focus_to(input);
@@ -487,6 +588,7 @@ async fn client_installations_are_editable_offline_and_never_mutate_server_setti
     assert!(!exists(&doc, &format!("#client-extension-{id} input")));
     client.project.set(first);
     settle(&mut doc);
+    open_application_setup(&mut doc, id);
     assert!(exists(&doc, &format!("#client-extension-{id} input")));
     assert_eq!(
         client.project.read().client_extensions[id].config[field],
@@ -661,10 +763,11 @@ async fn extension_scope_tabs_keep_drafts_separate_and_follow_keyboard_focus() {
     toggle(&mut doc);
     let catalog = acheflow_client::catalog::ClientCatalog::bundled();
     let local = catalog.installed.keys().next().unwrap();
+    open_application_setup(&mut doc, local);
     let input = doc
         .inner
         .borrow()
-        .query_selector(&format!("#client-extension-{local} input"))
+        .query_selector(&format!("#client-extension-{local} input:not([readonly])"))
         .unwrap()
         .unwrap();
     doc.inner.borrow_mut().set_focus_to(input);
@@ -824,21 +927,13 @@ async fn compact_extension_controls_share_rows_and_wrap_without_horizontal_overf
                 "control extends past viewport: {right}"
             );
         }
-        let fields = document
-            .query_selector_all("#client-extension-youtube .extension-fields > .field")
-            .unwrap();
-        let first = document
-            .get_node(fields[0])
-            .unwrap()
-            .absolute_position(0., 0.);
-        let second = document
-            .get_node(fields[1])
-            .unwrap()
-            .absolute_position(0., 0.);
-        if width == 1000 {
-            assert!((first.y - second.y).abs() < 1.);
-        } else {
-            assert!(second.y > first.y + 10.);
+        drop(document);
+        open_application_setup(&mut doc, "youtube");
+        let document = doc.inner.borrow();
+        for id in document.query_selector_all("#client-extension-youtube .field, #client-extension-youtube .extension-copy-field button").unwrap() {
+            let node = document.get_node(id).unwrap();
+            let right = node.absolute_position(0., 0.).x + node.final_layout().size.width;
+            assert!(right <= width as f32 + 1., "setup control extends past viewport: {right}");
         }
     }
 }

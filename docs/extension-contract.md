@@ -61,6 +61,21 @@ optional `primary` flag defaults to false. Layout stays guest-declared and the h
 renders the same wrapping rows and keyboard-operated disclosures on both targets.
 The 64-widget limit includes nested children; layout nesting is limited to 8 levels.
 
+Client manifests may declare typed `application_setup` metadata from
+`acheflow-extension-api::application_setup`: developer-console HTTPS links,
+native/browser instructions, an optional active `callback_uri` or `origin` address,
+public `settings` IDs and required native `secrets` IDs. References resolve only
+against that installation's declared settings and secret slots; duplicates,
+unknown IDs, browser application secrets and unbounded metadata are rejected.
+Setup uses the discovered catalog and the workspace's enabled installations.
+The guest emits `setting_input { id }` for public settings and
+`copy_text { label, value }` for a read-only public address with a copy action.
+The host binds public fields by extension/setting ID, retaining the manifest's
+labels, limits and local persistence. Copy values are limited to 8192 bytes;
+clipboard errors stay inside the control. Device flows can omit the address.
+OAuth endpoints, scopes and flow decisions remain extension-owned; setup does
+not mandate hosted callbacks or change the selected authorization transport.
+
 UI/MCP -> server domain command -> outbox -> client claim -> provider API -> receipt.
 Provider -> client normalized typed event -> server logic -> shared native/browser UI.
 Every delivery identifies workspace, extension instance, request/correlation ID,

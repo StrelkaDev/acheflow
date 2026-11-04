@@ -97,5 +97,34 @@
       "id": "oauth",
       "mode": "callback"
     }
-  ]
+  ],
+  "application_setup": {
+    "links": [
+      {
+        "label": "VK Video Live developer portal",
+        "url": "https://dev.live.vkvideo.ru"
+      },
+      {
+        "label": "DevAPI authorization instructions",
+        "url": "https://dev.live.vkvideo.ru/docs/main/authorization"
+      }
+    ],
+    "native": {
+      "instructions": "Create a DevAPI OAuth application in the VK Video Live developer portal with the implicit response_type=token flow enabled. Add the exact OAuth redirect URI below and copy the application Client ID into Application Client ID in Application setup. The portal may require VK ID sign-in; VK ID tokens cannot replace DevAPI tokens. This flow needs no application secret. Chat and audience reading request no privileged scopes; sending and polls are not supported.",
+      "address": {
+        "source": "callback_uri",
+        "label": "OAuth redirect URI"
+      }
+    },
+    "browser": {
+      "instructions": "Create a DevAPI OAuth application with the implicit response_type=token flow enabled. Register the exact redirect URI below, including its path, and enter the public Client ID in Application setup. Allow popups. No application secret is used; VK ID sign-in and DevAPI access tokens are distinct. Chat and audience reading request no privileged scopes. Sending and polls are not supported.",
+      "address": {
+        "source": "callback_uri",
+        "label": "OAuth redirect URI"
+      }
+    },
+    "settings": [
+      "client_id"
+    ]
+  }
 }
