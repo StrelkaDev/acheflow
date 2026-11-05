@@ -20,6 +20,7 @@ pub fn dashboard() -> Element {
     let backend = use_signal(|| "Starting GPU...".to_owned());
     let mut page = use_signal(|| "Overview");
     let (project, mut catalog, storage_status) = use_workspaces();
+    crate::server_settings::provide(project, catalog);
     let effects = use_signal(|| catalog.peek().background_animation());
     use_effect(move || {
         let enabled = effects();
@@ -77,7 +78,7 @@ pub fn dashboard() -> Element {
                                 if tab=="Extensions"{
                                     crate::interaction::ExtensionsPage {}
                                 }
-                                if tab=="Settings"{GeneralSettings {effects}}
+                                if tab=="Settings"{GeneralSettings {effects,project,catalog,storage_status}}
                                 footer {class:"content-footer",span {"ACHEFLOW / STREAM CONTROL"}}
                             }
                         }
@@ -101,9 +102,15 @@ fn native_activation_notice(#[cfg(not(target_arch = "wasm32"))] value: Signal<St
     }
 }
 #[component]
-fn GeneralSettings(mut effects: Signal<bool>) -> Element {
+fn GeneralSettings(
+    mut effects: Signal<bool>,
+    project: Signal<crate::project::Workspace>,
+    catalog: Signal<crate::workspaces::Catalog>,
+    storage_status: Signal<String>,
+) -> Element {
     rsx! {
-        div {class:"page-heading",div {h1 {"Settings"}p {"Panel appearance and application information."}}}
+        div {class:"page-heading",div {h1 {"Settings"}p {"Server connection, desktop behavior and appearance."}}}
+        crate::server_settings::ServerSettings {project,catalog,storage_status}
         section {class:"panel",
             div {class:"panel-heading",h2 {"Appearance"}}
             div {class:"padded settings-row",

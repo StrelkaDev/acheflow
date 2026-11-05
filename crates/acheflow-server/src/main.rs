@@ -53,29 +53,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
         tokio::net::TcpListener::bind((config.http_host.as_str(), config.http_port)).await?;
     let rtmp_listener =
         tokio::net::TcpListener::bind((config.rtmp_host.as_str(), config.rtmp_port)).await?;
-    eprintln!(
+    crate::desktop::log(format_args!(
         "Acheflow listening on {}://{}",
         if http_tls.is_some() { "https" } else { "http" },
         listener.local_addr()?
-    );
-    eprintln!(
+    ));
+    crate::desktop::log(format_args!(
         "{} ingest listening on {}",
         if rtmp_tls.is_some() { "RTMPS" } else { "RTMP" },
         rtmp_listener.local_addr()?
-    );
+    ));
     let web_root = std::env::var("ACHEFLOW_WEB_ROOT").unwrap_or_else(|_| "dist".to_owned());
     let capabilities = tokio::select! {
         _ = desktop.shutdown.cancelled() => return Ok(()),
         capabilities = ffmpeg::discover() => capabilities,
     };
-    eprintln!(
+    crate::desktop::log(format_args!(
         "FFmpeg: {}",
         capabilities
             .version
             .as_deref()
             .or(capabilities.error.as_deref())
             .unwrap_or("unavailable")
-    );
+    ));
     let media_state: ffmpeg::CapabilityState =
         std::sync::Arc::new(tokio::sync::Mutex::new(capabilities));
     let runtime = live::Runtime::new(media_state.clone(), rtmp_listener.local_addr()?.to_string());
@@ -84,7 +84,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mcp_host = control_host.clone();
     let mcp_task = tokio::spawn(async move {
         if let Err(error) = mcp::serve(mcp_host).await {
-            eprintln!("MCP: {error}");
+            crate::desktop::log(format_args!("MCP: {error}"));
         }
     });
     let workspace_routes = workspace_extensions::routes(control_host.clone());
@@ -125,11 +125,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     version: env!("CARGO_PKG_VERSION").into(),
                     process_id: std::process::id(),
                     managed_instance: desktop.instance,
+                    desktop_attached: false,
                     http_address: listener.local_addr()?,
                     rtmp_address: rtmp_listener.local_addr()?,
                 };
+                let attached = desktop.attached;
                 move || {
-                    let info = info.clone();
+                    let mut info = info.clone();
+                    info.desktop_attached = attached.load(std::sync::atomic::Ordering::Acquire);
                     async move { axum::Json(info) }
                 }
             }),
@@ -148,7 +151,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let rtmp_runtime = runtime.clone();
     let rtmp_task = tokio::spawn(async move {
         if let Err(error) = rtmp::serve(rtmp_listener, rtmp_runtime, rtmp_tls).await {
-            eprintln!("RTMP listener stopped: {error}");
+            crate::desktop::log(format_args!("RTMP listener stopped: {error}"));
         }
     });
     let handle = axum_server::Handle::new();
@@ -188,6 +191,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 async fn shutdown_signal() {
     if let Err(error) = tokio::signal::ctrl_c().await {
-        eprintln!("Failed to install Ctrl-C handler: {error}");
+        crate::desktop::log(format_args!("Failed to install Ctrl-C handler: {error}"));
     }
 }

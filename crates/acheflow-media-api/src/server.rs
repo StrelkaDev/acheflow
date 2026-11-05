@@ -11,6 +11,9 @@ pub struct ServerInfo {
     pub version: String,
     pub process_id: u32,
     pub managed_instance: Option<String>,
+    /// Managed child still attached to its parent; false for external/detached servers.
+    #[serde(default)]
+    pub desktop_attached: bool,
     pub http_address: std::net::SocketAddr,
     pub rtmp_address: std::net::SocketAddr,
 }

@@ -2,6 +2,10 @@
 use acheflow_media_api::server::ServerInfo;
 use std::{
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::sync::{mpsc, oneshot, watch};
@@ -75,6 +79,7 @@ pub enum Phase {
     Stopping,
     Exited,
     Failed,
+    Detached,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -105,6 +110,7 @@ pub enum ServerError {
     AlreadyRunning,
     StopFailed,
     ManagerClosed,
+    DetachFailed,
 }
 impl std::fmt::Display for ServerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -124,6 +130,7 @@ impl std::fmt::Display for ServerError {
             Self::AlreadyRunning => "This manager already owns a server process",
             Self::StopFailed => "Cannot stop owned server process",
             Self::ManagerClosed => "Server lifecycle worker is unavailable",
+            Self::DetachFailed => "Could not confirm that the server can run independently",
         };
         f.write_str(message)
     }
@@ -134,6 +141,7 @@ type Reply = oneshot::Sender<Result<Status, ServerError>>;
 enum Request {
     Start(LaunchConfig, Reply),
     Stop(Reply),
+    Shutdown(Reply),
 }
 
 /// One process owner, usable from a desktop settings context. Dropping the handle
@@ -142,6 +150,7 @@ pub struct LocalServer {
     commands: mpsc::Sender<Request>,
     status: watch::Receiver<Status>,
     logs: logs::Logs,
+    keep_running: Arc<AtomicBool>,
 }
 impl LocalServer {
     /// Must be called inside a Tokio runtime.
@@ -150,11 +159,19 @@ impl LocalServer {
         let (commands, rx) = mpsc::channel(4);
         let (tx, status) = watch::channel(Status::default());
         let logs = logs::Logs::default();
-        tokio::spawn(worker::run(rx, tx, logs.clone(), client));
+        let keep_running = Arc::new(AtomicBool::new(false));
+        tokio::spawn(worker::run(
+            rx,
+            tx,
+            logs.clone(),
+            client,
+            keep_running.clone(),
+        ));
         Ok(Self {
             commands,
             status,
             logs,
+            keep_running,
         })
     }
     pub fn status(&self) -> Status {
@@ -166,7 +183,7 @@ impl LocalServer {
     pub fn diagnostics(&self) -> Vec<String> {
         self.logs.snapshot()
     }
-    pub async fn start(&mut self, config: LaunchConfig) -> Result<Status, ServerError> {
+    pub async fn start(&self, config: LaunchConfig) -> Result<Status, ServerError> {
         let (reply, rx) = oneshot::channel();
         self.commands
             .send(Request::Start(config, reply))
@@ -174,7 +191,7 @@ impl LocalServer {
             .map_err(|_| ServerError::ManagerClosed)?;
         rx.await.map_err(|_| ServerError::ManagerClosed)?
     }
-    pub async fn stop(&mut self) -> Result<Status, ServerError> {
+    pub async fn stop(&self) -> Result<Status, ServerError> {
         let (reply, rx) = oneshot::channel();
         self.commands
             .send(Request::Stop(reply))
@@ -182,9 +199,22 @@ impl LocalServer {
             .map_err(|_| ServerError::ManagerClosed)?;
         rx.await.map_err(|_| ServerError::ManagerClosed)?
     }
-    pub async fn restart(&mut self, config: LaunchConfig) -> Result<Status, ServerError> {
+    pub async fn restart(&self, config: LaunchConfig) -> Result<Status, ServerError> {
         self.stop().await?;
         self.start(config).await
+    }
+    pub fn set_keep_running_on_exit(&self, enabled: bool) {
+        self.keep_running.store(enabled, Ordering::Release);
+    }
+    /// Await this before shutting down the runtime. Explicit stop/restart always
+    /// stop the owned child regardless of the exit preference.
+    pub async fn shutdown(&self) -> Result<Status, ServerError> {
+        let (reply, rx) = oneshot::channel();
+        self.commands
+            .send(Request::Shutdown(reply))
+            .await
+            .map_err(|_| ServerError::ManagerClosed)?;
+        rx.await.map_err(|_| ServerError::ManagerClosed)?
     }
 }
 

@@ -30,7 +30,7 @@ pub fn discover() -> BTreeMap<String, Installed> {
 pub fn discover_at(root: &Path) -> BTreeMap<String, Installed> {
     let discovery = discover_catalog_at(root);
     for error in discovery.errors {
-        eprintln!("Extension installation skipped: {error}");
+        crate::desktop::log(format_args!("Extension installation skipped: {error}"));
     }
     discovery.installed
 }

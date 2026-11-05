@@ -432,3 +432,17 @@ button.selected { background:var(--accent-surface); color:var(--accent-text); bo
 .extension-copy-field > .field { flex:1 1 240px; min-width:0; }
 .extension-disclosure-content a { color:var(--accent-text); overflow-wrap:anywhere; }
 .extension-disclosure-content a:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+/* Server lifecycle controls share the existing panel/field system. */
+.server-connection { display:flex; align-items:flex-end; gap:12px; }
+.server-connection .field { flex:1; margin:0; }
+.local-server { margin-top:20px; padding-top:20px; border-top:1px solid #252c38; }
+.server-section-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }
+.server-section-heading h3 { margin:0; }
+.server-actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+.server-ports { display:flex; gap:12px; align-items:flex-end; margin:16px 0; flex-wrap:wrap; }
+.server-ports .field { width:140px; margin:0; }
+.server-preferences { display:flex; flex-direction:column; gap:12px; margin:20px 0; }
+.server-preferences label { display:flex; flex-direction:row; align-items:center; gap:10px; }
+.server-preferences input { width:18px; height:18px; margin:0; padding:0; flex:0 0 18px; }
+.server-logs { max-height:180px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; padding:12px; background:#10151d; border:1px solid #252c38; border-radius:8px; font-size:12px; }
+@media (max-width:740px) { .server-connection { align-items:stretch; flex-direction:column; } .server-section-heading { align-items:flex-start; flex-direction:column; } }

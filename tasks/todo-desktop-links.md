@@ -11,7 +11,7 @@ Details and acceptance criteria: [plan-desktop-links.md](plan-desktop-links.md).
 - [x] DL-07: Add complete provider-owned application setup instructions and controls.
 - [x] DL-08: Use YouTube streaming chat with resumption and cancellation.
 - [x] DL-09: Launch and monitor an owned local server process.
-- [ ] DL-10: Add desktop Settings / Server controls and lifecycle preferences.
+- [x] DL-10: Add desktop Settings / Server controls and lifecycle preferences.
 - [ ] DL-11: Package matching client/server binaries and installation instructions.
 - [ ] DL-12: Later register official provider applications and request needed quotas.
 - [ ] DL-13 (future): Use `acheflow://` with explicit recipient routing and one executable supporting server-only or client with an on-demand server.
@@ -20,7 +20,7 @@ Details and acceptance criteria: [plan-desktop-links.md](plan-desktop-links.md).
 
 - [x] Forwarding: catalog ambiguity, parser and two real guest delivery tests pass.
 - [x] Authorization/chat: guest rebuild, isolation and streaming regressions pass.
-- [ ] Desktop: owned-process lifecycle and native/browser settings checks pass.
+- [x] Desktop: owned-process lifecycle and native/browser settings checks pass.
 - [ ] Distribution: package artifacts and local activation smoke tests pass.
 - [ ] External rollout: domain/signing/provider setup verified with actual access.
 
@@ -260,3 +260,45 @@ the async executor and separated configuration validation. The lockfile adds
 only a direct edge to the already present media API crate, without changing any
 dependency versions; affected checks were used instead of rerunning unrelated
 network/IPC suites. Windows/signed installed-package operation remains unverified.
+
+## DL-10 implementation — 2026-11-05
+
+Settings / Server now exposes workspace endpoint selection, API availability and
+native start/stop/restart controls, owned/external state, ports, version, PID,
+errors and bounded recent output. The global catalog restores opt-in startup and
+keep-running preferences, defaults old catalogs to both disabled, validates ports
+and excludes these preferences from workspace exports. Launch completion connects
+only the still-current matching local/default target; remote workspaces remain
+configurable. Stop can cancel a pending start without its late result replacing
+the newer action. Browser builds show connection controls and availability only.
+
+The native lifecycle runtime outlives the UI tree. Normal close awaits shutdown;
+keep-running sends a private detach command and confirms the same child's identity
+before releasing ownership. The child survives runtime teardown, tolerates a
+closed diagnostic pipe, and appears external on reopening. A later client cannot
+implicitly stop it. Failed detach confirmation stops the owned child instead of
+abandoning an uncertain process. Unexpected parent crashes still close the lifetime
+pipe and stop an attached child. See [local-server.md](../docs/local-server.md).
+
+Verification: 13 real-process lifecycle tests, two UI event/state regressions and
+seven catalog/storage tests pass. The UI regression clicks a checkbox, then uses
+Space/Tab, verifies control enablement for ready/starting/external processes and
+uses the local target with Enter. Initial failures exposed Blitz's input-event and
+keyboard activation behavior; explicit bounded handlers now pass. Native and WASM
+Clippy with `-D warnings` and native/web builds pass. No guest source changed.
+
+Visual/runtime verification used isolated temporary settings and a test macOS
+bundle. Start, restart, API readiness, logs, default close/stop, restored autostart,
+keep-running close and reopening with disabled external Stop/Restart were verified.
+Final screenshots confirmed populated port inputs and aligned checkbox labels
+after fixing unsupported native number-input display and inherited label layout.
+The browser connected to the temporary live server through an explicitly trusted
+local origin, showed version/API availability and offered no local process launch.
+Temporary clients, server and static preview were stopped afterward. Matching
+installation artifacts, signing and platform packaging remain DL-11.
+
+Repowise's final focused review has no introduced high/critical findings. The
+remaining medium finding concerns launch-path branching; UI helpers have advisory
+size findings. Endpoint drafts depend on a memoized URL, so unrelated workspace
+updates do not reset in-progress address edits. No unrelated network/activation
+suite was rerun, and no provider account, signing or domain rollout was performed.

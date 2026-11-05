@@ -233,9 +233,9 @@ pub(crate) fn router_with_executors(
 }
 pub async fn serve(host: Arc<ControlHost>) -> Result<(), String> {
     let Ok(token) = std::env::var("ACHEFLOW_MCP_TOKEN") else {
-        eprintln!(
+        crate::desktop::log(format_args!(
             "MCP: set ACHEFLOW_MCP_TOKEN (32+ characters) to enable authenticated local control"
-        );
+        ));
         return Ok(());
     };
     let read_token = std::env::var("ACHEFLOW_MCP_READ_TOKEN").ok();
@@ -258,7 +258,9 @@ pub async fn serve(host: Arc<ControlHost>) -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
         .map_err(|_| "MCP listener could not bind")?;
-    eprintln!("MCP: http://127.0.0.1:{port}/mcp (authenticated, protocol 2026-07-28)");
+    crate::desktop::log(format_args!(
+        "MCP: http://127.0.0.1:{port}/mcp (authenticated, protocol 2026-07-28)"
+    ));
     let cancel = host.runtime.shutdown.clone();
     axum::serve(
         listener,

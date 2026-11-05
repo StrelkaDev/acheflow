@@ -49,7 +49,7 @@ fn config(directory: &Directory) -> LaunchConfig {
 #[tokio::test]
 async fn missing_binary_is_reported_without_starting_a_process() {
     let directory = Directory::new();
-    let mut server = LocalServer::new().unwrap();
+    let server = LocalServer::new().unwrap();
     let config = LaunchConfig {
         binary: directory.0.join("missing"),
         directory: directory.0.clone(),
@@ -74,7 +74,7 @@ async fn production_server_becomes_ready_stops_and_restarts() {
         r#"{"http_host":"0.0.0.0","http_port":1,"rtmp_host":"0.0.0.0","rtmp_port":2}"#,
     )
     .unwrap();
-    let mut server = LocalServer::new().unwrap();
+    let server = LocalServer::new().unwrap();
     let ready = server.start(config.clone()).await.unwrap();
     assert_eq!(ready.phase, Phase::Ready);
     assert_eq!(
@@ -114,7 +114,7 @@ async fn occupied_http_or_ingest_ports_never_take_ownership() {
         } else {
             config.http_port = port;
         }
-        let mut server = LocalServer::new().unwrap();
+        let server = LocalServer::new().unwrap();
         assert_eq!(
             server.start(config).await.unwrap_err(),
             ServerError::PortInUse(port)
@@ -128,7 +128,7 @@ async fn occupied_http_or_ingest_ports_never_take_ownership() {
 #[tokio::test]
 async fn dropping_owner_stops_the_production_child_without_another_ui_turn() {
     let directory = Directory::new();
-    let mut server = LocalServer::new().unwrap();
+    let server = LocalServer::new().unwrap();
     server.start(config(&directory)).await.unwrap();
     let mut status = server.subscribe();
     drop(server);
@@ -146,7 +146,7 @@ async fn dropping_owner_stops_the_production_child_without_another_ui_turn() {
 #[tokio::test]
 async fn production_crash_is_reported_without_signalling_any_external_process() {
     let directory = Directory::new();
-    let mut server = LocalServer::new().unwrap();
+    let server = LocalServer::new().unwrap();
     let ready = server.start(config(&directory)).await.unwrap();
     let mut status = server.subscribe();
     assert!(
@@ -187,7 +187,7 @@ async fn timeout_drains_large_unbroken_logs_and_reaps_the_child() {
         "sys.stderr.write('diagnostic' * 100000)\nsys.stderr.flush()\nsys.stdin.buffer.read(1)",
     );
     config.startup_timeout = Duration::from_millis(700);
-    let mut server = LocalServer::new().unwrap();
+    let server = LocalServer::new().unwrap();
     assert_eq!(
         server.start(config).await.unwrap_err(),
         ServerError::StartupTimeout
@@ -212,7 +212,7 @@ async fn incompatible_binary_is_rejected_before_launch() {
     std::fs::write(&binary, text).unwrap();
     let mut config = config(&directory);
     config.binary = binary;
-    let mut server = LocalServer::new().unwrap();
+    let server = LocalServer::new().unwrap();
     assert_eq!(
         server.start(config).await.unwrap_err(),
         ServerError::VersionMismatch
@@ -226,7 +226,7 @@ async fn cancelled_start_remains_owned_and_can_be_stopped_immediately() {
     let directory = Directory::new();
     let mut config = config(&directory);
     config.binary = executable(&directory, "sys.stdin.buffer.read(1)");
-    let mut server = LocalServer::new().unwrap();
+    let server = LocalServer::new().unwrap();
     assert!(
         tokio::time::timeout(Duration::from_millis(100), server.start(config))
             .await
@@ -263,7 +263,7 @@ threading.Thread(target=http.serve_forever, daemon=True).start()
 sys.stdin.buffer.read(1)
 http.shutdown()
 "#.replace("VERSION", env!("CARGO_PKG_VERSION")).as_str());
-    let mut server = LocalServer::new().unwrap();
+    let server = LocalServer::new().unwrap();
     assert_eq!(
         server.start(config).await.unwrap_err(),
         ServerError::ReadinessMismatch
@@ -275,9 +275,9 @@ http.shutdown()
 async fn a_second_manager_can_inspect_but_never_stop_the_first_managers_server() {
     let directory = Directory::new();
     let config = config(&directory);
-    let mut owner = LocalServer::new().unwrap();
+    let owner = LocalServer::new().unwrap();
     owner.start(config.clone()).await.unwrap();
-    let mut other = LocalServer::new().unwrap();
+    let other = LocalServer::new().unwrap();
     let observed = acheflow_client::server::inspect_local(config.http_port)
         .await
         .unwrap()
@@ -306,11 +306,71 @@ async fn an_uncooperative_child_is_force_killed_and_reaped_after_the_grace_perio
     let mut config = config(&directory);
     config.binary = executable(&directory, "import time\ntime.sleep(60)");
     config.startup_timeout = Duration::from_millis(700);
-    let mut server = LocalServer::new().unwrap();
+    let server = LocalServer::new().unwrap();
     let result = tokio::time::timeout(Duration::from_secs(17), server.start(config))
         .await
         .unwrap();
     assert_eq!(result.unwrap_err(), ServerError::StartupTimeout);
     assert!(server.status().forced_stop);
     assert!(server.status().pid.is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn keep_running_exit_releases_only_a_confirmed_live_child() {
+    struct Cleanup(u32);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("/bin/kill")
+                .args(["-TERM", &self.0.to_string()])
+                .status();
+        }
+    }
+    let directory = Directory::new();
+    let config = config(&directory);
+    let server = LocalServer::new().unwrap();
+    let ready = server.start(config.clone()).await.unwrap();
+    let _cleanup = Cleanup(ready.pid.unwrap());
+    server.set_keep_running_on_exit(true);
+    let released = server.shutdown().await.unwrap();
+    assert_eq!(released.phase, Phase::Detached);
+    assert!(released.pid.is_none());
+    assert!(!released.info.unwrap().desktop_attached);
+    drop(server);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let external = acheflow_client::server::inspect_local(config.http_port)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(external.process_id, ready.pid.unwrap());
+    assert!(!external.desktop_attached);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn detached_server_survives_its_client_runtime_shutdown() {
+    let directory = Directory::new();
+    let config = config(&directory);
+    let port = config.http_port;
+    let pid = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let pid = runtime.block_on(async {
+            let server = LocalServer::new().unwrap();
+            let ready = server.start(config).await.unwrap();
+            server.set_keep_running_on_exit(true);
+            server.shutdown().await.unwrap();
+            ready.pid.unwrap()
+        });
+        runtime.shutdown_timeout(Duration::from_millis(100));
+        pid
+    })
+    .join()
+    .unwrap();
+    let observed = acheflow_client::server::inspect_local(port).await.unwrap();
+    // Cleanup explicitly owns the process created by this test, even after its
+    // manager released it. No unrelated process is discovered or signaled.
+    let _ = std::process::Command::new("/bin/kill")
+        .args(["-TERM", &pid.to_string()])
+        .status();
+    assert_eq!(observed.unwrap().process_id, pid);
 }

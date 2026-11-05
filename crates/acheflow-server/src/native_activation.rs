@@ -76,7 +76,7 @@ impl Receiver {
                 };
                 if let Err(error) = result {
                     // Fixed host diagnostics never include provider payloads.
-                    eprintln!("Native server link: {error}");
+                    crate::desktop::log(format_args!("Native server link: {error}"));
                 }
                 activation.complete(result);
             }

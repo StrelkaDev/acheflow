@@ -1,7 +1,15 @@
 use super::{LaunchConfig, Phase, Reply, Request, ServerError, Status, io, logs::Logs};
 use acheflow_media_api::server::ServerInfo;
-use std::{process::ExitStatus, time::Duration};
+use std::{
+    process::ExitStatus,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 use tokio::{
+    io::AsyncWriteExt,
     process::{Child, ChildStdin},
     sync::{mpsc, watch},
     task::JoinHandle,
@@ -17,6 +25,7 @@ struct Running {
     deadline: Instant,
     pending: Option<Reply>,
     forced_stop: bool,
+    released: bool,
 }
 impl Running {
     async fn launch(mut config: LaunchConfig, logs: &Logs) -> Result<Self, ServerError> {
@@ -48,6 +57,7 @@ impl Running {
             config,
             pending: None,
             forced_stop: false,
+            released: false,
         })
     }
     fn matches(&self, info: &ServerInfo) -> bool {
@@ -93,6 +103,9 @@ impl Running {
 }
 impl Drop for Running {
     fn drop(&mut self) {
+        if !self.released {
+            let _ = self.child.start_kill();
+        }
         for task in &self.output {
             task.abort();
         }
@@ -104,6 +117,7 @@ pub(super) async fn run(
     status: watch::Sender<Status>,
     logs: Logs,
     client: reqwest::Client,
+    keep_running: Arc<AtomicBool>,
 ) {
     let mut active: Option<Running> = None;
     let mut tick = interval(Duration::from_millis(300));
@@ -131,7 +145,12 @@ pub(super) async fn run(
                     let result = stop(&mut active, &status).await;
                     let _ = reply.send(result);
                 }
-                None => { let _ = stop(&mut active, &status).await; break; }
+                Some(Request::Shutdown(reply)) => {
+                    let result = exit(&mut active, &status, &client, keep_running.load(Ordering::Acquire)).await;
+                    let _ = reply.send(result);
+                    break;
+                }
+                None => { let _ = exit(&mut active, &status, &client, keep_running.load(Ordering::Acquire)).await; break; }
             },
             _ = tick.tick(), if active.is_some() => {
                 if let Some(running) = active.as_mut() {
@@ -155,6 +174,75 @@ pub(super) async fn run(
             }
         }
     }
+}
+
+async fn exit(
+    active: &mut Option<Running>,
+    status: &watch::Sender<Status>,
+    client: &reqwest::Client,
+    keep: bool,
+) -> Result<Status, ServerError> {
+    if keep
+        && let Some(running) = active.as_mut()
+        && running.pending.is_none()
+    {
+        if let Ok(info) = detach(running, client).await {
+            running.released = true;
+            running.input = None;
+            running.finish_logs().await;
+            status.send_modify(|status| {
+                status.phase = Phase::Detached;
+                status.pid = None;
+                status.info = Some(info);
+            });
+            if let Some(mut released) = active.take() {
+                // Reap while this runtime lives. Runtime shutdown may drop this
+                // future; its disarmed guard intentionally leaves the child alive.
+                tokio::spawn(async move {
+                    let _ = released.child.wait().await;
+                });
+            }
+            return Ok(status.borrow().clone());
+        }
+        stop(active, status).await?;
+        status.send_modify(|status| status.error = Some(ServerError::DetachFailed));
+        return Err(ServerError::DetachFailed);
+    }
+    stop(active, status).await
+}
+
+async fn detach(
+    running: &mut Running,
+    client: &reqwest::Client,
+) -> Result<ServerInfo, ServerError> {
+    timeout(Duration::from_secs(2), async {
+        running
+            .input
+            .as_mut()
+            .ok_or(ServerError::DetachFailed)?
+            .write_all(b"D")
+            .await
+            .map_err(|_| ServerError::DetachFailed)?;
+        loop {
+            if let Some(info) = io::info(client, running.config.address()).await
+                && running.matches(&info)
+                && !info.desktop_attached
+            {
+                return Ok(info);
+            }
+            if running
+                .child
+                .try_wait()
+                .map_err(|_| ServerError::DetachFailed)?
+                .is_some()
+            {
+                return Err(ServerError::DetachFailed);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .map_err(|_| ServerError::DetachFailed)?
 }
 
 async fn check(

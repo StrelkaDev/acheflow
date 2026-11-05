@@ -18,6 +18,7 @@ mod project;
 mod scene_canvas;
 mod scene_geometry;
 mod scene_preview;
+mod server_settings;
 mod slider;
 #[cfg(test)]
 mod slider_tests;
@@ -35,9 +36,22 @@ mod workspaces;
 
 /// The same component tree, stylesheet, font and shader are used on both targets.
 pub fn launch() {
-    launch_with_contexts(vec![]);
+    if let Err(error) = launch_with_contexts(vec![]) {
+        eprintln!("{error}");
+    }
 }
-fn launch_with_contexts(contexts: Vec<Box<dyn Fn() -> Box<dyn std::any::Any> + Send + Sync>>) {
+fn launch_with_contexts(
+    mut contexts: Vec<Box<dyn Fn() -> Box<dyn std::any::Any> + Send + Sync>>,
+) -> Result<(), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let server = {
+        let service = server_settings::native::Service::new()?;
+        let manager = service.manager.clone();
+        contexts.push(Box::new(move || Box::new(manager.clone())));
+        service
+    };
+    #[cfg(target_arch = "wasm32")]
+    let _ = &mut contexts;
     let font_ctx =
         dioxus_native::build_single_font_ctx(include_bytes!("../assets/DejaVuSans.woff2"));
     let config = dioxus_native::Config::new().with_font_ctx(font_ctx);
@@ -48,6 +62,9 @@ fn launch_with_contexts(contexts: Vec<Box<dyn Fn() -> Box<dyn std::any::Any> + S
             .with_surface_size(winit::dpi::LogicalSize::new(1280.0, 860.0)),
     );
     dioxus_native::launch_cfg(dashboard::dashboard, contexts, vec![Box::new(config)]);
+    #[cfg(not(target_arch = "wasm32"))]
+    server.finish()?;
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -85,9 +102,9 @@ pub fn launch_native() -> Result<(), String> {
             Startup::HandedOff => Ok(()),
             Startup::Primary(primary) => {
                 let inbox = primary.inbox();
-                launch_with_contexts(vec![Box::new(move || Box::new(inbox.clone()))]);
+                let result = launch_with_contexts(vec![Box::new(move || Box::new(inbox.clone()))]);
                 drop(primary);
-                Ok(())
+                result
             }
         }
     }

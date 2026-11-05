@@ -15,11 +15,13 @@ pub struct WorkspaceRecord {
 #[serde(default, deny_unknown_fields)]
 struct Preferences {
     background_animation: bool,
+    server: crate::server_settings::ServerPreferences,
 }
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             background_animation: true,
+            server: Default::default(),
         }
     }
 }
@@ -49,6 +51,17 @@ impl Default for Catalog {
 }
 
 impl Catalog {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn server_preferences(&self) -> crate::server_settings::ServerPreferences {
+        self.preferences.server.clone()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_server_preferences(
+        &mut self,
+        preferences: crate::server_settings::ServerPreferences,
+    ) {
+        self.preferences.server = preferences;
+    }
     pub fn background_animation(&self) -> bool {
         self.preferences.background_animation
     }
@@ -97,6 +110,7 @@ impl Catalog {
         {
             return Err("Invalid workspace catalog".into());
         }
+        catalog.preferences.server.validate()?;
         for record in &mut catalog.workspaces {
             record.config.migrate_spatial();
         }
@@ -292,7 +306,7 @@ fn save(catalog: &Catalog) -> Result<(), String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn storage_path() -> Result<std::path::PathBuf, String> {
+pub(crate) fn storage_path() -> Result<std::path::PathBuf, String> {
     if let Some(path) = std::env::var_os("ACHEFLOW_WORKSPACE_FILE") {
         return Ok(path.into());
     }
@@ -474,6 +488,41 @@ mod disk_tests {
 #[cfg(test)]
 mod preference_tests {
     use super::*;
+    #[test]
+    fn old_preferences_default_to_opt_in_server_lifecycle() {
+        let mut value = serde_json::to_value(Catalog::default()).unwrap();
+        value["preferences"] = serde_json::json!({"background_animation": false});
+        let restored = Catalog::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(!restored.background_animation());
+        assert_eq!(restored.preferences.server, Default::default());
+        for port in [0, 1935] {
+            value["preferences"]["server"] = serde_json::json!({"http_port":port});
+            assert!(Catalog::decode(&serde_json::to_vec(&value).unwrap()).is_err());
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn server_preferences_restore_from_disk_and_stay_out_of_workspace_exports() {
+        let path =
+            std::env::temp_dir().join(format!("af-server-preferences-{}.json", std::process::id()));
+        let mut catalog = Catalog::default();
+        let prefs = crate::server_settings::ServerPreferences {
+            start_with_client: true,
+            keep_running_on_exit: true,
+            http_port: 22345,
+            rtmp_port: 22346,
+        };
+        catalog.set_server_preferences(prefs.clone());
+        catalog.add(new_workspace("Remote", "https://remote.example").unwrap());
+        save_at(&path, &catalog).unwrap();
+        let restored = load_at(&path).unwrap().unwrap();
+        assert_eq!(restored.server_preferences(), prefs);
+        let workspace = restored.current().json().unwrap();
+        assert!(!workspace.contains("start_with_client"));
+        assert!(!workspace.contains("keep_running_on_exit"));
+        assert_eq!(restored.current().server_url, "https://remote.example");
+        std::fs::remove_file(path).unwrap();
+    }
     #[test]
     fn old_catalogs_get_default_appearance_and_switching_keeps_preferences_global() {
         let mut legacy = serde_json::to_value(Catalog::default()).unwrap();

@@ -1,9 +1,26 @@
 # Desktop-owned local server
 
-DL-09 supplies the native `acheflow_client::server` lifecycle service. Desktop
-Settings controls and saved startup/exit preferences are the next task, DL-10;
-the service does not start a server automatically. Browser builds do not include
-this module. Unified executable/URI dispatch remains DL-13.
+DL-09 supplies the native `acheflow_client::server` lifecycle service. DL-10
+connects it to Settings / Server, with opt-in startup and exit preferences.
+Browser builds show connection availability and an editable workspace endpoint
+(or the fixed hosting server), without local process controls. Unified
+executable/URI dispatch remains DL-13.
+
+## Desktop settings
+
+Settings / Server exposes Start, Stop, Restart, Use local server, actual process/API
+state, ports, version, PID, recent diagnostic output and errors. Stop remains
+available during startup. A superseded launch cannot overwrite a later stop or
+the connection of a workspace switched while startup was pending. Starting a
+local server automatically connects a matching local/default workspace after
+readiness; a remote target remains configured until Use local server is chosen.
+
+The workspace catalog stores global HTTP/RTMP ports, `start_with_client` and
+`keep_running_on_exit` preferences. Both lifecycle preferences default to false,
+including catalogs saved before this feature. They stay outside workspace exports.
+The managed data directory is `server` beside the native workspace catalog.
+The owning Tokio runtime outlives the UI tree and awaits the exit policy after
+the window closes. Browser clients never apply these process preferences.
 
 ## Launch and ownership
 
@@ -34,7 +51,9 @@ stores nor sends provider credentials.
 
 `GET /api/server/info` returns `ServerInfo`: `protocol_version` (currently 1),
 package `version`, `process_id`, optional `managed_instance`, and actual HTTP and
-RTMP socket addresses. Ordinary servers return `managed_instance: null`.
+RTMP socket addresses. `desktop_attached` indicates an attached desktop parent;
+it is false for ordinary or released servers. Ordinary servers return
+`managed_instance: null`.
 The managed launch supplies a fresh 128-bit correlation ID through
 `ACHEFLOW_DESKTOP_INSTANCE`; this is public identity metadata, not an access or
 shutdown credential. A successful `/healthz` or another process on the port
@@ -60,18 +79,28 @@ Start clears the previous run's output; stop keeps the final output.
 ## Stop, restart and cancellation
 
 The server's explicit `--desktop-managed` mode observes its private stdin pipe;
-EOF, a byte, or a read error initiates the existing graceful shutdown path. This
-mode conflicts with native activation flags and cannot hand off to another
-process. Ordinary standalone server stdin behavior is unchanged. Native server
-link reception remains the separate opt-in launcher path.
+EOF, an unrecognized byte, or a read error initiates existing graceful shutdown.
+The private `D` command releases parent lifetime monitoring and changes
+`desktop_attached` to false. This mode conflicts with native activation flags and
+cannot hand off to another process. Ordinary standalone server stdin behavior is
+unchanged. Native server link reception remains the separate opt-in launcher path.
 
 `stop()` closes only the captured child pipe, waits up to twelve seconds, and
 force-kills/reaps that same `Child` if needed (a further two-second wait).
 `forced_stop` distinguishes fallback termination. `restart(config)` awaits stop
-before starting a fresh instance. Dropping the sole lifecycle handle asks its
-worker to stop the child; closing/crashing the parent also closes the pipe.
-Applications should await `stop()` before shutting down their Tokio runtime;
-the final `kill_on_drop` guard prevents abandonment if its worker is aborted.
+before starting a fresh instance. `shutdown()` follows the exit preference: stop
+by default, or send `D` and confirm the same child's detached identity over its
+API before disarming the ownership guard. A failed confirmation falls back to
+stopping the owned child and reports `DetachFailed`; an unready child is stopped.
+Explicit Stop/Restart always stop the owned process regardless of exit preference.
+Detached children are reaped while the client runtime lives and deliberately
+survive its shutdown. Server diagnostics tolerate a closed stderr pipe without
+panicking; output after detachment is discarded, without an unbounded log file.
+
+Dropping the sole lifecycle handle asks its worker to apply the same policy.
+An unexpected parent crash before the detach handshake closes the pipe and stops
+the server. Applications should await `shutdown()` before shutting down Tokio;
+the final owned-child drop guard prevents abandonment if its worker is aborted.
 Tokio's child ownership/cancellation behavior is documented in its
 [process API](https://docs.rs/tokio/latest/tokio/process/struct.Child.html).
 

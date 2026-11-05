@@ -137,6 +137,8 @@ pub(super) async fn prepare(config: &mut LaunchConfig) -> Result<(), ServerError
 
 pub(super) fn spawn(config: &LaunchConfig, instance: &str) -> Result<Child, ServerError> {
     command(config)
+        // Running has an explicit drop guard, disarmed only after detach ACK.
+        .kill_on_drop(false)
         .current_dir(&config.directory)
         .args(["--desktop-managed", "--config"])
         .arg(config.directory.join("acheflow-server.json"))
