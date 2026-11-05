@@ -1,0 +1,197 @@
+//! Owned local server lifecycle. It never adopts or signals an existing server.
+use acheflow_media_api::server::ServerInfo;
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
+use tokio::sync::{mpsc, oneshot, watch};
+
+mod io;
+mod logs;
+mod worker;
+
+#[derive(Clone, Debug)]
+pub struct LaunchConfig {
+    pub binary: PathBuf,
+    /// Stable, explicit application-data directory; never the caller's cwd.
+    pub directory: PathBuf,
+    pub http_port: u16,
+    pub rtmp_port: u16,
+    pub startup_timeout: Duration,
+}
+impl LaunchConfig {
+    pub fn bundled(directory: PathBuf) -> Result<Self, ServerError> {
+        Ok(Self {
+            binary: bundled_binary(
+                &std::env::current_exe().map_err(|_| ServerError::BinaryMissing)?,
+            )?,
+            directory,
+            http_port: 21295,
+            rtmp_port: 1935,
+            startup_timeout: Duration::from_secs(30),
+        })
+    }
+    fn validate(&self) -> Result<(), ServerError> {
+        if !self.binary.is_absolute() || !self.directory.is_absolute() {
+            return Err(ServerError::InvalidConfig);
+        }
+        if [self.http_port, self.rtmp_port].contains(&0) || self.http_port == self.rtmp_port {
+            return Err(ServerError::InvalidConfig);
+        }
+        if !(Duration::from_millis(100)..=Duration::from_secs(60)).contains(&self.startup_timeout) {
+            return Err(ServerError::InvalidConfig);
+        }
+        Ok(())
+    }
+    fn address(&self) -> std::net::SocketAddr {
+        ([127, 0, 0, 1], self.http_port).into()
+    }
+}
+
+/// Development and installed layouts both use a fixed sibling, with no PATH search.
+pub fn bundled_binary(client_executable: &Path) -> Result<PathBuf, ServerError> {
+    if !client_executable.is_absolute() {
+        return Err(ServerError::InvalidConfig);
+    }
+    let name = if cfg!(windows) {
+        "acheflow-server.exe"
+    } else {
+        "acheflow-server"
+    };
+    let path = client_executable
+        .parent()
+        .ok_or(ServerError::BinaryMissing)?
+        .join(name);
+    path.canonicalize().map_err(|_| ServerError::BinaryMissing)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Phase {
+    #[default]
+    Stopped,
+    Starting,
+    Ready,
+    Unavailable,
+    Stopping,
+    Exited,
+    Failed,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Status {
+    pub phase: Phase,
+    /// Present only while this manager owns a live Child, never inferred from HTTP.
+    pub pid: Option<u32>,
+    pub endpoint: Option<String>,
+    pub info: Option<ServerInfo>,
+    pub exit_code: Option<i32>,
+    /// Graceful pipe shutdown exceeded its deadline and the owned child was killed.
+    pub forced_stop: bool,
+    pub error: Option<ServerError>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ServerError {
+    InvalidConfig,
+    BinaryMissing,
+    VersionProbeFailed,
+    VersionMismatch,
+    DirectoryUnavailable,
+    PortInUse(u16),
+    SpawnFailed,
+    StartupTimeout,
+    ReadinessMismatch,
+    ProcessExited,
+    AlreadyRunning,
+    StopFailed,
+    ManagerClosed,
+}
+impl std::fmt::Display for ServerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::InvalidConfig => "Invalid local server paths, ports or startup timeout",
+            Self::BinaryMissing => "Bundled server executable is missing",
+            Self::VersionProbeFailed => "Cannot read bundled server version",
+            Self::VersionMismatch => "Client and bundled server versions do not match",
+            Self::DirectoryUnavailable => "Cannot create server data directory",
+            Self::PortInUse(port) => return write!(f, "Local port {port} is already in use"),
+            Self::SpawnFailed => "Cannot start bundled server",
+            Self::StartupTimeout => "Server API did not become ready before the deadline",
+            Self::ReadinessMismatch => {
+                "Server API does not belong to the launched compatible child"
+            }
+            Self::ProcessExited => "Server process exited",
+            Self::AlreadyRunning => "This manager already owns a server process",
+            Self::StopFailed => "Cannot stop owned server process",
+            Self::ManagerClosed => "Server lifecycle worker is unavailable",
+        };
+        f.write_str(message)
+    }
+}
+impl std::error::Error for ServerError {}
+
+type Reply = oneshot::Sender<Result<Status, ServerError>>;
+enum Request {
+    Start(LaunchConfig, Reply),
+    Stop(Reply),
+}
+
+/// One process owner, usable from a desktop settings context. Dropping the handle
+/// closes its command channel and asks the worker to gracefully stop its child.
+pub struct LocalServer {
+    commands: mpsc::Sender<Request>,
+    status: watch::Receiver<Status>,
+    logs: logs::Logs,
+}
+impl LocalServer {
+    /// Must be called inside a Tokio runtime.
+    pub fn new() -> Result<Self, ServerError> {
+        let client = io::client()?;
+        let (commands, rx) = mpsc::channel(4);
+        let (tx, status) = watch::channel(Status::default());
+        let logs = logs::Logs::default();
+        tokio::spawn(worker::run(rx, tx, logs.clone(), client));
+        Ok(Self {
+            commands,
+            status,
+            logs,
+        })
+    }
+    pub fn status(&self) -> Status {
+        self.status.borrow().clone()
+    }
+    pub fn subscribe(&self) -> watch::Receiver<Status> {
+        self.status.clone()
+    }
+    pub fn diagnostics(&self) -> Vec<String> {
+        self.logs.snapshot()
+    }
+    pub async fn start(&mut self, config: LaunchConfig) -> Result<Status, ServerError> {
+        let (reply, rx) = oneshot::channel();
+        self.commands
+            .send(Request::Start(config, reply))
+            .await
+            .map_err(|_| ServerError::ManagerClosed)?;
+        rx.await.map_err(|_| ServerError::ManagerClosed)?
+    }
+    pub async fn stop(&mut self) -> Result<Status, ServerError> {
+        let (reply, rx) = oneshot::channel();
+        self.commands
+            .send(Request::Stop(reply))
+            .await
+            .map_err(|_| ServerError::ManagerClosed)?;
+        rx.await.map_err(|_| ServerError::ManagerClosed)?
+    }
+    pub async fn restart(&mut self, config: LaunchConfig) -> Result<Status, ServerError> {
+        self.stop().await?;
+        self.start(config).await
+    }
+}
+
+/// Read-only discovery for an external local server. This never grants ownership.
+pub async fn inspect_local(port: u16) -> Result<Option<ServerInfo>, ServerError> {
+    if port == 0 {
+        return Err(ServerError::InvalidConfig);
+    }
+    Ok(io::info(&io::client()?, ([127, 0, 0, 1], port).into()).await)
+}

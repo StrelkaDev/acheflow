@@ -12,6 +12,7 @@ mod browser_access;
 mod client_bridge;
 mod compositor;
 mod control;
+mod desktop;
 mod extension_forwarding;
 #[cfg(test)]
 mod extension_forwarding_tests;
@@ -37,6 +38,7 @@ mod workspace_extensions;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = settings::Args::parse();
+    let desktop = desktop::Desktop::new(args.desktop_managed)?;
     let receiver = match native_activation::prepare(&args).await? {
         native_activation::Launch::Serve(receiver) => receiver,
         #[cfg(unix)]
@@ -62,7 +64,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         rtmp_listener.local_addr()?
     );
     let web_root = std::env::var("ACHEFLOW_WEB_ROOT").unwrap_or_else(|_| "dist".to_owned());
-    let capabilities = ffmpeg::discover().await;
+    let capabilities = tokio::select! {
+        _ = desktop.shutdown.cancelled() => return Ok(()),
+        capabilities = ffmpeg::discover() => capabilities,
+    };
     eprintln!(
         "FFmpeg: {}",
         capabilities
@@ -113,6 +118,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let app = Router::new()
         .route("/healthz", get(|| async { "ok\n" }))
         .route(
+            "/api/server/info",
+            get({
+                let info = acheflow_media_api::server::ServerInfo {
+                    protocol_version: acheflow_media_api::server::SERVER_PROTOCOL_VERSION,
+                    version: env!("CARGO_PKG_VERSION").into(),
+                    process_id: std::process::id(),
+                    managed_instance: desktop.instance,
+                    http_address: listener.local_addr()?,
+                    rtmp_address: rtmp_listener.local_addr()?,
+                };
+                move || {
+                    let info = info.clone();
+                    async move { axum::Json(info) }
+                }
+            }),
+        )
+        .route(
             "/api/media/capabilities",
             get(ffmpeg::get).post(ffmpeg::refresh),
         )
@@ -133,7 +155,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let shutdown_handle = handle.clone();
     let shutdown_runtime = runtime.clone();
     let shutdown_task = tokio::spawn(async move {
-        shutdown_signal().await;
+        tokio::select! {
+            _ = shutdown_signal() => {},
+            _ = desktop.shutdown.cancelled() => {},
+        }
         shutdown_runtime.shutdown.cancel();
         shutdown_handle.graceful_shutdown(Some(Duration::from_secs(10)));
     });

@@ -17,6 +17,7 @@ base64 = "0.22"
 sha2 = "0.9"
 getrandom = { version = "0.2", features = ["js"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acheflow-media-api = { path = "../acheflow-media-api" }
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "query", "native-tls"] }
 http-body-util = "0.1"
 bytes = "1"

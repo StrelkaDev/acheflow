@@ -10,7 +10,7 @@ Details and acceptance criteria: [plan-desktop-links.md](plan-desktop-links.md).
 - [ ] DL-06: Prepare OS handlers, domain association and HTTPS fallback pages.
 - [x] DL-07: Add complete provider-owned application setup instructions and controls.
 - [x] DL-08: Use YouTube streaming chat with resumption and cancellation.
-- [ ] DL-09: Launch and monitor an owned local server process.
+- [x] DL-09: Launch and monitor an owned local server process.
 - [ ] DL-10: Add desktop Settings / Server controls and lifecycle preferences.
 - [ ] DL-11: Package matching client/server binaries and installation instructions.
 - [ ] DL-12: Later register official provider applications and request needed quotas.
@@ -221,3 +221,42 @@ their socket-based cancellation companion was not rerun in the sandbox. Native
 client/server builds passed. Repowise was refreshed and its focused review has no
 introduced high-severity findings after simplifying the reactor and framing paths;
 remaining medium findings concern framing/preparation branch counts.
+
+## DL-09 implementation — 2026-11-05
+
+Added the native `acheflow_client::server::LocalServer` service and
+[its lifecycle contract](../docs/local-server.md). It resolves a fixed sibling
+server, checks the exact package version with bounded output/time, launches with
+an explicit data directory and argument array, and monitors process/API state.
+It retains at most 64 KiB/128 diagnostic records, drains unbroken output and
+preserves ownership when the caller cancels a pending start. The manager exposes
+start/stop/restart, snapshots, watch subscriptions and read-only external-server
+inspection. No automatic startup or Settings UI was added; those remain DL-10.
+
+The provider-neutral `/api/server/info` endpoint reports protocol/version, PID,
+launch identity and listener addresses. Readiness must match the actual owned
+child, not merely a successful health request. Managed mode uses explicit
+loopback listeners and a private stdin lifetime pipe, not a public HTTP shutdown
+operation. Pipe EOF requests existing graceful shutdown; an uncooperative owned
+child is killed and reaped after the grace period, with `forced_stop` reported.
+Ordinary standalone/native-link behavior remains separate. Matching-binary
+packaging and keep-running/startup preferences remain DL-11/DL-10, while the
+unified executable/URI remains future DL-13.
+
+Verification: 11 subprocess integration tests pass, using the production server
+for ready/version/PID, saved listener overrides, graceful stop/restart, owner drop,
+crash and isolation between two independent managers. Real executable fixtures
+cover incompatible versions, a wrong readiness identity, canceled startup, a
+startup timeout, large unbroken output and forced termination. Missing-binary and
+HTTP/RTMP conflict cases are covered; an unrelated listening service survives
+stop. One bounded-reader unit test, four server settings regressions and all 29
+media API tests also pass. The new process suite initially hit sandbox bind
+denial, then passed with explicitly approved temporary loopback access. The old
+activation/IPC suite was not rerun. No guest source or provider behavior changed.
+
+Native workspace/all-target and UI/client WASM Clippy pass with `-D warnings`;
+formatting and whitespace checks pass. Final review moved filesystem work off
+the async executor and separated configuration validation. The lockfile adds
+only a direct edge to the already present media API crate, without changing any
+dependency versions; affected checks were used instead of rerunning unrelated
+network/IPC suites. Windows/signed installed-package operation remains unverified.

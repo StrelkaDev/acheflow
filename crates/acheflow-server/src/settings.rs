@@ -14,6 +14,9 @@ use tokio::sync::Mutex;
 #[derive(Debug, Default, Parser)]
 #[command(version, about = "Acheflow stream server")]
 pub struct Args {
+    /// Desktop-owned process: parent stdin lifetime controls graceful shutdown.
+    #[arg(long, conflicts_with_all = ["native_links", "forward_stdin"])]
+    pub desktop_managed: bool,
     /// Enable same-user native link reception (one server per runtime directory).
     #[arg(long)]
     pub native_links: bool,
@@ -170,6 +173,9 @@ impl SettingsState {
         }
         overrides.extend(args.apply(&mut active));
         active.validate()?;
+        if args.desktop_managed {
+            validate_managed(&active)?;
+        }
         Ok(Arc::new(Self {
             active,
             startup_saved: saved.clone(),
@@ -200,6 +206,22 @@ impl SettingsState {
         *saved = settings;
         Ok(())
     }
+}
+
+fn validate_managed(settings: &ServerSettings) -> Result<(), String> {
+    for (host, tls) in [
+        (&settings.http_host, &settings.http_tls),
+        (&settings.rtmp_host, &settings.rtmp_tls),
+    ] {
+        if !host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+            || !tls.cert.is_empty()
+        {
+            return Err("Desktop-managed listeners must use loopback IPs without TLS".into());
+        }
+    }
+    Ok(())
 }
 
 fn persist(path: &Path, settings: &ServerSettings) -> Result<(), String> {
@@ -235,6 +257,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn managed_listeners_reject_remote_wildcard_and_tls_configuration() {
+        assert!(validate_managed(&ServerSettings::default()).is_ok());
+        for host in ["0.0.0.0", "::", "192.0.2.1", "localhost"] {
+            let settings = ServerSettings {
+                http_host: host.into(),
+                ..Default::default()
+            };
+            assert!(validate_managed(&settings).is_err(), "{host}");
+        }
+        let mut settings = ServerSettings {
+            rtmp_host: "::1".into(),
+            ..Default::default()
+        };
+        assert!(validate_managed(&settings).is_ok());
+        settings.rtmp_tls.cert = "certificate.pem".into();
+        settings.rtmp_tls.key = "key.pem".into();
+        assert!(validate_managed(&settings).is_err());
+    }
+
+    #[test]
     fn cli_port_wins_over_listen_port_and_preserves_rtmp() {
         let args = Args::try_parse_from([
             "acheflow-server",
@@ -264,6 +306,9 @@ mod tests {
         assert!(settings.validate().is_ok());
         assert!(Args::try_parse_from(["server", "--port", "0"]).is_err());
         assert!(Args::try_parse_from(["server", "--port", "65536"]).is_err());
+        for flag in ["--native-links", "--forward-stdin"] {
+            assert!(Args::try_parse_from(["server", "--desktop-managed", flag]).is_err());
+        }
     }
 
     #[tokio::test]
