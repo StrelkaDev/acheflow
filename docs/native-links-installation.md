@@ -6,6 +6,10 @@ not change DNS, publish pages, install handlers or sign software automatically.
 
 ## macOS bundles
 
+For a complete client/server distribution with extension artifacts, browser UI and
+relocated runtime libraries, use [desktop-installation.md](desktop-installation.md).
+The commands below remain minimal development adapters for isolated link tests.
+
 Build the matching Rust binaries, then create new unsigned output bundles:
 
 ```sh
@@ -32,8 +36,9 @@ server configuration path. Separate profiles may set `ACHEFLOW_RUNTIME_DIR`.
 
 Without `--bundle-id`, builds use development identities. If those identities are
 used for domain testing, pass their exact handler IDs to the site generator too.
-The development bundle copies the named binaries only: extension placement,
-notarization, release installers and the owned local-server UI remain DL-09–11.
+The development bundle copies the named binary only. The DL-11 packager adds the
+matching owned server, extensions, web assets and runtime libraries. Developer ID
+signing and notarization remain external rollout requirements.
 
 After preparing the final signed installation, install it in Applications and
 launch its URL adapter once so LaunchServices discovers it. For the client this

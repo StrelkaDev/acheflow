@@ -3,6 +3,7 @@ use std::{error::Error, time::Duration};
 
 use axum::{Router, routing::get};
 use tower_http::services::ServeDir;
+mod assets;
 mod audio_input;
 mod audio_mixer;
 mod audio_packet;
@@ -63,7 +64,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if rtmp_tls.is_some() { "RTMPS" } else { "RTMP" },
         rtmp_listener.local_addr()?
     ));
-    let web_root = std::env::var("ACHEFLOW_WEB_ROOT").unwrap_or_else(|_| "dist".to_owned());
+    let web_root = assets::web_root();
     let capabilities = tokio::select! {
         _ = desktop.shutdown.cancelled() => return Ok(()),
         capabilities = ffmpeg::discover() => capabilities,

@@ -145,7 +145,8 @@ bundle does not register itself as the default HTTPS handler.
 This bundle is unsigned and does not establish HTTPS domain association. The
 association/site artifacts and handler installation instructions are described in
 [native-links-installation.md](native-links-installation.md). Production signing
-and installed distribution remain external/DL-11 work. The IPC/process suite and native visual smoke check remain pending
+remains external rollout work; complete local desktop packages are described in
+[desktop-installation.md](desktop-installation.md). The IPC/process suite and native visual smoke check remain pending
 for this slice; compilation alone does not verify cold/warm OS activation.
 
 ## Native server activation

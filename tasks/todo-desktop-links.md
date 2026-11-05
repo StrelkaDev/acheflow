@@ -12,7 +12,7 @@ Details and acceptance criteria: [plan-desktop-links.md](plan-desktop-links.md).
 - [x] DL-08: Use YouTube streaming chat with resumption and cancellation.
 - [x] DL-09: Launch and monitor an owned local server process.
 - [x] DL-10: Add desktop Settings / Server controls and lifecycle preferences.
-- [ ] DL-11: Package matching client/server binaries and installation instructions.
+- [x] DL-11: Package matching client/server binaries and installation instructions.
 - [ ] DL-12: Later register official provider applications and request needed quotas.
 - [ ] DL-13 (future): Use `acheflow://` with explicit recipient routing and one executable supporting server-only or client with an on-demand server.
 
@@ -302,3 +302,40 @@ remaining medium finding concerns launch-path branching; UI helpers have advisor
 size findings. Endpoint drafts depend on a memoized URL, so unrelated workspace
 updates do not reset in-progress address edits. No unrelated network/activation
 suite was rerun, and no provider account, signing or domain rollout was performed.
+
+## DL-11 implementation — 2026-11-05
+
+Added the macOS distribution builder and [installation guide](../docs/desktop-installation.md).
+It builds matching release client/server and browser UI plus guest artifacts,
+checks exact binary versions, includes recipient-specific URL adapters and copies
+only declared extension manifests/WASM/browser modules. Both apps include web
+assets and relocated non-system dynamic libraries with available runtime notices.
+Architecture mismatches and unresolved/colliding libraries fail packaging. The
+minimum OS requirement follows actual bundled executables/libraries. Outputs are
+ad-hoc signed apps, an inventory, ZIP and SHA-256 sidecar. Swift compiler caches
+stay outside the distribution. FFmpeg remains a separately documented runtime
+dependency; Rust/Python/Xcode/Homebrew are not required for installed server startup.
+
+Verification: 263 workspace tests pass, 0 fail, 11 existing ignored. Native
+workspace/all-target and UI WASM Clippy pass with `-D warnings`; native/web release
+builds, formatting and whitespace checks pass. Three packaging regressions cover
+binary-version mismatch, missing/escaping artifacts and copying only declared
+files. Inverting the version guard fails its regression. Independent review caught
+an accidentally archived Swift cache; the archive allowlist rejected that package.
+The corrected archive passes checksums and deep/strict signature verification.
+
+Both apps were extracted outside the checkout into a path containing spaces. Their
+real servers start with developer directories absent from PATH and FFmpeg explicitly
+unavailable, report matching version/PID/managed identity, load the sample guest,
+serve exact bundled web/WASM assets and stop gracefully on pipe EOF. A separately
+copied GUI app shows all three client providers, starts its sibling server from
+Settings and restarts with a new PID; closing it stops its child. Final native
+screenshots confirm Ready/API availability. Test processes were stopped.
+
+One initial native UI attempt panicked inside Blitz's form-owner SlotMap handling;
+the repeated diagnostic Start/Restart/close smoke succeeded without a source fix.
+This intermittent dependency/UI issue remains a verification limitation. No public
+release, Developer ID/notarization, downloaded/quarantined execution, live AASA,
+default-handler registration, Linux desktop or Windows activation is claimed.
+The Distribution checkpoint above still includes pending OS-link activation from
+DL-04–06. DL-11 completes the local macOS package acceptance; DL-13 stays separate.

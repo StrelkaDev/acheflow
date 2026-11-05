@@ -21,7 +21,15 @@ pub fn discover() -> BTreeMap<String, Installed> {
             } else {
                 std::env::current_exe()
                     .ok()
-                    .and_then(|p| p.parent().map(|p| p.join("extensions")))
+                    .and_then(|p| {
+                        let directory = p.parent()?;
+                        [
+                            directory.join("extensions"),
+                            directory.join("../Resources/extensions"),
+                        ]
+                        .into_iter()
+                        .find(|root| root.is_dir())
+                    })
                     .unwrap_or(local)
             }
         });

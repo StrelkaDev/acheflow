@@ -25,9 +25,9 @@ the window closes. Browser clients never apply these process preferences.
 ## Launch and ownership
 
 `LaunchConfig::bundled(directory)` resolves a fixed `acheflow-server` sibling of
-the client executable (`.exe` on Windows), including a future macOS
-`Contents/MacOS` layout. There is no PATH search or shell. Until DL-11 bundles
-both executables, a development build can place them together in `target/debug`
+the client executable (`.exe` on Windows), including the macOS
+`Contents/MacOS` layout in the [desktop distribution](desktop-installation.md).
+There is no PATH search or shell. A development build can place both in `target/debug`
 or pass an explicit absolute binary path. Missing binaries fail with an actionable
 status. Data/configuration uses an explicit absolute application-data directory,
 never the Finder/caller working directory.

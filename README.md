@@ -25,6 +25,7 @@ see workspace management below. The shared extension panel renderer is in
 
 ## Documentation
 
+- [Desktop installation and packaging](docs/desktop-installation.md): macOS client/server apps, runtime dependencies and standalone operation.
 - [Live pipeline](docs/live-pipeline.md): source setup, CSS/WGSL scenes, media flow, API and limits.
 - [Audio capabilities](docs/audio-capabilities.md): track discovery, scene buses, output routing and verification.
 - [FFmpeg integration](docs/ffmpeg.md): discovery, codecs and hardware encoder selection.

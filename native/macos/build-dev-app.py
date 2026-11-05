@@ -15,6 +15,7 @@ parser.add_argument("--recipient", choices=("client", "server"), default="client
 parser.add_argument("--ui-bin", type=Path)
 parser.add_argument("--server-bin", type=Path)
 parser.add_argument("--bundle-id", help="Base identity; client handler adds .links")
+parser.add_argument("--module-cache", type=Path, help="Swift build cache outside the bundle")
 args = parser.parse_args()
 if sys.platform != "darwin":
     parser.error("This development bundle requires macOS")
@@ -41,7 +42,7 @@ macos.mkdir(parents=True)
 server = args.recipient == "server"
 helper = contents if server else contents / "Helpers" / "AcheflowLink.app" / "Contents"
 (helper / "MacOS").mkdir(parents=True, exist_ok=True)
-cache = args.output.parent / ".acheflow-swift-modules"
+cache = args.module_cache or args.output.parent / ".acheflow-swift-modules"
 subprocess.run([
     "/usr/bin/xcrun", "swiftc", "-parse-as-library", "-module-cache-path", str(cache),
     str(Path(__file__).with_name("ClientLauncher.swift")),

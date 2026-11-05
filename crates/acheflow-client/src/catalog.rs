@@ -93,7 +93,15 @@ impl ClientCatalog {
         }
         if let Some(root) = std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|p| p.join("extensions")))
+            .and_then(|p| {
+                let directory = p.parent()?;
+                [
+                    directory.join("extensions"),
+                    directory.join("../Resources/extensions"),
+                ]
+                .into_iter()
+                .find(|root| root.is_dir())
+            })
             .filter(|p| p.is_dir())
         {
             return Self::discover_at(&root);
