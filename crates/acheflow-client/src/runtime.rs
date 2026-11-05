@@ -11,6 +11,9 @@ use tokio_tungstenite::{
 };
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+#[cfg(test)]
+#[path = "runtime_stream_tests.rs"]
+mod stream_tests;
 
 pub struct Identity {
     pub workspace_id: String,
@@ -28,6 +31,7 @@ pub struct ProviderRuntime {
     secrets: Secrets,
     storage: Value,
     socket: Option<Socket>,
+    stream: Option<crate::stream::Stream>,
     receipts: BTreeMap<String, (ClaimedInstruction, ExecutionReceipt)>,
 }
 impl ProviderRuntime {
@@ -53,6 +57,7 @@ impl ProviderRuntime {
             secrets: Default::default(),
             storage: Value::Null,
             socket: None,
+            stream: None,
             receipts: Default::default(),
         })
     }
@@ -73,6 +78,7 @@ impl ProviderRuntime {
         self.storage = storage;
     }
     pub async fn turn(&mut self, input: Value, now: u64) -> Result<Vec<Value>, String> {
+        let turn_started = std::time::Instant::now();
         let mut pending = VecDeque::from([input]);
         let mut output = vec![];
         let mut turns = 0;
@@ -85,7 +91,9 @@ impl ProviderRuntime {
             input["workspace_id"] = json!(self.identity.workspace_id);
             input["extension_id"] = json!(self.manifest.id);
             input["instance_id"] = json!(self.identity.generation.to_string());
-            input["now_ms"] = json!(now);
+            input["now_ms"] = json!(now.saturating_add(
+                turn_started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+            ));
             input["config"] = json!(self.config);
             input["storage"] = self.storage.clone();
             input["secrets"] = json!(self.secrets.keys().collect::<Vec<_>>());
@@ -104,6 +112,11 @@ impl ProviderRuntime {
                         pending.push_back(
                             result.unwrap_or_else(|_| json!({"type":"websocket_closed"})),
                         );
+                    }
+                    Some("http_stream") => {
+                        if let Some(event) = self.stream_effect(&effect).await? {
+                            pending.push_back(event);
+                        }
                     }
                     Some("storage") => {
                         if serde_json::to_vec(&effect["value"])
@@ -127,6 +140,24 @@ impl ProviderRuntime {
             }
         }
         Ok(output)
+    }
+    async fn stream_effect(&mut self, effect: &Value) -> Result<Option<Value>, String> {
+        if effect["close"] == true {
+            self.stream = None;
+            return Ok(None);
+        }
+        if effect["read"] == true {
+            self.stream
+                .as_mut()
+                .ok_or("stream unavailable")?
+                .resume(&effect["id"])?;
+            return Ok(None);
+        }
+        self.stream = None;
+        let (stream,event)=crate::stream::Stream::open(effect,&self.manifest,&self.secrets).await
+            .unwrap_or_else(|_|(None,json!({"type":"http_stream_closed","id":effect["id"],"http_status":0,"grpc_status":14})));
+        self.stream = stream;
+        Ok(Some(event))
     }
     async fn websocket(&mut self, effect: &Value) -> Result<Value, String> {
         let operation = async {
@@ -187,9 +218,30 @@ impl ProviderRuntime {
     }
     /// Caller selects this future against its heartbeat, shutdown and workspace changes.
     pub async fn receive(&mut self, now: u64) -> Result<Vec<Value>, String> {
-        let Some(socket) = self.socket.as_mut() else {
-            std::future::pending::<()>().await;
-            unreachable!()
+        let waiting_since = std::time::Instant::now();
+        let input = tokio::select! {
+            input = Self::receive_socket(&mut self.socket) => input?,
+            input = crate::stream::receive(&mut self.stream) => Some(input),
+        };
+        match input {
+            Some(input) => {
+                self.turn(
+                    input,
+                    now.saturating_add(
+                        waiting_since
+                            .elapsed()
+                            .as_millis()
+                            .min(u128::from(u64::MAX)) as u64,
+                    ),
+                )
+                .await
+            }
+            None => Ok(vec![]),
+        }
+    }
+    async fn receive_socket(active: &mut Option<Socket>) -> Result<Option<Value>, String> {
+        let Some(socket) = active.as_mut() else {
+            return std::future::pending().await;
         };
         let input = match socket.next().await {
             Some(Ok(Message::Text(text))) => {
@@ -200,15 +252,15 @@ impl ProviderRuntime {
                     .send(Message::Pong(value))
                     .await
                     .map_err(|_| "socket pong failed")?;
-                return Ok(vec![]);
+                return Ok(None);
             }
-            Some(Ok(_)) => return Ok(vec![]),
+            Some(Ok(_)) => return Ok(None),
             _ => {
-                self.socket = None;
+                *active = None;
                 json!({"type":"websocket_closed"})
             }
         };
-        self.turn(input, now).await
+        Ok(Some(input))
     }
     fn validate_instruction(&self, claim: &ClaimedInstruction, now: u64) -> Result<(), String> {
         let i = &claim.instruction;

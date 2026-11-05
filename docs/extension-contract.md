@@ -45,6 +45,42 @@ credentials use the client's system vault; browser credentials remain session-lo
 See [local authorization](extension-authorization.md) and the remaining executor
 boundary in [SPEC-client-execution.md](SPEC-client-execution.md).
 
+### Native streaming transport
+
+Client manifests may declare the `http_stream` capability; server manifests reject
+it. The native runtime supports one owned streaming connection alongside its
+WebSocket. An open effect contains `type: "http_stream"`, a bounded `id`,
+`protocol: "grpc"`, a manifest-granted HTTPS `url`, optional secret-handle `headers`
+and `body_base64` containing the provider's protobuf request (up to 64 KiB).
+The host owns HTTP/2/TLS framing, certificate validation, a ten-second connection
+deadline and cancellation. It follows no redirects.
+HTTP/2 uses fixed 64-KiB receive windows and 16-KiB frame/header limits. Guests cannot override Host,
+framing/connection headers, Content-Type, TE or reserved `grpc-*` headers. Query
+parameters and credential-capture mappings are not supported on this effect;
+OAuth exchanges continue through bounded JSON HTTP and host credential capture.
+Protobuf field numbers, service/method paths, subscriptions and retries remain
+inside the extension. The host neither interprets provider protobuf nor forwards
+raw streaming data through MCP.
+
+After `http_stream_open { id }`, the guest requests the next piece with
+`http_stream { id, read: true }`. It receives `http_stream_data { id, data,
+end_message }`: base64-encoded pieces of at most 8 KiB from an uncompressed gRPC
+message, whose complete size is limited to 512 KiB. The host retains partial
+headers/body pieces across cancellation of a pending receive. It waits for another
+explicit read before advancing, so a guest can drain its batch using ordinary
+ticks without an unbounded queue or one oversized WASM call.
+
+`http_stream_closed` carries only the stream ID, HTTP status, numeric gRPC status
+and optional bounded `retry_after_ms`; provider diagnostic strings/trailer details
+are suppressed. A missing/truncated/compressed/oversized frame or missing final
+gRPC status closes the stream with a generic protocol failure. A guest's close
+effect (`http_stream { id, close: true }`), replacement stream or runtime drop
+destroys its response body and aborts its HTTP/2 driver. Runtime receive timestamps
+include elapsed waiting time before provider backoff is calculated. This is a
+native library transport, not a browser gRPC shim or an always-on UI executor.
+The wire framing follows the
+[gRPC HTTP/2 protocol](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md).
+
 ## Commands, events and lifecycle
 
 Manifests may declare `forwarding` actions (`id`, `mode: event|callback`), up to 16

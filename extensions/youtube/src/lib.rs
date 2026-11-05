@@ -1,38 +1,20 @@
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
-
-/// Decode the minimum 200-message API page as raw items. Parsing every nested
-/// message in one WASM call would exhaust the sandbox's fixed fuel allowance.
-#[derive(serde::Deserialize)]
-pub struct WireInput {
-    #[serde(default)]
-    payload: Option<WirePayload>,
-    #[serde(flatten)]
-    rest: serde_json::Map<String, Value>,
-}
-#[derive(Default, serde::Deserialize)]
-struct WirePayload {
-    #[serde(default)]
-    items: Vec<Box<serde_json::value::RawValue>>,
-    #[serde(flatten)]
-    rest: serde_json::Map<String, Value>,
-}
+mod proto;
+mod stream;
 
 #[derive(Default)]
 pub struct YouTube {
     authorization: guest_sdk::authorization::Authorization,
     video: String,
     chat: String,
-    page: String,
+    stream: stream::ChatStream,
     authorized: bool,
     next_video: u64,
-    next_chat: u64,
     video_pending: bool,
-    chat_pending: bool,
     pending: BTreeMap<String, Value>,
     seen: VecDeque<String>,
     messages: VecDeque<Value>,
-    raw_messages: VecDeque<Box<serde_json::value::RawValue>>,
 }
 fn status(state: &str, error: Option<&str>) -> Value {
     json!({"type":"status","state":state,"error":error})
@@ -41,45 +23,6 @@ fn http(id: &str, method: &str, path: &str, query: Value, body: Value) -> Value 
     json!({"type":"http","id":id,"method":method,"url":format!("https://www.googleapis.com/youtube/v3/{path}"),"headers":{"Authorization":{"secret":"access_token","prefix":"Bearer "}},"query":query,"body":body})
 }
 impl YouTube {
-    pub fn handle_wire(&mut self, input: WireInput) -> Vec<Value> {
-        let mut rest = input.rest;
-        if let Some(mut payload) = input.payload {
-            if rest.get("id").is_some_and(|id| id == "chat")
-                && rest.get("status").is_some_and(|code| code == 200)
-            {
-                if payload.items.len() > 200 || !self.raw_messages.is_empty() {
-                    return vec![status(
-                        "failed",
-                        Some("Unexpected YouTube chat page size or overlapping response."),
-                    )];
-                }
-                self.raw_messages.extend(payload.items);
-                payload.rest.insert("items".into(), json!([]));
-            } else if !payload.items.is_empty() {
-                payload.rest.insert(
-                    "items".into(),
-                    Value::Array(
-                        payload
-                            .items
-                            .into_iter()
-                            .filter_map(|raw| serde_json::from_str(raw.get()).ok())
-                            .collect(),
-                    ),
-                );
-            }
-            rest.insert("payload".into(), Value::Object(payload.rest));
-        }
-        for _ in 0..10 {
-            let Some(raw) = self.raw_messages.pop_front() else {
-                break;
-            };
-            match serde_json::from_str(raw.get()) {
-                Ok(message) => self.messages.push_back(message),
-                Err(_) => return vec![status("failed", Some("Invalid YouTube message JSON."))],
-            }
-        }
-        self.handle(Value::Object(rest))
-    }
     fn discover(&mut self) -> Value {
         self.video_pending = true;
         if self.video.is_empty() {
@@ -100,7 +43,7 @@ impl YouTube {
             )
         }
     }
-    pub fn handle(&mut self, mut input: Value) -> Vec<Value> {
+    pub fn handle(&mut self, input: Value) -> Vec<Value> {
         if let Some(effects) = self
             .authorization
             .handle(&input, include_str!("../manifest.json"))
@@ -114,6 +57,9 @@ impl YouTube {
         let mut out = vec![];
         match input["type"].as_str().unwrap_or_default() {
             "start" => {
+                out.extend(self.stream.reset());
+                self.messages.clear();
+                self.seen.clear();
                 self.video = input["config"]["video_id"]
                     .as_str()
                     .unwrap_or_default()
@@ -141,6 +87,7 @@ impl YouTube {
                 }
             }
             "action" if input["action_id"] == "refresh" => {
+                out.extend(self.stream.reset());
                 self.authorized = input["secrets"]
                     .as_array()
                     .is_some_and(|keys| keys.iter().any(|s| s == "access_token"));
@@ -154,18 +101,19 @@ impl YouTube {
                 }
                 if read_chat
                     && !self.chat.is_empty()
-                    && now >= self.next_chat
-                    && !self.chat_pending
+                    && self.stream.can_open(now)
                     && self.messages.is_empty()
-                    && self.raw_messages.is_empty()
                 {
-                    self.chat_pending = true;
-                    let mut query = json!({"part":"snippet,authorDetails","liveChatId":self.chat,"maxResults":200});
-                    if !self.page.is_empty() {
-                        query["pageToken"] = json!(self.page);
-                    }
-                    out.push(http("chat", "GET", "liveChat/messages", query, Value::Null));
+                    out.push(self.stream.open(&self.chat));
                 }
+            }
+            "http_stream_open" | "http_stream_data" | "http_stream_closed" => {
+                self.stream_event(&input, now, &mut out)
+            }
+            "stop" => {
+                out.extend(self.stream.reset());
+                self.authorized = false;
+                self.messages.clear();
             }
             "command" if input["name"] == "chat.send" => {
                 let request = input["request_id"].as_str().unwrap_or_default();
@@ -203,6 +151,7 @@ impl YouTube {
                     if code == 200 {
                         let video = &value["items"][0];
                         if video.is_null() {
+                            out.extend(self.stream.reset());
                             self.chat.clear();
                             out.push(status(
                                 "connecting",
@@ -215,7 +164,9 @@ impl YouTube {
                                 .or(video["snippet"]["liveChatId"].as_str())
                                 .unwrap_or_default();
                             if chat != self.chat {
-                                self.page.clear();
+                                out.extend(self.stream.reset());
+                                self.messages.clear();
+                                self.seen.clear();
                                 self.chat = chat.into();
                             }
                             let details = &video["liveStreamingDetails"];
@@ -239,35 +190,6 @@ impl YouTube {
                     } else if code != 401 {
                         out.push(json!({"type":"failure","message":"YouTube broadcast lookup failed; retrying with backoff."}));
                     }
-                } else if id == "chat" {
-                    self.chat_pending = false;
-                    self.next_chat = now.saturating_add(if code == 200 {
-                        value["pollingIntervalMillis"]
-                            .as_u64()
-                            .unwrap_or(5000)
-                            .max(1000)
-                    } else {
-                        retry
-                    });
-                    if code == 200 {
-                        self.page = value["nextPageToken"].as_str().unwrap_or_default().into();
-                        let offline = value["offlineAt"].is_string();
-                        if let Value::Array(items) = input["payload"]["items"].take() {
-                            if items.len() > 200 {
-                                return vec![status(
-                                    "failed",
-                                    Some("YouTube returned more messages than requested."),
-                                )];
-                            }
-                            self.messages.extend(items);
-                        }
-                        if offline {
-                            self.chat.clear();
-                            self.page.clear();
-                        }
-                    } else {
-                        out.push(json!({"type":"failure","message":"YouTube chat request failed; retrying with backoff."}));
-                    }
                 }
                 if code == 401 {
                     self.authorized = false;
@@ -276,15 +198,25 @@ impl YouTube {
             }
             _ => {}
         }
+        if !self.authorized || !read_chat {
+            out.extend(self.stream.reset());
+            self.messages.clear();
+        }
+        self.drain_stream(&mut out);
         for _ in 0..10 {
             let Some(message) = self.messages.pop_front() else {
                 break;
             };
             let id = message["id"].as_str().unwrap_or_default();
-            if id.is_empty() || self.seen.iter().any(|s| s == id) {
+            let key = if message["snippet"]["type"] == "messageDeletedEvent" {
+                format!("delete:{id}")
+            } else {
+                id.to_owned()
+            };
+            if id.is_empty() || self.seen.iter().any(|s| s == &key) {
                 continue;
             }
-            self.seen.push_back(id.into());
+            self.seen.push_back(key);
             if self.seen.len() > 2000 {
                 self.seen.pop_front();
             }
@@ -307,51 +239,11 @@ impl YouTube {
                 out.push(json!({"type":"chat","message":{"platform":"youtube","channel_id":self.video,"message_id":id,"user_id":author["channelId"].as_str().unwrap_or_default(),"display_name":author["displayName"].as_str().unwrap_or("YouTube user"),"text":text,"roles":roles,"occurred_at_ms":now}}));
             }
         }
+        self.advance_stream(&mut out);
         out
     }
 }
-guest_sdk::export!(YouTube, WireInput, handle_wire);
+guest_sdk::export!(YouTube);
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn discovers_live_chat_and_respects_server_polling_interval() {
-        let mut guest = YouTube::default();
-        let input = |kind: &str| json!({"type":kind,"config":{"video_id":"video"},"secrets":["access_token"],"now_ms":1000});
-        let effects = guest.handle(input("start"));
-        assert!(
-            effects
-                .iter()
-                .any(|e| e["url"] == "https://www.googleapis.com/youtube/v3/videos")
-        );
-        let effects = guest.handle(json!({"type":"http_result","id":"video","status":200,"now_ms":1000,"payload":{"items":[{"id":"video","snippet":{"title":"Live"},"liveStreamingDetails":{"activeLiveChatId":"chat","concurrentViewers":"42","actualStartTime":"2026-11-02T10:00:00Z"}}]}}));
-        assert!(
-            effects
-                .iter()
-                .any(|e| e["type"] == "channel" && e["channel"]["id"] == "video")
-        );
-        assert!(
-            effects
-                .iter()
-                .any(|e| e["type"] == "audience" && e["sample"]["concurrent"] == 42)
-        );
-        let effects = guest.handle(input("tick"));
-        assert!(
-            effects
-                .iter()
-                .any(|e| e["id"] == "chat" && e["query"]["liveChatId"] == "chat")
-        );
-        guest.handle(json!({"type":"http_result","id":"chat","status":200,"now_ms":1000,"payload":{"pollingIntervalMillis":12000,"nextPageToken":"next+/=","items":[]}}));
-        let mut tick = input("tick");
-        tick["now_ms"] = json!(12999);
-        assert!(!guest.handle(tick.clone()).iter().any(|e| e["id"] == "chat"));
-        tick["now_ms"] = json!(13000);
-        assert!(
-            guest
-                .handle(tick)
-                .iter()
-                .any(|e| e["query"]["pageToken"] == "next+/=")
-        );
-    }
-}
+mod tests;

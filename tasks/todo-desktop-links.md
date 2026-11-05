@@ -9,7 +9,7 @@ Details and acceptance criteria: [plan-desktop-links.md](plan-desktop-links.md).
 - [ ] DL-05: Receive native server links without moving provider auth to the server.
 - [ ] DL-06: Prepare OS handlers, domain association and HTTPS fallback pages.
 - [x] DL-07: Add complete provider-owned application setup instructions and controls.
-- [ ] DL-08: Use YouTube streaming chat with resumption and cancellation.
+- [x] DL-08: Use YouTube streaming chat with resumption and cancellation.
 - [ ] DL-09: Launch and monitor an owned local server process.
 - [ ] DL-10: Add desktop Settings / Server controls and lifecycle preferences.
 - [ ] DL-11: Package matching client/server binaries and installation instructions.
@@ -19,7 +19,7 @@ Details and acceptance criteria: [plan-desktop-links.md](plan-desktop-links.md).
 ## Checkpoints
 
 - [x] Forwarding: catalog ambiguity, parser and two real guest delivery tests pass.
-- [ ] Authorization/chat: guest rebuild, isolation and streaming regressions pass.
+- [x] Authorization/chat: guest rebuild, isolation and streaming regressions pass.
 - [ ] Desktop: owned-process lifecycle and native/browser settings checks pass.
 - [ ] Distribution: package artifacts and local activation smoke tests pass.
 - [ ] External rollout: domain/signing/provider setup verified with actual access.
@@ -179,3 +179,45 @@ fixture now enters the app scope where its context is provided.
 Repowise review prompted smaller validation methods. Remaining findings concern
 test length and moderate validator branching. No live account consent or provider
 application registration was performed. Unified URI/binary work remains DL-13.
+
+## DL-08 implementation — 2026-11-05
+
+YouTube chat now uses the documented gRPC `StreamList` service. The protobuf
+request/response codec, resume cursor, deduplication and retry policy live under
+`extensions/youtube`. Periodic chat-list requests were removed; broadcast discovery
+and audience sampling retain their existing cadence. Chat send/receipt handling
+remains unchanged and is exercised after streaming/replay in the WASM regression.
+
+Added a provider-neutral native `http_stream` effect, rejected by server manifests.
+It owns a TLS-validated HTTP/2 connection, supports bounded gRPC framing/trailers,
+and yields at most 8-KiB fragments from messages of at most 512 KiB. The guest asks
+for each read and drains at most ten chat messages per call. Receive cancellation
+preserves partial framing; close/replacement/runtime drop aborts owned network I/O.
+The continuation advances only after the current batch drains. Reconnect delays
+are bounded, authorization/terminal errors stop retries, and old stream IDs or
+disabled/stopped guests cannot publish new chat. Provider details remain absent
+from production server/UI code.
+
+Verification: 41 API/control tests, 15 native client library tests and 12 guest
+workspace tests pass. Actual independently compiled YouTube/Twitch guests exercise
+owned stream delivery and stop/late-message isolation. A 2000-message WASM batch
+fits the unchanged fuel limit, resumes with the exact token and suppresses replay;
+framing, cancellation, malformed/oversized inputs, secret/origin restrictions and
+HTTP/2-driver disposal are covered. The premature-read-before-open regression
+failed before its fix and passed afterward. All guest source/manifests/WASM were
+rebuilt together before host checks. Native workspace/all-target, guest workspace
+and client/UI WASM Clippy pass with `-D warnings`; formatting/whitespace checks pass.
+
+One existing client loopback test failed because the sandbox refuses socket bind;
+it was excluded from the subsequent affected-library run rather than retried
+outside the sandbox. The existing keychain roundtrip remains ignored. A full
+network/process suite and live authenticated YouTube connection were not run.
+This is the native executor library transport; the always-on UI/browser executor
+remains pending as already recorded in SPEC-client-execution.md. No server-side
+credentials, browser gRPC proxy, account consent or provider registration was added.
+
+Two existing native runtime identity/replay and authorization tests also pass;
+their socket-based cancellation companion was not rerun in the sandbox. Native
+client/server builds passed. Repowise was refreshed and its focused review has no
+introduced high-severity findings after simplifying the reactor and framing paths;
+remaining medium findings concern framing/preparation branch counts.

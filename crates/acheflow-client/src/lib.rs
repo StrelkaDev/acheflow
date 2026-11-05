@@ -5,6 +5,8 @@ pub mod catalog;
 pub mod local;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod runtime;
+#[cfg(not(target_arch = "wasm32"))]
+mod stream;
 pub mod transport;
 #[cfg(not(target_arch = "wasm32"))]
 mod vault;

@@ -52,7 +52,7 @@ Client registration requires saved permission, not a server provider installatio
 control action or server provider transport.
 
 `acheflow-client` supplies a native WASM runtime, local captured credentials, bounded
-HTTPS/WSS, cancellation, identity/expiry/capability checks, a local intent ledger and
+HTTPS/WSS and demand-driven gRPC streams, cancellation, identity/expiry/capability checks, a local intent ledger and
 a typed MCP adapter. Real loopback tests connect two independent WASM fixture providers
 and verify fanout, receipts, echo reconciliation and replay protection. Actual provider
 guests are separately exercised without accounts. This is a library integration, not

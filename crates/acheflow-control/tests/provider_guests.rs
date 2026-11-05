@@ -1,6 +1,8 @@
 //! Provider fixtures exercise the actual independently compiled Rust WASM guests.
 use acheflow_control::extensions::{Guest, GuestManifest};
 use serde_json::{Value, json};
+#[path = "support/youtube_stream.rs"]
+mod youtube_stream;
 
 fn load(id: &str) -> Guest {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -76,10 +78,33 @@ fn youtube_preserves_every_message_across_bounded_wasm_calls_and_correlates_send
     let mut guest = load("youtube");
     start(&mut guest, "youtube");
     guest.call(json!({"type":"http_result","id":"video","status":200,"payload":{"items":[{"id":"video","liveStreamingDetails":{"activeLiveChatId":"chat"}}]}})).unwrap();
-    let messages: Vec<_> = (0..200).map(|n|json!({"id":format!("m{n}"),"snippet":{"type":"textMessageEvent","displayMessage":format!("Message {n}")},"authorDetails":{"channelId":"user","displayName":"User"}})).collect();
-    let mut effects = guest.call(json!({"type":"http_result","id":"chat","status":200,"now_ms":1000,"payload":{"items":messages,"nextPageToken":"next","pollingIntervalMillis":5000}})).unwrap();
+    let open = guest.call(json!({"type":"tick","now_ms":1000})).unwrap();
+    let id = open
+        .iter()
+        .find(|effect| effect["protocol"] == "grpc")
+        .unwrap()["id"]
+        .clone();
+    guest
+        .call(json!({"type":"http_stream_open","id":id,"now_ms":1000}))
+        .unwrap();
+    let bytes = youtube_stream::batch(2000, 160, "resume_checkpoint_+/=");
     let mut received = vec![];
-    for _ in 0..20 {
+    for (index, chunk) in bytes.chunks(8192).enumerate() {
+        let effects = guest
+            .call(youtube_stream::event(
+                &id,
+                chunk,
+                (index + 1) * 8192 >= bytes.len(),
+            ))
+            .unwrap();
+        for effect in effects {
+            if effect["type"] == "chat" {
+                received.push(effect["message"]["message_id"].as_str().unwrap().to_owned());
+            }
+        }
+    }
+    for _ in 0..199 {
+        let effects = guest.call(json!({"type":"tick","now_ms":1000})).unwrap();
         assert!(effects.len() <= 64);
         for effect in &effects {
             if effect["type"] == "chat" {
@@ -88,10 +113,43 @@ fn youtube_preserves_every_message_across_bounded_wasm_calls_and_correlates_send
                 received.push(message.message_id);
             }
         }
-        effects = guest.call(json!({"type":"tick","now_ms":1000})).unwrap();
     }
-    assert_eq!(received.len(), 200);
-    assert_eq!(received[199], "m199");
+    assert_eq!(received.len(), 2000);
+    assert_eq!(received[1999], "m1999");
+    guest
+        .call(json!({"type":"http_stream_closed","id":id,"grpc_status":14,"now_ms":1000}))
+        .unwrap();
+    let reopened = guest.call(json!({"type":"tick","now_ms":2000})).unwrap();
+    let open = reopened.iter().find(|e| e["protocol"] == "grpc").unwrap();
+    let token = b"resume_checkpoint_+/=";
+    assert!(
+        youtube_stream::decoded_request(open)
+            .windows(token.len())
+            .any(|s| s == token)
+    );
+    let id = open["id"].clone();
+    guest
+        .call(json!({"type":"http_stream_open","id":id,"now_ms":2000}))
+        .unwrap();
+    for (index, chunk) in bytes.chunks(8192).enumerate() {
+        let effects = guest
+            .call(youtube_stream::event(
+                &id,
+                chunk,
+                (index + 1) * 8192 >= bytes.len(),
+            ))
+            .unwrap();
+        assert!(effects.iter().all(|e| e["type"] != "chat"));
+    }
+    for _ in 0..199 {
+        assert!(
+            guest
+                .call(json!({"type":"tick","now_ms":2000}))
+                .unwrap()
+                .iter()
+                .all(|e| e["type"] != "chat")
+        );
+    }
     let effects=guest.call(json!({"type":"command","name":"chat.send","channel_id":"video","request_id":"intent","text":"Hello"})).unwrap();
     let request = effects.iter().find(|e| e["type"] == "http").unwrap();
     assert_eq!(

@@ -10,5 +10,8 @@ serde.workspace = true
 serde_json = "1"
 wasmi = "=2.0.0"
 
+[dev-dependencies]
+base64 = "0.22"
+
 [lints]
 workspace = true

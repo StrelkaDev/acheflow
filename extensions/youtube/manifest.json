@@ -21,12 +21,14 @@
     "secret_begin",
     "secret_commit",
     "secret_discard",
-    "forward_wait"
+    "forward_wait",
+    "http_stream"
   ],
   "services": [
     "https://www.googleapis.com",
     "https://accounts.google.com",
-    "https://oauth2.googleapis.com"
+    "https://oauth2.googleapis.com",
+    "https://youtube.googleapis.com"
   ],
   "subscriptions": [
     "chat.send"

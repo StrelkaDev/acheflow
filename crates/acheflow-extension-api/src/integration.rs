@@ -212,6 +212,7 @@ fn client_only_capability(capability: &str) -> bool {
     matches!(
         capability,
         "http"
+            | "http_stream"
             | "websocket"
             | "crypto"
             | "browser"
