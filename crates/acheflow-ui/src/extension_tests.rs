@@ -419,10 +419,32 @@ async fn resolving_settings_conflicts_is_explicit_and_does_not_send_an_apply() {
 }
 
 fn local_client_app() -> Element {
+    local_client_fixture(false)
+}
+fn startup_client_app() -> Element {
+    local_client_fixture(true)
+}
+fn local_client_fixture(enabled: bool) -> Element {
     // Local panel storage is provided by the client root, including in offline tests.
     let harness = consume_context::<Rc<Harness>>();
-    let project = use_signal(|| Workspace {
+    let project = use_signal(move || Workspace {
         server_url: "http://127.0.0.1:9".into(),
+        client_extensions: if enabled {
+            ["twitch", "vklive"]
+                .into_iter()
+                .map(|id| {
+                    (
+                        id.into(),
+                        crate::project::ExtensionSettings {
+                            enabled: true,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect()
+        } else {
+            Default::default()
+        },
         ..Default::default()
     });
     crate::client_authorization::provide_accounts(project);
@@ -439,6 +461,41 @@ fn local_client_app() -> Element {
     use_context_provider(|| client);
     harness.client.set(Some(client));
     rsx! {crate::interaction::ExtensionsPage{}}
+}
+
+#[tokio::test]
+async fn preenabled_client_panels_keep_sessions_at_startup_and_after_server_changes() {
+    let harness = Rc::new(Harness::default());
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(startup_client_app).with_root_context(harness.clone()),
+        DocumentConfig::default(),
+    );
+    doc.initial_build();
+    settle(&mut doc);
+    let mut client = harness.client.get().unwrap();
+    for server in ["http://127.0.0.1:9", "http://127.0.0.1:10"] {
+        client.project.write().server_url = server.into();
+        settle(&mut doc);
+        for provider in ["twitch", "vklive"] {
+            let card = format!("#client-extension-{provider}");
+            client
+                .project
+                .write()
+                .client_extensions
+                .get_mut(provider)
+                .unwrap()
+                .config
+                .insert("client_id".into(), "own-public-id".into());
+            settle(&mut doc);
+            assert!(
+                exists(
+                    &doc,
+                    &format!("{card} .local-extension-action.primary:not([disabled])")
+                ),
+                "{provider} at {server}: a configured panel must retain its session and enable Connect"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -473,40 +530,50 @@ async fn application_setup_renders_guest_links_addresses_and_local_failures_in_e
             .inner
             .borrow()
             .query_selector(&format!("{card} .extension-copy-field input[readonly]"))
-            .unwrap()
             .unwrap();
-        let document = doc.inner.borrow();
-        let attrs = document
-            .get_node(address)
-            .unwrap()
-            .element_data()
-            .unwrap()
-            .attrs();
-        assert!(attrs.iter().any(|a| a.name.local.to_string() == "value"
-            && a.value.as_str() == acheflow_client::browser::CALLBACK));
-        drop(document);
+        if provider == "youtube" {
+            assert!(
+                address.is_none(),
+                "no fabricated fixed address before loopback allocation"
+            );
+        } else {
+            let address = address.unwrap();
+            let document = doc.inner.borrow();
+            let attrs = document
+                .get_node(address)
+                .unwrap()
+                .element_data()
+                .unwrap()
+                .attrs();
+            assert!(attrs.iter().any(|a| a.name.local.to_string() == "value"
+                && a.value.as_str()
+                    == format!("https://app.acheflow.com/fwd/{provider}/oauth/callback")));
+            drop(document);
+        }
         assert_eq!(
             exists(
                 &doc,
-                &format!("{card} .extension-disclosure-content input[type='password']")
+                &format!("{card} .client-authorization > label input[type='password']")
             ),
             provider == "youtube"
         );
-        let copy = doc
-            .inner
-            .borrow()
-            .query_selector(&format!("{card} .extension-copy-field button"))
-            .unwrap()
-            .unwrap();
-        doc.inner.borrow_mut().set_focus_to(copy);
-        press_tab_key(&mut doc, NamedKey::Enter, Code::Enter);
-        assert!(
-            exists(
-                &doc,
-                &format!("{card} .extension-copy-field [role='alert']")
-            ),
-            "missing clipboard reports an inline error"
-        );
+        if provider != "youtube" {
+            let copy = doc
+                .inner
+                .borrow()
+                .query_selector(&format!("{card} .extension-copy-field button"))
+                .unwrap()
+                .unwrap();
+            doc.inner.borrow_mut().set_focus_to(copy);
+            press_tab_key(&mut doc, NamedKey::Enter, Code::Enter);
+            assert!(
+                exists(
+                    &doc,
+                    &format!("{card} .extension-copy-field [role='alert']")
+                ),
+                "missing clipboard reports an inline error"
+            );
+        }
         assert!(client.error.read().is_none());
         let connect = doc
             .inner
@@ -516,17 +583,79 @@ async fn application_setup_renders_guest_links_addresses_and_local_failures_in_e
             .unwrap();
         doc.inner.borrow_mut().set_focus_to(connect);
         press_tab_key(&mut doc, NamedKey::Enter, Code::Enter);
-        let content = doc.inner.borrow().query_selector(&card).unwrap().unwrap();
+        assert!(exists(
+            &doc,
+            &format!("{card} .local-extension-action.primary[disabled]")
+        ));
         assert!(
-            doc.inner
-                .borrow()
-                .get_node(content)
-                .unwrap()
-                .text_content()
-                .contains("public Client ID")
+            !exists(&doc, &format!("{card} [role='status']")),
+            "missing input cannot open a browser even via the keyboard"
         );
         assert!(client.project.read().extensions.is_empty());
     }
+}
+
+#[tokio::test]
+async fn youtube_connect_requires_public_id_and_local_secret_without_leaking_the_draft() {
+    let harness = Rc::new(Harness::default());
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(local_client_app).with_root_context(harness.clone()),
+        DocumentConfig::default(),
+    );
+    doc.initial_build();
+    settle(&mut doc);
+    let mut client = harness.client.get().unwrap();
+    client
+        .project
+        .write()
+        .client_extensions
+        .entry("youtube".into())
+        .or_default()
+        .enabled = true;
+    settle(&mut doc);
+    let button = "#client-extension-youtube .local-extension-action.primary";
+    assert!(exists(&doc, &format!("{button}[disabled]")));
+    for (selector, value, ready) in [
+        (
+            "#client-extension-youtube .client-authorization > label input[type='text']",
+            "own-client",
+            false,
+        ),
+        (
+            "#client-extension-youtube .client-authorization > label input[type='password']",
+            "local-secret-draft",
+            true,
+        ),
+    ] {
+        let input = doc
+            .inner
+            .borrow()
+            .query_selector(selector)
+            .unwrap()
+            .expect("required fields are visible before Connect");
+        doc.inner.borrow_mut().set_focus_to(input);
+        doc.handle_ui_event(UiEvent::Paste(value.into()));
+        settle(&mut doc);
+        assert_eq!(exists(&doc, &format!("{button}:not([disabled])")), ready);
+    }
+    assert!(
+        !serde_json::to_string(&*client.project.read())
+            .unwrap()
+            .contains("local-secret-draft")
+    );
+    client
+        .project
+        .write()
+        .client_extensions
+        .get_mut("youtube")
+        .unwrap()
+        .config
+        .insert("client_id".into(), "another-client".into());
+    settle(&mut doc);
+    assert!(
+        exists(&doc, &format!("{button}[disabled]")),
+        "another application cannot reuse an unsubmitted credential draft"
+    );
 }
 fn open_application_setup(doc: &mut DioxusDocument, provider: &str) {
     let disclosure = doc
@@ -872,6 +1001,116 @@ fn styled_scope_app() -> Element {
     let content = mixed_app();
     const CSS: &str = include_str!("dashboard.css");
     rsx! {style{"{CSS}"}{content}}
+}
+
+fn masked_credential_app() -> Element {
+    let mut value = use_signal(String::new);
+    const CSS: &str = include_str!("dashboard.css");
+    rsx! {style{"{CSS}"}
+        input {r#type:"password", value:value(), oninput:move|e|value.set(e.value())}
+        input {r#type:"text", value:"ordinary-public-id"}
+    }
+}
+
+#[tokio::test]
+async fn password_editor_preserves_input_but_only_shapes_asterisks() {
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(masked_credential_app),
+        DocumentConfig {
+            font_ctx: Some(crate::font_context()),
+            ..Default::default()
+        },
+    );
+    doc.initial_build();
+    settle(&mut doc);
+    let id = doc
+        .inner
+        .borrow()
+        .query_selector("input[type='password']")
+        .unwrap()
+        .unwrap();
+    doc.inner.borrow_mut().set_focus_to(id);
+    let value = "Az09_-*/éЖ🙂";
+    doc.handle_ui_event(UiEvent::Paste(value.into()));
+    settle(&mut doc);
+    {
+        let document = doc.inner.borrow();
+        let editor = &document
+            .get_node(id)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .text_input_data()
+            .unwrap()
+            .editor;
+        assert_eq!(
+            editor.text(),
+            value,
+            "masking must never alter the submitted secret"
+        );
+        let layout = editor.try_layout().unwrap();
+        let mut glyphs = vec![];
+        for line in layout.lines() {
+            for run in line.runs() {
+                assert!(
+                    run.font().data.as_ref()
+                        == include_bytes!("../assets/SecretMask.ttf").as_slice(),
+                    "password rendering must select the mask-only font"
+                );
+                for cluster in run.clusters() {
+                    glyphs.extend(cluster.glyphs().map(|g| g.id));
+                }
+            }
+        }
+        assert_eq!(
+            glyphs,
+            vec![1; value.chars().count()],
+            "every visible character must use the single asterisk glyph"
+        );
+    }
+    {
+        let document = doc.inner.borrow();
+        let public = document
+            .query_selector("input[type='text']")
+            .unwrap()
+            .unwrap();
+        let editor = &document
+            .get_node(public)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .text_input_data()
+            .unwrap()
+            .editor;
+        assert_eq!(editor.text(), "ordinary-public-id");
+        for line in editor.try_layout().unwrap().lines() {
+            for run in line.runs() {
+                assert!(
+                    run.font().data.as_ref()
+                        != include_bytes!("../assets/SecretMask.ttf").as_slice(),
+                    "public identifiers must remain readable"
+                );
+            }
+        }
+    }
+    doc.inner
+        .borrow_mut()
+        .with_text_input(id, |mut editor| editor.select_all());
+    doc.handle_ui_event(UiEvent::Paste("replacement-secret".into()));
+    settle(&mut doc);
+    assert_eq!(
+        doc.inner
+            .borrow()
+            .get_node(id)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .text_input_data()
+            .unwrap()
+            .editor
+            .text(),
+        "replacement-secret"
+    );
 }
 #[tokio::test]
 async fn compact_extension_controls_share_rows_and_wrap_without_horizontal_overflow() {

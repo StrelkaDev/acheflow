@@ -2,6 +2,80 @@ use acheflow_client::{catalog::ClientCatalog, local::LocalSession};
 use std::collections::BTreeMap;
 
 #[test]
+fn desktop_youtube_requires_its_local_application_secret_and_uses_pkce() {
+    use serde_json::json;
+    let catalog = ClientCatalog::bundled();
+    let installed = &catalog.installed["youtube"];
+    let mut session = LocalSession::new(
+        installed.manifest.clone(),
+        &installed.module,
+        BTreeMap::from([
+            ("client_id".into(), "desktop-public-id".into()),
+            ("send_chat".into(), "false".into()),
+        ]),
+    )
+    .unwrap();
+    let environment =
+        json!({"browser":false,"callback_uri":"http://127.0.0.1:51234/oauth/callback"});
+    let missing_secret = session
+        .step(
+            json!({"type":"local_action","action_id":"connect"}),
+            &environment,
+            1000,
+        )
+        .unwrap();
+    assert!(!missing_secret.iter().any(|e| e["type"] == "browser"));
+    assert!(
+        serde_json::to_string(&missing_secret)
+            .unwrap()
+            .contains("Application secret")
+    );
+    session
+        .set_secret("client_secret", "desktop-local-secret".into())
+        .unwrap();
+    let effects = session
+        .step(
+            json!({"type":"local_action","action_id":"connect"}),
+            &environment,
+            1001,
+        )
+        .unwrap();
+    let browser = effects
+        .iter()
+        .find(|e| e["type"] == "browser")
+        .expect("Desktop PKCE starts after required application setup");
+    let url = url::Url::parse(browser["url"].as_str().unwrap()).unwrap();
+    let fields: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+    assert_eq!(fields["response_type"], "code");
+    assert_eq!(fields["code_challenge_method"], "S256");
+    assert_eq!(fields["code_challenge"].len(), 43);
+    assert_eq!(
+        fields["scope"],
+        "https://www.googleapis.com/auth/youtube.readonly"
+    );
+    let effects = session
+        .step(
+            json!({"type":"local_browser","payload":{"state":fields["state"],"code":"test-code"}}),
+            &environment,
+            1001,
+        )
+        .unwrap();
+    let exchange = effects.iter().find(|e| e["id"] == "auth:token").unwrap();
+    assert_eq!(exchange["form"]["client_id"], "desktop-public-id");
+    assert_eq!(
+        exchange["form"]["redirect_uri"],
+        environment["callback_uri"]
+    );
+    assert_eq!(exchange["form"]["code_verifier"]["secret"], "code_verifier");
+    assert_eq!(exchange["form"]["client_secret"]["secret"], "client_secret");
+    assert!(
+        !serde_json::to_string(&exchange)
+            .unwrap()
+            .contains("desktop-local-secret")
+    );
+}
+
+#[test]
 fn provider_setup_uses_active_platform_addresses_and_only_required_local_secrets() {
     use acheflow_extension_api::ExtensionPanel;
     use serde_json::json;
@@ -17,9 +91,11 @@ fn provider_setup_uses_active_platform_addresses_and_only_required_local_secrets
         );
         for browser in [false, true] {
             let callback = if browser {
-                "https://app.example/base/oauth-callback.html"
+                "https://app.example/base/oauth-callback.html".to_owned()
+            } else if provider == "youtube" {
+                "http://127.0.0.1:51234/oauth/callback".to_owned()
             } else {
-                acheflow_client::browser::CALLBACK
+                format!("https://app.acheflow.com/fwd/{provider}/oauth/callback")
             };
             let environment =
                 json!({"browser":browser,"callback_uri":callback,"origin":"https://app.example"});
@@ -39,9 +115,29 @@ fn provider_setup_uses_active_platform_addresses_and_only_required_local_secrets
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|w| w["label"] == "Application setup")
+                .find(|w| w["label"] == "Application setup instructions")
                 .unwrap();
             let widgets = setup["widgets"].as_array().unwrap();
+            let visible = panel["widgets"].as_array().unwrap();
+            assert!(
+                visible
+                    .iter()
+                    .any(|w| w["type"] == "setting_input" && w["id"] == "client_id")
+            );
+            let connect = visible
+                .iter()
+                .filter_map(|w| w["widgets"].as_array())
+                .flatten()
+                .find(|w| w["id"] == "connect")
+                .unwrap();
+            assert_eq!(
+                connect["requires"],
+                if !browser && provider == "youtube" {
+                    json!(["client_id", "client_secret"])
+                } else {
+                    json!(["client_id"])
+                }
+            );
             assert!(
                 widgets
                     .iter()
@@ -58,11 +154,13 @@ fn provider_setup_uses_active_platform_addresses_and_only_required_local_secrets
                 if browser && provider == "youtube" {
                     "https://app.example"
                 } else {
-                    callback
+                    callback.as_str()
                 }
             );
             assert_eq!(
-                widgets
+                panel["widgets"]
+                    .as_array()
+                    .unwrap()
                     .iter()
                     .any(|w| w["type"] == "secret_input" && w["id"] == "client_secret"),
                 !browser && provider == "youtube"
@@ -87,19 +185,6 @@ fn provider_setup_uses_active_platform_addresses_and_only_required_local_secrets
                 .config
                 .insert("client_id".into(), "public-id".into());
             if !browser && provider == "youtube" {
-                let failure = session
-                    .step(
-                        json!({"type":"local_action","action_id":"connect"}),
-                        &environment,
-                        1002,
-                    )
-                    .unwrap();
-                assert!(!failure.iter().any(|e| e["type"] == "browser"));
-                assert!(
-                    serde_json::to_string(&failure)
-                        .unwrap()
-                        .contains("Application secret")
-                );
                 session
                     .set_secret("client_secret", "local-only-marker".into())
                     .unwrap();

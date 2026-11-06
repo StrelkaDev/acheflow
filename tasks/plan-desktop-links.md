@@ -9,13 +9,56 @@ and keep extension connection setup self-contained in each installation.
 | Address | Role |
 | --- | --- |
 | `acheflow.com` | Product website |
-| `app.acheflow.com` | Browser client |
-| `client.acheflow.com/fwd/<extension_id>/<action>/...` | Installed client forwarding |
-| `server.acheflow.com/fwd/<extension_id>/<action>/...` | Installed server forwarding |
+| `app.acheflow.com` | Browser client and target deep-link domain (2026-11-05 revision) |
+| `app.acheflow.com/fwd/<extension_id>/<action>/...` | Target extension link contract |
+| `server.acheflow.com/fwd/<extension_id>/<action>/...` | Existing server transport, pending migration |
 
 The server forwarding domain identifies a link recipient, not the user's actual
 server API address. Forwarding is a transport, not permission to execute an action.
 OAuth/provider credentials remain on clients under the v2 extension contract.
+
+### Confirmed authorization requirement — revised 2026-11-06
+
+Users register an application with their selected provider and enter its Client ID
+and any required local application secret in the extension card before Connect.
+No application credentials are embedded or inserted automatically. This lets users
+choose the application owner and quota. Connect stays disabled until required
+inputs are present; sign-in/consent then obtains the user's own tokens. The extension
+manifest owns fields, registration instructions and required permissions. A visible
+Disconnect replaces Connect after successful authorization.
+
+The host supplies a trusted, installation-derived link base:
+`https://app.acheflow.com/fwd/<extension_id>`. The extension declares only its
+action/path suffix, e.g. `oauth/callback`; it does not choose the domain or another
+extension's ID. The full Twitch example is
+`https://app.acheflow.com/fwd/twitch/oauth/callback`. Preserve the existing
+`/fwd/<extension_id>/<action>/...` shape; do not introduce a literal
+`/extension/oauth/callback` route. Provider consoles still register the full URL.
+
+Deep-link delivery preserves the bounded path/query/fragment and routes only to
+the installed, enabled extension with a matching pending authorization. Extension
+identity in the path and single-use `state`/workspace/instance checks are all
+required; receiving a link is not authorization. OAuth callbacks always target
+the client. DL-13 defines explicit recipients for other links and migrates the
+old domains/schemes to the shared domain alongside the unified executable.
+
+Provider protocols remain under extensions. Google Desktop uses its supported
+code/S256 PKCE flow with a free loopback port, behind the same Connect action;
+Google browser keeps Identity Services. Use the target HTTPS callback where the
+provider/client type supports it. Browser-client callbacks must remain separate
+from native activation. Provider consent and required browser/OS confirmations
+cannot be silently skipped.
+
+Acceptance: users connect with their own registered applications on native
+and browser clients; changing the server port or occupying the former 21941 port
+does not prevent native sign-in. Test cancellation, duplicate/late/wrong-extension
+callbacks, application changes, local-only token handling and browser/native separation with
+real WASM guests plus live provider consent. Installed app/domain association and
+hosted fallback must be verified before claiming automatic return. The current
+implementation checkpoint is recorded in the task list. The former client domain
+is removed, with no compatibility alias because no release has shipped. Hosting,
+signing and DL-13's executable/server dispatch remain
+required work.
 
 ## Ordered implementation
 
@@ -128,16 +171,20 @@ launch defaults. Document installation and standalone/remote-server operation.
 Acceptance: an installed desktop package can start its bundled server and connect
 without developer tools. Verify package layout and a native installation smoke test.
 
-### DL-12 — Optional official provider registrations (later rollout)
+### DL-12 — Provider application setup and live Connect
 
-Keep user-owned applications as the initial configuration. Later allow a provider's
-official Acheflow public Client ID while preserving the user-owned override.
-Measure usage before requesting quota increases with open-source/project evidence;
-approval and free increases depend on the platform. Separate Google Cloud projects,
-not extra Client IDs within the same project, provide independent project quotas.
+Expose each extension's declared application fields before Connect, require complete
+inputs, and remove embedded/default application requisites. Document registration,
+exact callback/origin, Testing allowlists and required scopes. Keep native application
+secrets in the local credential store and browser Google sign-in secret-free. Preserve
+provider-neutral host code and independent credentials per workspace/server/application.
 
-Acceptance: no shared user access tokens or confidential secrets are distributed;
-provider approval, quota and live credentials are recorded before enabling defaults.
+Acceptance: verify two independent real WASM providers, button readiness, editable
+application IDs, local secret drafts, successful consent/validation, restart and visible
+Disconnect/cancellation. Record live Google failures separately from hosted callback
+success. Maintainer registrations remain test fixtures, not user defaults. Any quota
+request requires measured evidence; separate Google Client IDs in one project do not
+create independent project quota. Never shard one use case to bypass provider limits.
 
 ### Future — DL-13: Unified executable and URI dispatcher
 
@@ -146,9 +193,11 @@ inside the URI. Consolidate launch into one executable supporting server-only
 operation or a desktop client that starts its server when needed. Define the
 exact URI layout and flags in that task; do not infer them from the temporary
 platform adapters. Preserve recipient, workspace, instance and callback checks.
-Plan migration from the separate client/server scheme handlers. The HTTPS domains
-retain their agreed site/browser/client/server roles. This is explicitly future
-work and does not expand DL-06 or the current binary packaging scope.
+Plan migration from the separate client/server scheme handlers and forwarding
+domains to `app.acheflow.com`, retaining `/fwd/<extension_id>/<action>/...` and
+provider-neutral routing. Explicitly define recipient selection and browser/native
+separation; OAuth stays client-only. Product pages remain on `acheflow.com`.
+This is future implementation work, not support in the current binary package.
 
 ## Delivery discipline
 

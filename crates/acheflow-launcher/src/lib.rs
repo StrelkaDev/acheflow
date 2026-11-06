@@ -229,7 +229,7 @@ mod tests {
     }
     #[test]
     fn arguments_and_stdin_preserve_the_sensitive_address_without_diagnostics() {
-        let url = "https://client.acheflow.com/fwd/example/oauth/callback?code=private-value";
+        let url = "https://app.acheflow.com/fwd/example/oauth/callback?code=private-value";
         let request = read_link(url.as_bytes()).unwrap();
         request.validate(ForwardRecipient::Client).unwrap();
         assert!(!format!("{request:?}").contains("private-value"));

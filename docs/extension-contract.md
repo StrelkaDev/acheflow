@@ -87,7 +87,9 @@ Manifests may declare `forwarding` actions (`id`, `mode: event|callback`), up to
 unique action IDs. Undeclared actions are rejected. Client callbacks require a
 capability-checked `forward_wait` effect bound to a host-issued crypto nonce,
 workspace and live instance; accepted callbacks are consumed once. Declared secret
-fields are captured before local guest delivery. Server guests support event
+fields are captured before local guest delivery. `forward_wait` may bind an exact
+opaque `tail`; wrong-tail responses leave the valid request pending. Declared secret
+fields never enter server payloads. Server guests support event
 forwarding only, through private bounded per-instance queues. Forwarding does not
 activate disabled guests or grant provider I/O to server logic. See
 [forwarding addresses and delivery](forwarding.md).
@@ -96,6 +98,12 @@ Panels can use generic `row` and `disclosure` widgets to group controls. A butto
 optional `primary` flag defaults to false. Layout stays guest-declared and the host
 renders the same wrapping rows and keyboard-operated disclosures on both targets.
 The 64-widget limit includes nested children; layout nesting is limited to 8 levels.
+Local buttons can declare `requires` with up to 16 unique setting/credential IDs.
+The host disables mouse and keyboard submission until every declared input is
+present, within its length limit and without whitespace. Credential drafts are
+checked locally without persisting or exposing their values. Saved credentials
+are tested for presence only; unknown IDs keep the button disabled. These local
+requirements cannot enable actions on a server panel. Guests still validate actions.
 
 Client manifests may declare typed `application_setup` metadata from
 `acheflow-extension-api::application_setup`: developer-console HTTPS links,
@@ -111,6 +119,25 @@ labels, limits and local persistence. Copy values are limited to 8192 bytes;
 clipboard errors stay inside the control. Device flows can omit the address.
 OAuth endpoints, scopes and flow decisions remain extension-owned; setup does
 not mandate hosted callbacks or change the selected authorization transport.
+
+Application setup fields are visible before Connect, including required native
+application secrets. Registration instructions, console links and callback/origin
+addresses stay in a disclosure. Application identifiers have no embedded defaults:
+users select their own registered application and its quota. Secrets remain local
+credential inputs; browser setup cannot request application secrets. After successful
+authorization, a visible Disconnect replaces Connect and clears saved credentials
+and pending callbacks. The host remains provider-neutral.
+
+The local host supplies `environment.link` from the installed manifest ID as
+`https://app.acheflow.com/fwd/<id>`, replacing caller-provided link bases. An
+extension may declare `authentication.native_callback: "oauth/callback"`; the
+SDK joins the suffix, validates its route/installation/declaration, and emits
+`browser { callback_uri, ... }`. Query/fragment injection is refused. Native
+driving validates the declared callback before opening the provider browser.
+Loopback callbacks use an owned ephemeral listener; app callbacks wait on the
+existing mailbox without opening a fixed port. Exact path, state, workspace and
+live-instance checks remain required. Browser sign-in keeps its same-origin
+callback or provider module and never activates a native app implicitly.
 
 UI/MCP -> server domain command -> outbox -> client claim -> provider API -> receipt.
 Provider -> client normalized typed event -> server logic -> shared native/browser UI.

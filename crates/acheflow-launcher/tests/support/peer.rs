@@ -29,7 +29,7 @@ pub fn run(
         file.write_all(format!("{line}\n").as_bytes())
     };
     let request = Request::Forward {
-        url: format!("https://client.acheflow.com/fwd/example/open?request={label}"),
+        url: format!("https://app.acheflow.com/fwd/example/open?request={label}"),
     };
     match start(ForwardRecipient::Client, request, &root) {
         Ok(Startup::HandedOff) => {

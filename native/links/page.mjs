@@ -2,7 +2,7 @@
 export function applicationLink(input, recipient) {
   if (!['client', 'server'].includes(recipient)) throw new Error('Invalid recipient');
   if (new TextEncoder().encode(input).length > 16 * 1024 || /[\x00-\x20\x7f\\]/.test(input)) throw new Error('Invalid URL');
-  const origin = `https://${recipient}.acheflow.com`;
+  const origin = recipient === 'client' ? 'https://app.acheflow.com' : 'https://server.acheflow.com';
   if (!input.startsWith(`${origin}/`)) throw new Error('Wrong origin');
   const url = new URL(input);
   const relative = input.slice(origin.length);

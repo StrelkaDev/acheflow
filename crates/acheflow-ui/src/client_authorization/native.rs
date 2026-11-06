@@ -34,6 +34,8 @@ pub(super) struct Context {
     signals: PanelSignals,
     owner: Owner,
     epoch: u64,
+    environment: Value,
+    callback: Rc<RefCell<Option<acheflow_client::browser::Callback>>>,
 }
 impl Context {
     pub(super) fn new(signals: PanelSignals, owner: Owner, epoch: u64) -> Self {
@@ -41,7 +43,18 @@ impl Context {
             signals,
             owner,
             epoch,
+            environment: environment(),
+            callback: Rc::new(RefCell::new(None)),
         }
+    }
+    pub(super) fn with_callback(
+        mut self,
+        callback: Option<acheflow_client::browser::Callback>,
+    ) -> Self {
+        self.environment["callback_uri"] =
+            json!(callback.as_ref().map(|c| c.uri()).unwrap_or_default());
+        *self.callback.borrow_mut() = callback;
+        self
     }
     fn live(&self, id: &str) -> bool {
         self.signals.identity.peek().clone() == self.owner
@@ -140,7 +153,7 @@ impl Mailbox {
             })
             .unwrap_or(false);
         let expected = instance.unwrap_or_else(|| session.instance_id().to_owned());
-        match session.forward(&owner.0, &expected, url, &environment(), now()) {
+        match session.forward(&owner.0, &expected, url, &context.environment, now()) {
             Ok(effects) => {
                 let mut notice = self.0.error;
                 notice.set(String::new());
@@ -179,10 +192,10 @@ pub(super) fn register(id: String, signals: PanelSignals) {
                 return;
             }
             let mut sessions = signals.sessions;
-            let session = sessions.write().remove(&(owner.0.clone(), id.clone()));
+            let session = sessions.write().remove(&session_key(&owner, &id));
             if let Some(session) = session {
                 native.enqueue(activation, owner, (signals.restart)());
-                super::start_operation(id.clone(), session, vec![], signals);
+                super::start_operation(id.clone(), session, vec![], signals, None);
             } else if native.0.initializing.get() {
                 native.enqueue(activation, owner, (signals.restart)());
             } else {
@@ -208,13 +221,47 @@ type BrowserWait = Pin<Box<dyn Future<Output = Result<Value, String>>>>;
 #[path = "native_tests.rs"]
 mod tests;
 
-async fn open_browser(session: &LocalSession, effect: &Value) -> Result<BrowserWait, String> {
+async fn open_browser(
+    session: &LocalSession,
+    effect: &Value,
+    context: &Context,
+) -> Result<BrowserWait, String> {
     let url = acheflow_client::transport::allowed_url(
         effect["url"].as_str().ok_or("Missing browser URL.")?,
         &session.manifest,
         false,
     )?;
-    let callback = acheflow_client::browser::Callback::bind().await?;
+    let address = effect["callback_uri"]
+        .as_str()
+        .ok_or("Missing browser callback address.")?;
+    if address.starts_with("https://") {
+        let link = ForwardLink::parse_for(address, ForwardRecipient::Client)
+            .map_err(|_| "Invalid browser callback link.")?;
+        if link.declaration(&session.manifest)?.mode != ForwardMode::Callback
+            || link.query.is_some()
+            || link.fragment.is_some()
+        {
+            return Err("Browser callback is not a declared extension callback.".into());
+        }
+        context.callback.borrow_mut().take();
+        acheflow_client::browser::open(url.as_str())?;
+        return Ok(Box::pin(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(300),
+                std::future::pending::<Result<Value, String>>(),
+            )
+            .await
+            .map_err(|_| "Application callback timed out.".to_owned())?
+        }));
+    }
+    let callback = context
+        .callback
+        .borrow_mut()
+        .take()
+        .ok_or("Local callback unavailable.")?;
+    if callback.uri() != address {
+        return Err("Local callback address changed.".into());
+    }
     callback.open(url.as_str())?;
     Ok(Box::pin(callback.receive()))
 }
@@ -225,6 +272,7 @@ async fn run_effect(
     panel: &mut Option<ExtensionPanel>,
     browser: &mut Option<BrowserWait>,
     browser_capture: &mut Value,
+    context: &Context,
 ) -> Result<Option<Value>, String> {
     match effect["type"].as_str() {
         Some("panel") => {
@@ -239,7 +287,7 @@ async fn run_effect(
             if browser.is_some() {
                 return Err("Only one browser authorization can be pending.".into());
             }
-            match open_browser(session, &effect).await {
+            match open_browser(session, &effect, context).await {
                 Ok(wait) => {
                     *browser_capture = effect["capture"].clone();
                     *browser = Some(wait);
@@ -301,6 +349,7 @@ pub(super) async fn drive(
                     &mut panel,
                     &mut browser,
                     &mut browser_capture,
+                    &context,
                 )
                 .await?
                 else {
@@ -336,6 +385,6 @@ pub(super) async fn drive(
             session.stop();
             return Err("The local extension context changed.".into());
         }
-        pending.extend(session.step(input, &environment(), now())?);
+        pending.extend(session.step(input, &context.environment, now())?);
     }
 }

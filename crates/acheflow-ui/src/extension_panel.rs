@@ -46,8 +46,13 @@ fn render_widget(
             rsx! {div{class:"extension-metric",span{"{label}"}strong{"{value}"}}}
         }
         PanelWidget::CopyText { label, value } => rsx! {CopyText{label,value}},
-        PanelWidget::Button { id, label, primary } => {
-            rsx! {button{class:if primary{"primary"}else{""},disabled:(client.busy)(),onclick:move |_|client.command(ControlAction::ExtensionEvent{id:extension.clone(),action_id:id.clone(),value:String::new(),config:None}),"{label}"}}
+        PanelWidget::Button {
+            id,
+            label,
+            primary,
+            requires,
+        } => {
+            rsx! {button{class:if primary{"primary"}else{""},disabled:(client.busy)() || !requires.is_empty(),onclick:move |_|client.command(ControlAction::ExtensionEvent{id:extension.clone(),action_id:id.clone(),value:String::new(),config:None}),"{label}"}}
         }
         PanelWidget::TextInput { id, label, value } => {
             rsx! {label{class:"field",span{"{label}"}input{value:"{value}",maxlength:8192,onchange:move |e|client.command(ControlAction::ExtensionEvent{id:extension.clone(),action_id:id.clone(),value:e.value(),config:None})}}}

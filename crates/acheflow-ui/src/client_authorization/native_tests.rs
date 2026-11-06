@@ -159,6 +159,8 @@ impl Fixture {
 }
 
 fn connect(session: &mut LocalSession) -> String {
+    let environment =
+        || json!({"browser":false,"callback_uri":"http://127.0.0.1:51234/oauth/callback"});
     session
         .step(json!({"type":"local_start"}), &environment(), now())
         .unwrap();
@@ -185,7 +187,7 @@ fn connect(session: &mut LocalSession) -> String {
 }
 fn callback(provider: &str, state: &str) -> String {
     format!(
-        "https://client.acheflow.com/fwd/{provider}/oauth/callback?state={state}&code=native-code-marker&access_token=native-token-marker&token_type=bearer&expires_in=3600"
+        "https://app.acheflow.com/fwd/{provider}/oauth/callback?state={state}&code=native-code-marker&access_token=native-token-marker&token_type=bearer&expires_in=3600"
     )
 }
 
@@ -263,7 +265,7 @@ fn rejected_request_does_not_strand_a_following_public_event() {
         url: callback("youtube", "wrong-state"),
     });
     let mut good = Source::new(Request::Forward {
-        url: "https://client.acheflow.com/fwd/youtube/open?public=event".into(),
+        url: "https://app.acheflow.com/fwd/youtube/open?public=event".into(),
     });
     mailbox.enqueue(bad.next(), context.owner.clone(), context.epoch);
     mailbox.enqueue(good.next(), context.owner.clone(), context.epoch);
@@ -464,7 +466,7 @@ fn replacing_a_route_then_dropping_its_old_lease_keeps_the_new_recipient() {
     });
     drop(old);
     let peer = source.peer(
-        "https://client.acheflow.com/fwd/youtube/oauth/callback?state=registry-unit-only".into(),
+        "https://app.acheflow.com/fwd/youtube/oauth/callback?state=registry-unit-only".into(),
     );
     assert!(matches!(fixture.wait_peer(peer), Ok(Startup::HandedOff)));
     assert_eq!(old_calls.get(), 0);
@@ -478,11 +480,11 @@ fn root_router_displays_unknown_and_disabled_recipient_errors_without_the_url() 
     let mut fixture = Fixture::with_inbox("youtube", Some(source.inbox()));
     for (address, expected) in [
         (
-            "https://client.acheflow.com/fwd/missing/open?private=native-url-marker",
+            "https://app.acheflow.com/fwd/missing/open?private=native-url-marker",
             ActivationError::NotFound,
         ),
         (
-            "https://client.acheflow.com/fwd/youtube/oauth/callback?state=native-url-marker",
+            "https://app.acheflow.com/fwd/youtube/oauth/callback?state=native-url-marker",
             ActivationError::Disabled,
         ),
     ] {

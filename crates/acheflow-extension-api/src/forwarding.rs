@@ -37,7 +37,7 @@ pub enum ForwardRecipient {
 impl ForwardRecipient {
     pub const fn origin(self) -> &'static str {
         match self {
-            Self::Client => "https://client.acheflow.com",
+            Self::Client => "https://app.acheflow.com",
             Self::Server => "https://server.acheflow.com",
         }
     }
@@ -181,22 +181,17 @@ fn recipient_relative_address(
     }
     // Require a canonical authority, excluding credentials, explicit ports,
     // suffix domains and URL-parser normalization of alternate host spellings.
-    let origin = recipient.origin();
-    let Some(relative) = input.strip_prefix(origin).filter(|s| s.starts_with('/')) else {
+    let relative = |origin| input.strip_prefix(origin).filter(|s| s.starts_with('/'));
+    let Some(relative) = relative(recipient.origin()) else {
         let other = match recipient {
             ForwardRecipient::Client => ForwardRecipient::Server,
             ForwardRecipient::Server => ForwardRecipient::Client,
         };
-        return Err(
-            if input
-                .strip_prefix(other.origin())
-                .is_some_and(|s| s.starts_with('/'))
-            {
-                ForwardError::WrongRecipient
-            } else {
-                ForwardError::InvalidAddress
-            },
-        );
+        return Err(if relative(other.origin()).is_some() {
+            ForwardError::WrongRecipient
+        } else {
+            ForwardError::InvalidAddress
+        });
     };
     Ok(relative)
 }
@@ -226,10 +221,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn app_domain_routes_extensions_only_to_the_client_and_preserves_opaque_fields() {
+        let raw =
+            "https://app.acheflow.com/fwd/twitch/oauth/callback?state=a%2Bb#access_token=opaque";
+        let link = ForwardLink::parse_for(raw, ForwardRecipient::Client).unwrap();
+        assert_eq!(link.extension_id, "twitch");
+        assert_eq!(link.action, "oauth");
+        assert_eq!(link.tail.as_deref(), Some("callback"));
+        assert_eq!(
+            link.parameters().unwrap(),
+            serde_json::json!({"state":"a+b","access_token":"opaque"})
+        );
+        assert_eq!(
+            ForwardLink::parse_for(raw, ForwardRecipient::Server),
+            Err(ForwardError::WrongRecipient)
+        );
+        for raw in [
+            "https://client.acheflow.com/fwd/twitch/oauth/callback",
+            "https://app.acheflow.com.evil/fwd/twitch/oauth/callback",
+            "https://app.acheflow.com:443/fwd/twitch/oauth/callback",
+            "https://app.acheflow.com/fwd/twitch/../vklive/oauth/callback",
+        ] {
+            assert!(ForwardLink::parse_for(raw, ForwardRecipient::Client).is_err());
+        }
+    }
+
+    #[test]
     fn callback_parameters_are_bounded_and_unambiguous_across_query_and_fragment() {
         let parse = |suffix: &str| {
             ForwardLink::parse_for(
-                &format!("https://client.acheflow.com/fwd/example/open{suffix}"),
+                &format!("https://app.acheflow.com/fwd/example/open{suffix}"),
                 ForwardRecipient::Client,
             )
             .unwrap()
@@ -289,7 +310,7 @@ mod tests {
             ForwardMode::Event
         );
         let client = ForwardLink::parse_for(
-            "https://client.acheflow.com/fwd/example/open",
+            "https://app.acheflow.com/fwd/example/open",
             ForwardRecipient::Client,
         )
         .unwrap();
@@ -325,7 +346,7 @@ mod tests {
     #[test]
     fn forwards_provider_payload_without_interpreting_oauth_fields() {
         let link = ForwardLink::parse_for(
-            "https://client.acheflow.com/fwd/provider/oauth/callback?code=a%2Bb&state=x%3Dy#opaque=secret",
+            "https://app.acheflow.com/fwd/provider/oauth/callback?code=a%2Bb&state=x%3Dy#opaque=secret",
             ForwardRecipient::Client,
         ).unwrap();
         assert_eq!(link.extension_id, "provider");
@@ -353,24 +374,24 @@ mod tests {
     #[test]
     fn refuses_authority_and_path_aliases() {
         for input in [
-            "http://client.acheflow.com/fwd/example/open",
-            "https://app.acheflow.com/fwd/example/open",
+            "http://app.acheflow.com/fwd/example/open",
+            "https://app.acheflow.com.evil/fwd/example/open",
             "https://acheflow.com/fwd/example/open",
-            "https://client.acheflow.com.evil/fwd/example/open",
-            "https://client.acheflow.com@evil/fwd/example/open",
-            "https://user@client.acheflow.com/fwd/example/open",
-            "https://client.acheflow.com:443/fwd/example/open",
-            "https://client.acheflow.com/link/example/open",
-            "https://client.acheflow.com/fwd/%65xample/open",
-            "https://client.acheflow.com/fwd/example/../other/open",
-            "https://client.acheflow.com/fwd/example/%2e%2e/other/open",
-            "https://client.acheflow.com/fwd/example/open/a%2Fb",
-            "https://client.acheflow.com/fwd/example/open/%252e%252e",
-            "https://client.acheflow.com/fwd/example/open//other",
-            "https://client.acheflow.com/fwd/example/open?state=%ZZ",
-            "https://client.acheflow.com/fwd/example/open#value=%00",
-            "https://client.acheflow.com/fwd/example\\open",
-            "https://client.acheflow.com/fwd/example/open\n",
+            "https://app.acheflow.com.evil/fwd/example/open",
+            "https://app.acheflow.com@evil/fwd/example/open",
+            "https://user@app.acheflow.com/fwd/example/open",
+            "https://app.acheflow.com:443/fwd/example/open",
+            "https://app.acheflow.com/link/example/open",
+            "https://app.acheflow.com/fwd/%65xample/open",
+            "https://app.acheflow.com/fwd/example/../other/open",
+            "https://app.acheflow.com/fwd/example/%2e%2e/other/open",
+            "https://app.acheflow.com/fwd/example/open/a%2Fb",
+            "https://app.acheflow.com/fwd/example/open/%252e%252e",
+            "https://app.acheflow.com/fwd/example/open//other",
+            "https://app.acheflow.com/fwd/example/open?state=%ZZ",
+            "https://app.acheflow.com/fwd/example/open#value=%00",
+            "https://app.acheflow.com/fwd/example\\open",
+            "https://app.acheflow.com/fwd/example/open\n",
         ] {
             assert!(
                 ForwardLink::parse_for(input, ForwardRecipient::Client).is_err(),
@@ -393,14 +414,14 @@ mod tests {
         ] {
             assert!(
                 ForwardLink::parse_for(
-                    &format!("https://client.acheflow.com/fwd/{route}"),
+                    &format!("https://app.acheflow.com/fwd/{route}"),
                     ForwardRecipient::Client
                 )
                 .is_err()
             );
         }
         let too_long = format!(
-            "https://client.acheflow.com/fwd/example/open?{}",
+            "https://app.acheflow.com/fwd/example/open?{}",
             "a".repeat(MAX_FORWARD_URL_BYTES)
         );
         assert_eq!(
@@ -409,7 +430,7 @@ mod tests {
         );
         assert!(
             ForwardLink::parse_for(
-                "https://client.acheflow.com/fwd/example/open",
+                "https://app.acheflow.com/fwd/example/open",
                 ForwardRecipient::Client
             )
             .is_ok()

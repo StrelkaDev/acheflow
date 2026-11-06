@@ -76,7 +76,7 @@
   "execution_side": "client",
   "authentication": {
     "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
-    "help": "Enable YouTube Data API v3. Native: use a Desktop OAuth client and enter its secret locally. Browser: use a Web OAuth client with this page origin authorized; sign-in uses Google Identity Services without an application secret. Sending requires youtube.force-ssl; read-only uses youtube.readonly.",
+    "help": "Enable YouTube Data API v3. Native: use a Desktop OAuth client with PKCE; enter its application secret in local Application setup. Browser: use a Web OAuth client with this page origin authorized; sign-in uses Google Identity Services without an application secret. Sending requires youtube.force-ssl; read-only uses youtube.readonly.",
     "features": [
       {
         "id": "read_chat",
@@ -155,7 +155,7 @@
       }
     ],
     "native": {
-      "instructions": "Select a Cloud project and enable YouTube Data API v3. Configure the OAuth consent screen and add your account as a test user while the app is in Testing. Create a Desktop app OAuth client. Copy its Client ID into Application Client ID in Application setup and its generated secret into the local field below. The active loopback redirect is shown for this Desktop flow; do not create a Web client or a hosted redirect for native sign-in. PKCE is used. A read-only connection needs youtube.readonly; sending chat needs youtube.force-ssl.",
+      "instructions": "Select a Cloud project and enable YouTube Data API v3. Configure the OAuth consent screen and add your account as a test user while the app is in Testing. Create a Desktop app OAuth client. Copy its Client ID into Application Client ID above Connect. PKCE uses a temporary loopback redirect; do not create a Web client or a hosted redirect for native sign-in. Copy its application secret into the local Application secret field; it stays on this device. A read-only connection needs youtube.readonly; sending chat needs youtube.force-ssl.",
       "address": {
         "source": "callback_uri",
         "label": "Active Desktop loopback redirect"
@@ -169,7 +169,7 @@
       ]
     },
     "browser": {
-      "instructions": "Select a Cloud project, enable YouTube Data API v3, configure OAuth consent and add test users while in Testing. Create a Web application OAuth client. Add the exact origin below to Authorized JavaScript origins and copy its Client ID into Application Client ID in Application setup. Google Identity Services opens a popup; no redirect URI or application secret is used for this token flow. Allow popups. A read-only connection needs youtube.readonly; sending chat needs youtube.force-ssl.",
+      "instructions": "Select a Cloud project, enable YouTube Data API v3, configure OAuth consent and add test users while in Testing. Create a Web application OAuth client. Add the exact origin below to Authorized JavaScript origins and copy its Client ID into Application Client ID above Connect. Google Identity Services opens a popup; no redirect URI or application secret is used for this token flow. Allow popups. A read-only connection needs youtube.readonly; sending chat needs youtube.force-ssl.",
       "address": {
         "source": "origin",
         "label": "Authorized JavaScript origin"

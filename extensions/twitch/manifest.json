@@ -80,6 +80,7 @@
   },
   "execution_side": "client",
   "authentication": {
+    "native_callback": "oauth/callback",
     "authorize_url": "https://id.twitch.tv/oauth2/authorize",
     "help": "Use your own Twitch OAuth application. Only enabled functions request permissions.",
     "features": [
@@ -162,14 +163,14 @@
       }
     ],
     "native": {
-      "instructions": "Register an application for the implicit grant flow (Confidential client type; Public clients are device-flow only). Add the exact OAuth redirect URI below. Copy its public Client ID into Application Client ID in Application setup. This flow does not use an application secret. Verify your email and enable two-factor authentication first. Allow the enabled permissions on the consent screen.",
+      "instructions": "Register an application for the implicit grant flow (Confidential client type; Public clients are device-flow only). Add the exact OAuth redirect URI below. Copy its public Client ID into Application Client ID above Connect. This flow does not use an application secret. Verify your email and enable two-factor authentication first. Allow the enabled permissions on the consent screen.",
       "address": {
         "source": "callback_uri",
         "label": "OAuth redirect URI"
       }
     },
     "browser": {
-      "instructions": "Register an application for the implicit grant flow (Confidential client type; Public clients are device-flow only). Add the exact OAuth redirect URI below, including its path. Copy its public Client ID into Application Client ID in Application setup. No application secret is needed. Allow popups and the enabled permissions.",
+      "instructions": "Register an application for the implicit grant flow (Confidential client type; Public clients are device-flow only). Add the exact OAuth redirect URI below, including its path. Copy its public Client ID into Application Client ID above Connect. No application secret is needed. Allow popups and the enabled permissions.",
       "address": {
         "source": "callback_uri",
         "label": "OAuth redirect URI"

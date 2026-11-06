@@ -133,7 +133,7 @@ fn send_frame(stream: &mut UnixStream, bytes: &[u8]) {
 fn wire(label: &str) -> Vec<u8> {
     serde_json::to_vec(&json!({
         "version":1,"recipient":"client",
-        "request":{"type":"forward","url":format!("https://client.acheflow.com/fwd/example/open?request={label}")}
+        "request":{"type":"forward","url":format!("https://app.acheflow.com/fwd/example/open?request={label}")}
     })).unwrap()
 }
 fn read_reply(stream: &mut UnixStream) -> Result<(), ActivationError> {

@@ -43,6 +43,17 @@ impl TryFrom<PanelDocument> for ExtensionPanel {
                 {
                     return false;
                 }
+                if let PanelWidget::Button { requires, .. } = widget
+                    && (requires.len() > 16
+                        || requires.iter().any(|id| !integration::valid_id(id, 64))
+                        || requires
+                            .iter()
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .len()
+                            != requires.len())
+                {
+                    return false;
+                }
                 if let PanelWidget::Row { widgets } | PanelWidget::Disclosure { widgets, .. } =
                     widget
                     && !bounded(widgets, depth + 1, remaining)
@@ -96,6 +107,9 @@ pub enum PanelWidget {
         label: String,
         #[serde(default)]
         primary: bool,
+        /// Local setting or credential IDs that must be filled before submission.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        requires: Vec<String>,
     },
     TextInput {
         id: String,
@@ -144,6 +158,23 @@ mod panel_layout_tests {
         let widget: PanelWidget =
             serde_json::from_value(json!({"type":"button","id":"run","label":"Run"})).unwrap();
         assert!(matches!(widget, PanelWidget::Button { primary: false, .. }));
+    }
+    #[test]
+    fn local_button_requirements_are_bounded_unique_input_ids() {
+        for (requires, valid) in [
+            (json!(["client_id", "client_secret"]), true),
+            (json!(["client_id", "client_id"]), false),
+            (json!(["invalid id"]), false),
+            (
+                json!((0..17).map(|i| format!("field_{i}")).collect::<Vec<_>>()),
+                false,
+            ),
+        ] {
+            let panel = serde_json::from_value::<ExtensionPanel>(
+                json!({"extension_id":"fixture","title":"Setup","widgets":[{"type":"button","id":"connect","label":"Connect","requires":requires}]}),
+            );
+            assert_eq!(panel.is_ok(), valid);
+        }
     }
     #[test]
     fn copy_values_are_bounded_public_text() {

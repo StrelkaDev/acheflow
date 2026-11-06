@@ -12,6 +12,7 @@ struct Pending {
     field: String,
     token: String,
     deadline: u64,
+    tail: Option<String>,
 }
 
 #[derive(Default)]
@@ -79,11 +80,18 @@ impl LocalForwarding {
                 field: field.into(),
                 token: token.into(),
                 deadline,
+                tail: effect["tail"].as_str().map(str::to_owned),
             },
         );
         Ok(())
     }
-    fn authorize(&mut self, action: &str, payload: &Value, now: u64) -> Result<(), String> {
+    fn authorize(
+        &mut self,
+        action: &str,
+        tail: Option<&str>,
+        payload: &Value,
+        now: u64,
+    ) -> Result<(), String> {
         let pending = self
             .pending
             .get(action)
@@ -91,6 +99,13 @@ impl LocalForwarding {
         if now >= pending.deadline {
             self.pending.remove(action);
             return Err("Callback expired; start a new request.".into());
+        }
+        if pending
+            .tail
+            .as_deref()
+            .is_some_and(|expected| tail != Some(expected))
+        {
+            return Err("Callback path does not match the pending request.".into());
         }
         if payload.get(&pending.field).and_then(Value::as_str) != Some(pending.token.as_str()) {
             return Err("Callback correlation does not match the pending request.".into());
@@ -128,7 +143,8 @@ impl LocalSession {
         let mode = link.declaration(&self.manifest)?.mode;
         let mut payload = link.parameters().map_err(|e| e.to_string())?;
         if mode == ForwardMode::Callback {
-            self.forwarding.authorize(&link.action, &payload, now)?;
+            self.forwarding
+                .authorize(&link.action, link.tail.as_deref(), &payload, now)?;
             if let Err(error) = self.capture(&mut payload, &Value::Null) {
                 self.stop();
                 return Err(error);
@@ -163,6 +179,84 @@ impl LocalSession {
 mod tests {
     use super::*;
     use crate::catalog::ClientCatalog;
+
+    #[test]
+    fn real_guests_use_their_own_host_link_and_accept_only_their_pending_app_callback() {
+        let catalog = ClientCatalog::bundled();
+        for (id, client_id) in [
+            ("twitch", "first-user-app"),
+            ("vklive", "first-user-app"),
+            ("twitch", "second-user-app"),
+            ("vklive", "second-user-app"),
+        ] {
+            let installed = &catalog.installed[id];
+            let mut session = LocalSession::new(
+                installed.manifest.clone(),
+                &installed.module,
+                BTreeMap::from([("client_id".into(), client_id.into())]),
+            )
+            .unwrap();
+            session.bind_workspace("workspace").unwrap();
+            let env = json!({"browser":false,"link":"https://evil.example/fwd/other","callback_uri":"http://127.0.0.1:21941/oauth/callback"});
+            let effects = session
+                .step(
+                    json!({"type":"local_action","action_id":"connect"}),
+                    &env,
+                    1000,
+                )
+                .unwrap();
+            let effect = effects.iter().find(|e| e["type"] == "browser").unwrap();
+            let url = url::Url::parse(effect["url"].as_str().unwrap()).unwrap();
+            let fields: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+            assert_eq!(fields["client_id"], client_id);
+            let callback = format!("https://app.acheflow.com/fwd/{id}/oauth/callback");
+            assert_eq!(fields["redirect_uri"], callback);
+            let instance = session.instance_id().to_owned();
+            let wrong = format!(
+                "https://app.acheflow.com/fwd/other/oauth/callback?state={}",
+                fields["state"]
+            );
+            assert!(
+                session
+                    .forward("workspace", &instance, &wrong, &env, 1001)
+                    .is_err()
+            );
+            let wrong_tail = format!(
+                "https://app.acheflow.com/fwd/{id}/oauth/other?state={}",
+                fields["state"]
+            );
+            assert!(
+                session
+                    .forward("workspace", &instance, &wrong_tail, &env, 1001)
+                    .is_err()
+            );
+            let address = if id == "twitch" {
+                format!(
+                    "{callback}#access_token=local-only&scope=user%3Aread%3Achat&state={}&token_type=bearer",
+                    fields["state"]
+                )
+            } else {
+                format!(
+                    "{callback}?state={}&access_token=local-only&token_type=bearer&expires_in=3600",
+                    fields["state"]
+                )
+            };
+            let effects = session
+                .forward("workspace", &instance, &address, &env, 1002)
+                .unwrap();
+            assert!(effects.iter().any(|e| e["id"] == "auth:validate"));
+            assert!(
+                !serde_json::to_string(&effects)
+                    .unwrap()
+                    .contains("local-only")
+            );
+            assert!(
+                session
+                    .forward("workspace", &instance, &address, &env, 1003)
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn real_guest_callback_stages_captured_secret_without_committing_or_replacing_it_on_replay() {
@@ -212,7 +306,7 @@ mod tests {
                 .1
                 .into_owned();
             let address = format!(
-                "https://client.acheflow.com/fwd/{id}/oauth/callback?state={state}&{parameter}=captured-value&token_type=bearer&expires_in=3600"
+                "https://app.acheflow.com/fwd/{id}/oauth/callback?state={state}&{parameter}=captured-value&token_type=bearer&expires_in=3600"
             );
             let instance = session.instance_id().to_owned();
             let effects = session
@@ -233,9 +327,8 @@ mod tests {
                     .unwrap()
                     .contains("captured-value")
             );
-            let unsolicited = format!(
-                "https://client.acheflow.com/fwd/{id}/open?{parameter}=event-injected-value"
-            );
+            let unsolicited =
+                format!("https://app.acheflow.com/fwd/{id}/open?{parameter}=event-injected-value");
             assert!(
                 session
                     .forward("workspace", &instance, &unsolicited, &environment, 1002)

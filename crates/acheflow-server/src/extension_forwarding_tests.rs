@@ -140,7 +140,7 @@ async fn server_forwarding_rejects_wrong_recipient_missing_target_undeclared_act
     enable_both(&host).await;
     let current = instance(&host, "alpha");
     for url in [
-        "https://client.acheflow.com/fwd/alpha/increment",
+        "https://app.acheflow.com/fwd/alpha/increment",
         "https://server.acheflow.com/fwd/missing/increment",
         "https://server.acheflow.com/fwd/alpha/undeclared",
     ] {
@@ -274,7 +274,7 @@ async fn native_activation_targets_only_enabled_declared_server_guests() {
     assert_eq!(count(&state, "beta"), Some(0));
     for (url, error) in [
         (
-            "https://client.acheflow.com/fwd/alpha/increment",
+            "https://app.acheflow.com/fwd/alpha/increment",
             ActivationError::InvalidLink,
         ),
         (

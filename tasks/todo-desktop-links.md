@@ -13,7 +13,7 @@ Details and acceptance criteria: [plan-desktop-links.md](plan-desktop-links.md).
 - [x] DL-09: Launch and monitor an owned local server process.
 - [x] DL-10: Add desktop Settings / Server controls and lifecycle preferences.
 - [x] DL-11: Package matching client/server binaries and installation instructions.
-- [ ] DL-12: Later register official provider applications and request needed quotas.
+- [ ] DL-12: Expose user-owned application fields, gate Connect, verify live OAuth and visible Disconnect, and update setup instructions.
 - [ ] DL-13 (future): Use `acheflow://` with explicit recipient routing and one executable supporting server-only or client with an on-demand server.
 
 ## Checkpoints
@@ -339,3 +339,123 @@ release, Developer ID/notarization, downloaded/quarantined execution, live AASA,
 default-handler registration, Linux desktop or Windows activation is claimed.
 The Distribution checkpoint above still includes pending OS-link activation from
 DL-04–06. DL-11 completes the local macOS package acceptance; DL-13 stays separate.
+
+## DL-12 preparation — 2026-11-05
+
+Started the [official application registration record](../docs/provider-registration.md)
+for Acheflow, in the maintainer's requested order: YouTube and VK Video Live under
+`achedev`, then Twitch under `strelkadev`. Recorded the existing guests' native and
+browser registration parameters, quota evidence requirements and activation checks.
+Official Google/Twitch documentation was checked; VK Video Live's authorization
+page could not be fetched and its live portal requirements remain unverified.
+Browser access is now available. Created Google project `acheflow` (number
+`74963158585`) and enabled YouTube Data API v3 after approval of its terms.
+Google OAuth setup remains unsaved at the User Data Policy step. Created VK Video
+Live application Acheflow (Active) with the approved native
+development callback; no secrets were copied to project files. Twitch's form is
+prepared under StrelkaDev but not submitted. The maintainer requested resolving
+fixed loopback ports versus deep-link callbacks before continuing registration;
+the current OAuth listener is separate from the configurable server port, but
+fixed at 21941 and still used by the provider flows. No live OAuth verification,
+official defaults or quota requests are complete. DL-12 remains open.
+
+The maintainer clarified the Connect requirement and selected `app.acheflow.com`
+for deep links, keeping `/fwd/<extension_id>/<action>/...`. The host supplies the
+extension's trusted base; the extension declares an action suffix such as
+`oauth/callback`. Provider consoles require the resulting full URL. Updated the
+plan with this contract, official defaults plus advanced overrides, the supported
+Google Desktop dynamic loopback flow, and DL-13 domain/recipient migration.
+The following checkpoint supersedes the initial preparation status above.
+
+### DL-12 implementation and hosting checkpoint
+
+Implemented the app-domain forwarding contract, host-derived extension link base,
+declared callback suffix, exact callback-tail binding, independent ephemeral
+Google loopback listeners, and platform-specific public defaults with advanced
+overrides. Legacy client-domain links are rejected. PKCE exchange retains the
+redirect URI chosen by the pending attempt. Guest source and real WASM artifacts
+were rebuilt together.
+
+Validation: 267 workspace tests passed (11 existing ignored), 14 guest tests and
+7 native mailbox/IPC tests passed; native, browser-WASM and guest Clippy checks
+passed with warnings denied. Python generator and Node page tests each passed
+4 cases. Local browser checks cover payload preservation and history cleanup;
+they do not prove installed OS activation or live provider consent.
+
+Created Google Acheflow Desktop and Twitch Acheflow Desktop clients, and saved
+VK's HTTPS callback. Public identifiers and outstanding acceptance are recorded
+in [provider registration](../docs/provider-registration.md). Deployed the static
+return page to Cloudflare Pages `acheflow-app`. The maintainer added REG.RU's
+CNAME; `app.acheflow.com` is Active and both callback paths return HTTPS 200.
+The original URL and required security headers were verified on the live site.
+
+DL-12 remains open: no official defaults are enabled, no live OAuth sessions or
+quota requests are complete, browser deployment is pending, and signed
+installed app/domain association is unverified. No client secrets are bundled.
+
+Created the approved Google Acheflow Web client with the app host as its only
+JavaScript origin and no redirect URIs. Google Desktop documentation marks the
+application secret optional; the YouTube manifest now permits PKCE without it,
+with a real-WASM regression checking both the authorization and exchange effects.
+No production default is enabled on that basis alone.
+
+Live native testing found an existing startup race: the account-cache server
+effect cleared sessions after enabled cards had initialized, so Connect silently
+returned. The cache now includes server identity and retains only the current
+workspace/server's enabled extensions instead of unconditionally clearing it.
+A two-provider UI regression reproduced the failure and passes at startup and
+after changing servers. In the rebuilt desktop, Connect opens Twitch in the
+system Safari and waits for its callback. Chrome's corresponding OAuth attempt
+is awaiting the maintainer's login; no access grant or token acceptance is claimed.
+The updated workspace suite passes 269 tests (11 existing ignored).
+
+### Native OAuth continuation — 2026-11-06
+
+The maintainer completed Twitch and VK login/consent. Twitch's full hosted return,
+installed custom-scheme delivery, token validation and restoration were verified
+as `strelkadev`; VK reached `Authorized locally` and restored after restart without
+an exposed nickname. Executor/chat operation is separate and remains unverified.
+The test fixture moved from cleaned `/private/tmp` storage to ignored
+`target/dl12-live/`, preserving its workspace identity from Keychain attributes.
+
+Google's empty Testing allowlist caused `403 access_denied` for AChe Dev. Adding
+its owner's identity let the next attempt reach `youtube.readonly` consent and
+return through the ephemeral loopback listener. Token exchange/validation still
+failed. Guest diagnostics now show request stage, HTTP status and allowlisted OAuth
+error codes without echoing provider response text. The updated guest suite passes
+16 tests, real-WASM host OAuth tests pass 4 cases, and guest Clippy passes. A fresh
+attempt with the new diagnostics is waiting for the maintainer's consent in Safari.
+
+Google Audience still shows Testing; Publish app is disabled until Branding is
+completed. Home page, privacy and terms links are empty. No app publication or
+verification submission occurred. Visible Disconnect remains scheduled after the
+integration checks, as requested. DL-12 remains open; this checkpoint supersedes
+the earlier pending-login status.
+
+
+### User-owned application setup — 2026-11-06
+
+The maintainer revised DL-12: remove embedded/default application requisites and
+let users register their own applications, choose trust and use their own quota.
+All manifest-declared application fields are now visible above Connect. YouTube
+Desktop requires Client ID plus a local application secret; Google browser,
+Twitch and VK Video Live require Client ID for their selected flows. Connect is
+gated by bounded input requirements for both mouse and keyboard. Saved secrets
+show presence only; changing application identity isolates credential drafts.
+The automatic public-default resolution contract was removed.
+
+The guest exposes Disconnect outside the manual-token disclosure after successful
+authorization. Setup instructions and documentation now explain each target's
+registration type, exact callback/origin, scopes, Testing allowlist and quota.
+No additional Google secret was created. Live Google exchange remains pending a
+valid local Desktop secret; HTTP 400 was confirmed to require `client_secret`.
+This revision supersedes the earlier public-ID-only / official-default plan.
+
+Validation of the final revision: 271 workspace tests passed (11 existing ignored),
+16 guest tests passed, native and browser-WASM Clippy passed with warnings denied.
+The installed macOS test app shows the required fields before Connect; clearing the
+YouTube Client ID and tabbing to its empty secret field leaves Connect disabled.
+Twitch Disconnect cleared the local account, and a fresh hosted callback restored
+`Authorized locally as strelkadev` with visible Disconnect. VK restored independently.
+Google exchange remains unverified with a valid Desktop secret; the app is still
+Testing and the console requires Branding completion for publication.

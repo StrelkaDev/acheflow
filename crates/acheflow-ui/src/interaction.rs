@@ -471,7 +471,7 @@ fn ClientIntegrationCard(id: String, name: String) -> Element {
     rsx! {
         section{class:if enabled{"panel extension-card enabled client-integration"}else{"panel extension-card client-integration"},
             div{class:"panel-heading",
-                div{class:"extension-identity",h2{"{name}"}if enabled{span{class:"badge",if connected{"Connected executor"}else{"Not connected"}}}}
+                div{class:"extension-identity",h2{"{name}"}if enabled{span{class:"badge",if connected{"Executor connected"}else{"Executor not connected"}}}}
                 button{class:if enabled{"extension-toggle selected"}else{"extension-toggle"},role:"switch","aria-label":"Enable {name} locally for this workspace","aria-checked":enabled.to_string(),"aria-expanded":enabled.to_string(),"aria-controls":"client-extension-{id}",
                     onclick:move |_|{client.project.write().client_extensions.entry(toggle_id.clone()).or_default().enabled = !enabled;},
                     onkeydown:move |event|{if event.key()==Key::Named(NamedKey::Enter)||event.key()==Key::Character(" ".into()){event.prevent_default();client.project.write().client_extensions.entry(key_id.clone()).or_default().enabled = !enabled;}},

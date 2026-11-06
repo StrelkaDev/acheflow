@@ -153,6 +153,13 @@ mod tests {
         json!({"id":"independent","name":"Independent","api_version":2,"module":"guest.wasm","execution_side":"client","capabilities":["panel"],"services":[],"settings":[{"id":"public_application_key","label":"Public application"}],"secret_fields":{"local_key":"/local_key"},"application_setup":{"links":[],"settings":["public_application_key"],"native":{"secrets":[{"id":"local_key","label":"Local key","required":true}]},"browser":{}}})
     }
     #[test]
+    fn application_requisites_cannot_be_supplied_as_hidden_defaults() {
+        let mut value = manifest();
+        value["application_setup"]["native"]["defaults"] =
+            json!({"public_application_key":"shared-app"});
+        assert!(serde_json::from_value::<GuestManifest>(value).is_err());
+    }
+    #[test]
     fn setup_resolves_only_its_own_declared_ids_without_provider_names() {
         let original = manifest();
         let parsed: GuestManifest = serde_json::from_value(original.clone()).unwrap();

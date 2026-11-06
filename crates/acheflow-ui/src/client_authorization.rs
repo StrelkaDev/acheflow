@@ -8,20 +8,20 @@ use std::{
     collections::{BTreeMap, VecDeque},
     rc::Rc,
 };
-type Sessions = BTreeMap<(String, String), LocalSession>;
+type Sessions = BTreeMap<(String, String, String), LocalSession>;
+fn session_key(owner: &Owner, extension: &str) -> (String, String, String) {
+    (owner.0.clone(), owner.1.clone(), extension.into())
+}
 pub(crate) fn provide_accounts(project: Signal<crate::project::Workspace>) {
     let mut sessions = use_signal(Sessions::new);
     use_context_provider(|| sessions);
     use_effect(move || {
         let project = project.read();
-        sessions.write().retain(|(owner, id), _| {
-            owner == &project.id && project.client_extensions.get(id).is_some_and(|s| s.enabled)
+        sessions.write().retain(|(owner, server, id), _| {
+            owner == &project.id
+                && server == &project.server_url
+                && project.client_extensions.get(id).is_some_and(|s| s.enabled)
         });
-    });
-    let server = use_memo(move || project.read().server_url.clone());
-    use_effect(move || {
-        let _ = server();
-        sessions.write().clear();
     });
 }
 fn now() -> u64 {
@@ -40,7 +40,7 @@ fn now() -> u64 {
 fn environment() -> Value {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        json!({"browser":false,"callback_uri":acheflow_client::browser::CALLBACK})
+        json!({"browser":false,"callback_uri":""})
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -195,7 +195,7 @@ fn use_initialization(
             let id = id.clone();
             let manifest = manifest.clone();
             let module = module.clone();
-            let existing = sessions.write().remove(&(owner.0.clone(), id.clone()));
+            let existing = sessions.write().remove(&session_key(&owner, &id));
             #[cfg(not(target_arch = "wasm32"))]
             signals.native.peek().begin_initialization();
             busy.set(true);
@@ -233,7 +233,7 @@ fn use_initialization(
                             } else {
                                 error.set(String::new());
                             }
-                            sessions.write().insert((owner.0, id), session);
+                            sessions.write().insert(session_key(&owner, &id), session);
                             panel.set(next);
                         }
                         Err(reason) => error.set(reason),
@@ -265,22 +265,29 @@ fn dispatch(
         return;
     }
     let owner = identity();
-    let key = (owner.0.clone(), provider.clone());
+    let key = session_key(&owner, &provider);
     let Some(mut session) = sessions.write().remove(&key) else {
         return;
     };
-    for (key, value) in drafts.take() {
-        if let Err(reason) = session.set_secret(&key, value) {
+    for (secret_id, value) in drafts.take() {
+        if let Err(reason) = session.set_secret(&secret_id, value) {
             error.set(reason);
-            sessions
-                .write()
-                .insert((owner.0, provider.clone()), session);
+            sessions.write().insert(key, session);
             return;
         }
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    let callback = acheflow_client::browser::Callback::prepare().ok();
+    let operation_environment = environment();
+    #[cfg(not(target_arch = "wasm32"))]
+    let operation_environment = {
+        let mut environment = operation_environment;
+        environment["callback_uri"] = json!(callback.as_ref().map(|c| c.uri()).unwrap_or_default());
+        environment
+    };
     let effects = match session.step(
         json!({"type":"local_action","action_id":action_id}),
-        &environment(),
+        &operation_environment,
         now(),
     ) {
         Ok(effects) => effects,
@@ -323,6 +330,8 @@ fn dispatch(
         session,
         effects,
         signals,
+        #[cfg(not(target_arch = "wasm32"))]
+        callback,
         #[cfg(target_arch = "wasm32")]
         started,
     );
@@ -332,6 +341,7 @@ fn start_operation(
     session: LocalSession,
     effects: Vec<Value>,
     signals: PanelSignals,
+    #[cfg(not(target_arch = "wasm32"))] callback: Option<acheflow_client::browser::Callback>,
     #[cfg(target_arch = "wasm32")] started: Option<browser::Login>,
 ) {
     let PanelSignals {
@@ -350,7 +360,8 @@ fn start_operation(
     #[cfg(not(target_arch = "wasm32"))]
     let native_mailbox = signals.native.peek().clone();
     #[cfg(not(target_arch = "wasm32"))]
-    let native_context = native::Context::new(signals, owner.clone(), (signals.restart)());
+    let native_context =
+        native::Context::new(signals, owner.clone(), (signals.restart)()).with_callback(callback);
     task.set(Some(spawn(async move {
         let result = drive(
             session,
@@ -376,7 +387,9 @@ fn start_operation(
                     if let Err(reason) = session.flush_storage() {
                         error.set(reason);
                     }
-                    sessions.write().insert((owner.0, provider), session);
+                    sessions
+                        .write()
+                        .insert(session_key(&owner, &provider), session);
                     panel.set(next);
                 }
                 Err(reason) => error.set(reason),
@@ -406,7 +419,7 @@ fn use_ticks(id: String, signals: PanelSignals) {
                         continue;
                     }
                     let owner = identity.peek().clone();
-                    let Some(mut session) = sessions.write().remove(&(owner.0.clone(), id.clone()))
+                    let Some(mut session) = sessions.write().remove(&session_key(&owner, &id))
                     else {
                         continue;
                     };
@@ -415,7 +428,7 @@ fn use_ticks(id: String, signals: PanelSignals) {
                             Ok(effects) => effects,
                             Err(reason) => {
                                 error.set(reason);
-                                sessions.write().insert((owner.0, id.clone()), session);
+                                sessions.write().insert(session_key(&owner, &id), session);
                                 continue;
                             }
                         };
@@ -437,7 +450,7 @@ fn use_ticks(id: String, signals: PanelSignals) {
                                 if let Err(reason) = session.flush_storage() {
                                     error.set(reason);
                                 }
-                                sessions.write().insert((owner.0, id.clone()), session);
+                                sessions.write().insert(session_key(&owner, &id), session);
                                 if panel.peek().as_ref() != next.as_ref() {
                                     panel.set(next);
                                 }
@@ -482,9 +495,15 @@ fn render_widget(
     } = signals;
     match widget {
         PanelWidget::Label { text } => rsx! {p{class:"form-help","{text}"}},
-        PanelWidget::Button { id, label, primary } => {
+        PanelWidget::Button {
+            id,
+            label,
+            primary,
+            requires,
+        } => {
             let key_id = id.clone();
-            rsx! {button{class:if primary{"local-extension-action primary"}else{"local-extension-action"},disabled:busy(),onclick:move|_|action.call(id.clone()),onkeydown:move|event|{if event.key()==Key::Named(NamedKey::Enter)||event.key()==Key::Character(" ".into()){event.prevent_default();action.call(key_id.clone());}},"{label}"}}
+            let disabled = busy() || !required_inputs_ready(&requires, &extension, signals);
+            rsx! {button{class:if primary{"local-extension-action primary"}else{"local-extension-action"},disabled,onclick:move|_|{if !disabled {action.call(id.clone());}},onkeydown:move|event|{if !disabled && (event.key()==Key::Named(NamedKey::Enter)||event.key()==Key::Character(" ".into())){event.prevent_default();action.call(key_id.clone());}},"{label}"}}
         }
         PanelWidget::Row { widgets } => {
             rsx! {div{class:"extension-action-row",for widget in widgets{{render_widget(widget,extension.clone(),signals,action)}}}}
@@ -493,7 +512,12 @@ fn render_widget(
             rsx! {crate::extension_panel::PanelDisclosure{label,widgets,render:Callback::new(move|widget|render_widget(widget,extension.clone(),signals,action))}}
         }
         PanelWidget::SecretInput { id, label } => {
-            rsx! {label{class:"field",span{"{label}"}input{r#type:"password",autocomplete:"off",disabled:busy(),maxlength:8192,value:drafts.read().get(&id).cloned().unwrap_or_default(),oninput:move|event|{drafts.write().insert(id.clone(),event.value());}}}}
+            let saved = signals
+                .sessions
+                .read()
+                .get(&session_key(&signals.identity.peek(), &extension))
+                .is_some_and(|s| s.has_secret(&id));
+            rsx! {label{class:"field",span{"{label}"}input{r#type:"password",autocomplete:"off",placeholder:if saved{"********"}else{""},disabled:busy(),maxlength:8192,value:drafts.read().get(&id).cloned().unwrap_or_default(),oninput:move|event|{drafts.write().insert(id.clone(),event.value());}}}}
         }
         PanelWidget::Link { label, url } => {
             rsx! {a{href:url,target:"_blank",rel:"noopener noreferrer","{label}"}}
@@ -505,6 +529,35 @@ fn render_widget(
         }
         _ => rsx! {p{class:"field-error","Unsupported local panel widget."}},
     }
+}
+
+fn required_inputs_ready(requires: &[String], extension: &str, signals: PanelSignals) -> bool {
+    let owner = (signals.identity)();
+    let sessions = signals.sessions.read();
+    let session = sessions.get(&session_key(&owner, extension));
+    let drafts = signals.drafts.read();
+    requires.iter().all(|id| {
+        let Some(session) = session else { return false };
+        if let Some(setting) = session
+            .manifest
+            .settings
+            .iter()
+            .find(|s| &s.id == id && !s.secret && !s.toggle)
+        {
+            return owner
+                .2
+                .get(id)
+                .is_some_and(|v| valid_required_input(v, setting.max_length));
+        }
+        session.manifest.secret_fields.contains_key(id)
+            && drafts
+                .get(id)
+                .map_or_else(|| session.has_secret(id), |v| valid_required_input(v, 8192))
+    })
+}
+
+fn valid_required_input(value: &str, max_length: usize) -> bool {
+    !value.is_empty() && value.len() <= max_length && !value.chars().any(char::is_whitespace)
 }
 #[cfg(target_arch = "wasm32")]
 async fn drive(

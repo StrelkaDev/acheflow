@@ -111,7 +111,7 @@ fn callback(provider: &str, state: &str) -> String {
         '#'
     };
     format!(
-        "https://client.acheflow.com/fwd/{provider}/oauth/callback{separator}{}",
+        "https://app.acheflow.com/fwd/{provider}/oauth/callback{separator}{}",
         fields.finish()
     )
 }
@@ -181,7 +181,8 @@ fn recipient_workspace_and_instance_mismatches_leave_the_correct_request_pending
     for provider in ["twitch", "youtube"] {
         let mut attempt = Attempt::new(provider, true);
         let valid = callback(provider, &attempt.state);
-        let server = valid.replacen("client.acheflow.com", "server.acheflow.com", 1);
+        let server = valid.replacen("app.acheflow.com", "server.acheflow.com", 1);
+        assert_ne!(server, valid);
         assert!(attempt.deliver(&server, START + 1).is_err());
         assert!(
             attempt
@@ -226,7 +227,7 @@ fn invalid_state_cannot_consume_the_legitimate_pending_callback() {
 #[test]
 fn duplicate_parameters_cannot_choose_a_different_state_or_credential_value() {
     let mut attempt = Attempt::new("youtube", true);
-    let prefix = "https://client.acheflow.com/fwd/youtube/oauth/callback";
+    let prefix = "https://app.acheflow.com/fwd/youtube/oauth/callback";
     let state = &attempt.state;
     let ambiguous = [
         format!("{prefix}?state={state}&state={state}&code={CODE}"),
@@ -345,6 +346,18 @@ fn disconnect_revokes_pending_callbacks_and_late_results_cannot_restore_the_acco
         let authorized_panel = serde_json::to_string(&authorized).unwrap();
         assert!(authorized_panel.contains("Authorized locally"));
         assert!(authorized_panel.contains("existing-account"));
+        let panel = &authorized.iter().find(|e| e["type"] == "panel").unwrap()["panel"];
+        let actions = panel["widgets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["type"] == "row")
+            .flat_map(|w| w["widgets"].as_array().unwrap());
+        assert!(
+            actions.clone().any(|w| w["id"] == "disconnect"),
+            "Disconnect is visible without opening a disclosure"
+        );
+        assert!(!actions.clone().any(|w| w["id"] == "connect"));
 
         attempt.connect(START + 2);
         let old_state = attempt.state.clone();
@@ -400,7 +413,7 @@ fn ordinary_events_cannot_stage_credentials_or_disrupt_a_pending_authorization()
 
         for (parameter, marker) in [("access_token", TOKEN), ("code", CODE)] {
             let event =
-                format!("https://client.acheflow.com/fwd/{provider}/open?{parameter}={marker}");
+                format!("https://app.acheflow.com/fwd/{provider}/open?{parameter}={marker}");
             let error = attempt
                 .deliver(&event, START + 1)
                 .expect_err("an unsolicited Event must not stage a credential field");
@@ -410,9 +423,8 @@ fn ordinary_events_cannot_stage_credentials_or_disrupt_a_pending_authorization()
             );
         }
 
-        let ordinary = format!(
-            "https://client.acheflow.com/fwd/{provider}/open?section=account&mode=callback"
-        );
+        let ordinary =
+            format!("https://app.acheflow.com/fwd/{provider}/open?section=account&mode=callback");
         let effects = attempt.deliver(&ordinary, START + 2).unwrap();
         assert!(
             !effects.iter().any(|effect| effect["type"] == "http"),

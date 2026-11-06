@@ -15,18 +15,46 @@ become Workspace fields, server commands, snapshots or MCP events.
 
 ## Setup
 
-Enable an installed extension and expand **Application setup** in its card.
+Enable an installed extension, fill the fields above Connect, and expand
+**Application setup instructions** when registering the application.
 Each provider declares console/documentation links, platform-specific instructions
 and public fields bound to its own setting IDs. Enter your application's public
-Client ID there and enable only the functions you need. The guest displays the
+Client ID above Connect and enable only the functions you need. The guest displays the
 requested permissions and the exact active callback or authorized origin with
 **Copy**. If the clipboard is unavailable, select the read-only address manually.
 These declarations use the shared typed application-setup contract; the UI has no
 provider list, console URL or provider-specific setting binding.
 
-- Native macOS: callback `http://127.0.0.1:21941/oauth/callback`. An authorization
-  attempt owns this loopback listener and opens the system browser. Cancellation
-  releases it. Register the callback exactly for Twitch and VK Video Live.
+Enter your own application's **Application Client ID** in the enabled extension
+card before Connect. Native YouTube also requires **Application secret**; Twitch
+and VK Video Live implicit sign-in do not. The guest declares which fields are
+required. Connect remains disabled for missing or malformed inputs. Saved local
+secrets show a placeholder instead of their value. A different application ID uses
+a separate credential slot. After authorization, use the visible **Disconnect account**
+button to clear that account and pending callbacks.
+
+Secret and token inputs render only asterisks, including in the native Blitz UI;
+masking preserves the original value for submission and normal editing/selection.
+
+No Acheflow application IDs or secrets are inserted automatically. Registering your
+own application lets you choose its owner, trust and quota; creating extra Google
+client IDs inside the same project does not create separate quota. See the
+[provider setup and registration record](provider-registration.md).
+
+The host supplies `environment.link` as
+`https://app.acheflow.com/fwd/<extension_id>`; the extension declares only its
+`authentication.native_callback` suffix, e.g. `oauth/callback`. The fields and
+instructions come from each manifest; shared UI/server code has no provider
+credentials or automatic application defaults.
+
+- Native Twitch and VK Video Live: register respectively
+  `https://app.acheflow.com/fwd/twitch/oauth/callback` and
+  `https://app.acheflow.com/fwd/vklive/oauth/callback`. The installed app receives
+  the link only for a pending, enabled extension with matching state. Deploy the
+  HTTPS fallback and verify installed app association before live use.
+- Native Google: each attempt owns an available loopback port, independent of
+  server ports. The active URI is available after sign-in starts; no fixed
+  localhost port is registered for a Desktop application. Cancellation releases it.
 - Twitch: use an application supporting the implicit grant (Confidential type).
   Twitch Public clients are restricted to device authorization. The current
   implicit flow requires no application secret; device authorization is not
@@ -35,9 +63,14 @@ provider list, console URL or provider-specific setting binding.
   that URI for redirect-based providers. Allow sign-in popups. Reverse-proxy base
   paths are preserved. Browser traffic goes directly to declared provider services;
   CORS failures remain visible and never fall back to server-held credentials.
-- Google native: create a **Desktop app** OAuth client, enable YouTube Data API v3,
-  and enter the generated application secret in the local extension panel. The guest
-  uses an authorization code with S256 PKCE and can renew a returned refresh token.
+- Google native: create a **Desktop app** OAuth client and enable YouTube Data API v3.
+  The guest uses an authorization code with S256 PKCE and can renew a returned
+  refresh token. Enter the Desktop client's application secret in local Application
+  setup; it is stored with that workspace's credentials and is never sent to the
+  Acheflow server or browser. Google's documentation labels the parameter optional,
+  but the registered Acheflow Desktop client rejects exchange without it with
+  `invalid_request: client_secret is missing.` The manifest therefore requires it.
+  Live acceptance of a configured client must be checked separately from registration.
 - Google browser: create a **Web application** OAuth client with the current browser
   origin authorized. `extensions/youtube/youtube-oauth.js` uses Google Identity
   Services' token model. No application secret or refresh token enters the browser.
@@ -80,6 +113,9 @@ their state into a matching native provider runtime in the same workspace. This
 does not create an MCP executor credential, register workspace grants, start an
 always-on executor or implement a browser media executor. Those remain the separate
 client execution boundary described in [client-executor.md](client-executor.md).
+The card's **Executor connected / Executor not connected** badge reports the
+server's executor connections. **Authorized locally as …** in the account panel
+reports OAuth validation; account authorization alone does not start an executor.
 
 Regression coverage exercises the actual provider WASM artifacts, read-only scopes,
 disabled sends, callback-state rejection, staged credentials, workspace exports and

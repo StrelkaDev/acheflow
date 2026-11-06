@@ -52,8 +52,7 @@ fn launch_with_contexts(
     };
     #[cfg(target_arch = "wasm32")]
     let _ = &mut contexts;
-    let font_ctx =
-        dioxus_native::build_single_font_ctx(include_bytes!("../assets/DejaVuSans.woff2"));
+    let font_ctx = font_context();
     let config = dioxus_native::Config::new().with_font_ctx(font_ctx);
     #[cfg(not(target_arch = "wasm32"))]
     let config = config.with_window_attributes(
@@ -65,6 +64,24 @@ fn launch_with_contexts(
     #[cfg(not(target_arch = "wasm32"))]
     server.finish()?;
     Ok(())
+}
+
+fn font_context() -> dioxus_native::FontContext {
+    let mut context =
+        dioxus_native::build_single_font_ctx(include_bytes!("../assets/DejaVuSans.woff2"));
+    // Blitz's password editor currently paints ordinary glyphs. This font has
+    // exactly one visible glyph ('*') for every code point; editing stays native.
+    let families = context.collection.register_fonts(
+        peniko::Blob::new(std::sync::Arc::new(
+            include_bytes!("../assets/SecretMask.ttf").to_vec(),
+        )),
+        None,
+    );
+    assert!(
+        !families.is_empty(),
+        "credential mask font must load before rendering inputs"
+    );
+    context
 }
 
 #[cfg(not(target_arch = "wasm32"))]

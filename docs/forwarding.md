@@ -11,17 +11,19 @@ authorize an extension action.
 
 | Origin | Recipient |
 | --- | --- |
-| `https://client.acheflow.com` | Installed client |
+| `https://app.acheflow.com` | Installed client |
 | `https://server.acheflow.com` | Installed server |
 
 Both use `/fwd/<extension_id>/<action>/...`. For example:
 
 ```text
-https://client.acheflow.com/fwd/example/oauth/callback?code=opaque&state=opaque
+https://app.acheflow.com/fwd/example/oauth/callback?code=opaque&state=opaque
 ```
 
-`acheflow.com` remains the product website and `app.acheflow.com` identifies the
-browser client. The forwarding origin is not a user's configured server endpoint.
+`acheflow.com` remains the product website. `app.acheflow.com` serves the browser
+client and reserves `/fwd/*` for installed-client links; ordinary browser routes
+are not app links. The former `client.acheflow.com` origin is rejected (no release
+requires compatibility). The forwarding origin is not a user's server endpoint.
 Each receiver supplies its expected recipient to the parser; server/client links
 cannot be substituted for each other. Canonical HTTPS authorities are required,
 without explicit ports, user information or alternate host spellings.
@@ -86,9 +88,17 @@ request callback grants or provider credential storage.
 Native receivers must select an installed, enabled session from the active
 workspace before calling these APIs; they must not create one merely because a
 link names it. Provider flows, scopes, token handling and callback interpretation
-remain under `extensions/`. Current provider redirect settings continue using
-their supported loopback/browser strategies until each provider declares and
-configures its native callback flow.
+remain under `extensions/`. The host supplies `environment.link` as
+`https://app.acheflow.com/fwd/<installed_manifest_id>`, overriding caller values.
+The guest SDK's optional `authentication.native_callback` is only a relative
+action/tail, e.g. `oauth/callback`; it must resolve to this installation's declared
+callback action without response parameters. Native Twitch/VK use this link;
+Google Desktop retains code/S256 PKCE and an independently allocated loopback
+port. Browser callbacks retain their browser origin/path. The browser effect
+carries the selected `callback_uri`; native driving waits on the prepared loopback
+listener or the checked app-link mailbox, with a five-minute deadline and
+cancellation. Portal setup, hosting and signed app association still require
+live verification before official defaults are enabled.
 
 ## Desktop client activation
 

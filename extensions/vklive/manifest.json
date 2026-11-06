@@ -62,6 +62,7 @@
   "unique_viewers": false,
   "execution_side": "client",
   "authentication": {
+    "native_callback": "oauth/callback",
     "authorize_url": "https://auth.live.vkvideo.ru/app/oauth2/authorize",
     "help": "Register an application in the VK Video Live developer console (sign-in may use VK ID). DevAPI issues a separate token. Public chat and audience reading do not require privileged scopes. Sending and native polls are not implemented.",
     "features": [
@@ -110,14 +111,14 @@
       }
     ],
     "native": {
-      "instructions": "Create a DevAPI OAuth application in the VK Video Live developer portal with the implicit response_type=token flow enabled. Add the exact OAuth redirect URI below and copy the application Client ID into Application Client ID in Application setup. The portal may require VK ID sign-in; VK ID tokens cannot replace DevAPI tokens. This flow needs no application secret. Chat and audience reading request no privileged scopes; sending and polls are not supported.",
+      "instructions": "Create a DevAPI OAuth application in the VK Video Live developer portal with the implicit response_type=token flow enabled. Add the exact OAuth redirect URI below and copy the application Client ID into Application Client ID above Connect. The portal may require VK ID sign-in; VK ID tokens cannot replace DevAPI tokens. This flow needs no application secret. Chat and audience reading request no privileged scopes; sending and polls are not supported.",
       "address": {
         "source": "callback_uri",
         "label": "OAuth redirect URI"
       }
     },
     "browser": {
-      "instructions": "Create a DevAPI OAuth application with the implicit response_type=token flow enabled. Register the exact redirect URI below, including its path, and enter the public Client ID in Application setup. Allow popups. No application secret is used; VK ID sign-in and DevAPI access tokens are distinct. Chat and audience reading request no privileged scopes. Sending and polls are not supported.",
+      "instructions": "Create a DevAPI OAuth application with the implicit response_type=token flow enabled. Register the exact redirect URI below, including its path, and enter the public Client ID above Connect. Allow popups. No application secret is used; VK ID sign-in and DevAPI access tokens are distinct. Chat and audience reading request no privileged scopes. Sending and polls are not supported.",
       "address": {
         "source": "callback_uri",
         "label": "OAuth redirect URI"

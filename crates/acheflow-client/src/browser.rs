@@ -4,30 +4,47 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
-pub const CALLBACK: &str = "http://127.0.0.1:21941/oauth/callback";
+pub fn open(url: &str) -> Result<(), String> {
+    webbrowser::open(url).map_err(|_| "Could not open the system browser.".into())
+}
 pub struct Callback {
-    listener: TcpListener,
+    listener: std::net::TcpListener,
 }
 impl Callback {
     pub async fn bind() -> Result<Self, String> {
-        TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 21941))
-            .await
-            .map(|listener| Self { listener })
-            .map_err(|_| "Local callback port 21941 is busy.".into())
+        Self::prepare()
+    }
+    pub fn prepare() -> Result<Self, String> {
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .map_err(|_| "Could not allocate a local browser callback.".to_owned())?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|_| "Could not prepare the local browser callback.")?;
+        Ok(Self { listener })
+    }
+    pub fn uri(&self) -> String {
+        format!(
+            "http://127.0.0.1:{}/oauth/callback",
+            self.listener
+                .local_addr()
+                .expect("bound callback address")
+                .port()
+        )
     }
     pub fn open(&self, url: &str) -> Result<(), String> {
-        webbrowser::open(url).map_err(|_| "Could not open the system browser.".into())
+        open(url)
     }
     pub async fn receive(self) -> Result<serde_json::Value, String> {
-        let encoded = tokio::time::timeout(Duration::from_secs(300), self.read())
+        let listener =
+            TcpListener::from_std(self.listener).map_err(|_| "Local callback unavailable.")?;
+        let encoded = tokio::time::timeout(Duration::from_secs(300), Self::read(listener))
             .await
             .map_err(|_| "Browser callback timed out.")??;
         decode(&encoded)
     }
-    async fn read(&self) -> Result<String, String> {
+    async fn read(listener: TcpListener) -> Result<String, String> {
         loop {
-            let (mut socket, peer) = self
-                .listener
+            let (mut socket, peer) = listener
                 .accept()
                 .await
                 .map_err(|_| "Callback interrupted.")?;
@@ -107,7 +124,7 @@ impl Callback {
             } else if line == "POST /oauth/complete HTTP/1.1" {
                 let expected = format!(
                     "http://127.0.0.1:{}",
-                    self.listener
+                    listener
                         .local_addr()
                         .map_err(|_| "Callback unavailable.")?
                         .port()
@@ -158,12 +175,23 @@ else document.getElementById('result').textContent='No response. Reconnect in Ac
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn callbacks_allocate_independent_ports_even_when_the_old_fixed_port_is_busy() {
+        let _occupied = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 21941)).ok();
+        let first = Callback::bind().await.unwrap();
+        let second = Callback::bind().await.unwrap();
+        assert_ne!(first.uri(), second.uri());
+        assert_ne!(first.listener.local_addr().unwrap().port(), 21941);
+        assert!(first.listener.local_addr().unwrap().ip().is_loopback());
+    }
+    #[tokio::test]
     async fn real_loopback_rejects_wrong_origins_and_returns_bounded_fields() {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
             .unwrap();
         let port = listener.local_addr().unwrap().port();
-        let callback = Callback { listener };
+        let callback = Callback {
+            listener: listener.into_std().unwrap(),
+        };
         let request = async {
             let client = crate::transport::client().unwrap();
             let relay = client

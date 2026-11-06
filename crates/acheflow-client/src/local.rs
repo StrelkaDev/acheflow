@@ -108,6 +108,13 @@ impl LocalSession {
         self.dirty = false;
         Ok(())
     }
+    /// Presence only; local form rendering never receives credential values.
+    pub fn has_secret(&self, key: &str) -> bool {
+        self.staged
+            .as_ref()
+            .unwrap_or(&self.state.secrets)
+            .contains_key(key)
+    }
     pub fn set_secret(&mut self, key: &str, value: String) -> Result<(), String> {
         if !self.manifest.secret_fields.contains_key(key)
             || value.len() > 8192
@@ -199,6 +206,11 @@ impl LocalSession {
             );
             input["storage"] = self.state.storage.clone();
             input["environment"] = environment.clone();
+            input["environment"]["link"] = json!(format!(
+                "{}/fwd/{}",
+                acheflow_extension_api::forwarding::ForwardRecipient::Client.origin(),
+                self.manifest.id
+            ));
             input["now_ms"] = json!(now);
             input["api_version"] = json!(acheflow_extension_api::API_VERSION);
             input["workspace_id"] = json!(self.workspace_id);
