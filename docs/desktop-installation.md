@@ -95,7 +95,7 @@ rollout work. The future unified executable/scheme remains DL-13.
 From the source checkout on macOS with Rust/WASM target, Trunk and Xcode tools:
 
 ```sh
-python3 native/macos/package.py --output /private/tmp/acheflow-0.1.3-macos
+python3 native/macos/package.py --output target/acheflow-0.1.3-macos
 ```
 
 This rebuilds the guests, release client/server and release browser UI, checks
@@ -110,9 +110,9 @@ For an already validated local debug build:
 
 ```sh
 python3 native/macos/package.py --profile debug --skip-build \
-  --output /private/tmp/acheflow-local-test
+  --output target/acheflow-local-test
 python3 -m unittest discover -s native/macos -p 'test_*.py'
-python3 native/macos/smoke_package.py /private/tmp/acheflow-local-test.zip
+python3 native/macos/smoke_package.py target/acheflow-local-test.zip
 ```
 
 `--skip-build` requires matching current binaries, guest artifacts and `dist/`.

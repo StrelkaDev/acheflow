@@ -16,10 +16,10 @@ Build the matching Rust binaries, then create new unsigned output bundles:
 ```sh
 cargo build -p acheflow-ui -p acheflow-server -p acheflow-launcher --bins
 python3 native/macos/build-dev-app.py \
-  --output /private/tmp/Acheflow.app --recipient client \
+  --output target/Acheflow.app --recipient client \
   --bundle-id com.acheflow.client --ui-bin target/debug/acheflow-ui
 python3 native/macos/build-dev-app.py \
-  --output /private/tmp/AcheflowServer.app --recipient server \
+  --output target/AcheflowServer.app --recipient server \
   --bundle-id com.acheflow.server.links --server-bin target/debug/acheflow-server
 ```
 
@@ -48,8 +48,8 @@ Then verify the exact scheme-to-adapter registration on the target macOS version
 This repository does not run registration or change the user's default handlers.
 Test from an actual Applications installation. On macOS 27.0.1, the DL-12 helper
 could be present in LaunchServices' claims while remaining unavailable for URL
-selection under `/private/tmp`; the same ad-hoc signed bundle under the user's
-Applications directory resolved and received the Twitch OAuth callback.
+selection in the system temporary directory; the same ad-hoc signed bundle under
+the user's Applications directory resolved and received the Twitch OAuth callback.
 
 ## Apple HTTPS association
 
@@ -63,7 +63,7 @@ that callback as documented in
 Generate with the real Apple Team ID and registered handler bundle IDs:
 
 ```sh
-python3 native/links/build.py --output /private/tmp/acheflow-links-signed \
+python3 native/links/build.py --output target/acheflow-links-signed \
   --apple-team-id YOURTEAMID \
   --client-handler-id com.acheflow.client.links \
   --server-handler-id com.acheflow.server.links
@@ -90,7 +90,7 @@ installed universal-link validation are external rollout requirements.
 For fallback pages without an Apple identity, omit the signing arguments:
 
 ```sh
-python3 native/links/build.py --output /private/tmp/acheflow-links
+python3 native/links/build.py --output target/acheflow-links
 ```
 
 The output contains `app.acheflow.com/` and `server.acheflow.com/` document roots
@@ -102,8 +102,9 @@ the builder emits no AASA file or
 Apple entitlement. Do not publish test identity metadata from fixtures.
 
 Copy the host document roots to a deployment directory, set `ACHEFLOW_LINK_ROOT`
-to that directory (for example `/srv/acheflow-links`), and use the generated
-Caddyfile with the corresponding DNS/TLS configuration. The Caddyfile serves
+to that directory (for example `target/acheflow-links` when serving from the project
+root), and use the generated Caddyfile with the corresponding DNS/TLS configuration.
+The Caddyfile serves
 `/fwd/*` as the fallback page while keeping the original browser address for JS
 validation; association metadata is a separate JSON resource. Other missing paths
 return 404. It sets CSP, no-referrer, no-store, frame and MIME restrictions, and

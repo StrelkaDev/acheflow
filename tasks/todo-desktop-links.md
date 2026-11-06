@@ -415,7 +415,7 @@ The maintainer completed Twitch and VK login/consent. Twitch's full hosted retur
 installed custom-scheme delivery, token validation and restoration were verified
 as `strelkadev`; VK reached `Authorized locally` and restored after restart without
 an exposed nickname. Executor/chat operation is separate and remains unverified.
-The test fixture moved from cleaned `/private/tmp` storage to ignored
+The test fixture moved from cleaned temporary storage to ignored
 `target/dl12-live/`, preserving its workspace identity from Keychain attributes.
 
 Google's empty Testing allowlist caused `403 access_denied` for AChe Dev. Adding

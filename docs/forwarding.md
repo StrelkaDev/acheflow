@@ -141,7 +141,7 @@ handoff. It contains no provider logic. Build a local bundle with:
 ```sh
 cargo build -p acheflow-ui --bin acheflow-ui
 python3 native/macos/build-dev-app.py \
-  --output /private/tmp/AcheflowDev.app \
+  --output target/AcheflowDev.app \
   --ui-bin target/debug/acheflow-ui
 ```
 

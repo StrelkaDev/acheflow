@@ -349,9 +349,11 @@ Initialize a checkout that has no index with:
 repowise init . --yes --no-prose --no-editor-setup --no-agents --no-claude-md --no-hook --no-save-key
 ```
 
-Project MCP settings live in `.codex/config.toml` and `.mcp.json`. Restart the MCP
-session after changing them. If a tool reports stale files, refresh the index
-before relying on its cached context; check the owning source for current behavior.
+Project MCP settings live in `.codex/config.toml` and `.mcp.json`. Repowise discovers
+the repository from the client's working directory; start MCP clients inside the checkout.
+Keep machine-specific skill overrides in user configuration. Restart the MCP
+session after changing these settings. If a tool reports stale files, refresh the
+index before relying on its cached context; check the owning source for current behavior.
 
 Sources: [Blitz](https://github.com/DioxusLabs/blitz),
 [WASM examples](https://github.com/DioxusLabs/blitz/blob/main/HOWTO_WASM.md),

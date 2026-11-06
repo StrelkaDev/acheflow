@@ -4,7 +4,6 @@
       "command": "repowise",
       "args": [
         "mcp",
-        "/Users/achedev/acheflow",
         "--transport",
         "stdio"
       ],

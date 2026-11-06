@@ -132,9 +132,10 @@ The SDK now defers missing callback lifetime to a declared validation expiry fie
 for implicit flows; missing/zero/invalid validation lifetime cannot commit secrets.
 PKCE token responses and providers without such validation still require lifetime
 in the token response. SDK and real-WASM regressions cover the actual fragment form.
-The registered helper in `/private/tmp` was not selected by LaunchServices; the same
-signed bundle under Applications was selected. No Developer ID certificate or
-universal-link association was used for this custom-scheme check.
+The registered helper in the system temporary directory was not selected by
+LaunchServices; the same signed bundle under Applications was selected. No
+Developer ID certificate or universal-link association was used for this
+custom-scheme check.
 
 ### Native continuation — 2026-11-06
 
@@ -143,7 +144,7 @@ showed `Authorized locally`, including after restarting with the recovered test
 workspace. No account nickname was returned to the panel, so ownership of `achedev`
 has not been independently confirmed from the validation response.
 
-The test app's `/private/tmp` workspace was cleaned between sessions. Its workspace
+The test app's temporary workspace was cleaned between sessions. Its workspace
 identity was recovered from Keychain record attributes without reading secret
 values; the isolated fixture now lives in ignored `target/dl12-live/`. The installed
 test app and helper use that stable location. This is local test configuration.
