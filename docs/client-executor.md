@@ -21,8 +21,9 @@ currently no completed standalone executor binary. Main-UI account panels now ru
 the providers' WASM authorization and local storage, as described in
 [extension authorization](extension-authorization.md); they do not start an executor.
 Enabling a provider on the server alone does not collect or send anything.
-A browser media executor, live-account OAuth qualification, durable intent storage,
-native polls and generic external MCP tool registration remain pending.
+Continuous browser execution, live provider-operation qualification, durable intent
+storage, native poll instructions and generic external MCP tool registration remain
+unfinished. Native macOS local account panels already use the system vault.
 Moderation DTOs exist; the built-in provider runtime rejects unsupported moderation
 actions. Separately implemented executors must advertise only handlers they support.
 
@@ -105,6 +106,26 @@ A local enable/disable preference alone is not a remote revocation mechanism; th
 owning client must stop its runtime and unregister when disabled. Queued
 work is cancelled/expired; in-flight uncertainty is retained without reassignment.
 
+## Registry bounds and intent semantics
+
+| Resource | Current limit |
+| --- | --- |
+| Retained client identities | 64 |
+| Connections per registration | 16 |
+| Retained workspace policies / grants per policy | 64 / 64 |
+| Retained instructions | 512 |
+| Instructions per claim | 1–64 |
+| Registration heartbeat lifetime | 30 seconds |
+| Maximum instruction lifetime | Five minutes |
+| Intent retention | Ten minutes |
+
+Generation tombstones stay bounded until process restart so delayed requests cannot
+revive old authority. Intent IDs use `timestamp:unique_id`; an intent outside retention
+is rejected instead of silently becoming new work. Exclusive claims are bound to
+actor, generation and connection. Changed payloads cannot reuse an existing intent;
+expired/disconnected in-flight work becomes unknown without automatic reassignment.
+These limits belong to the execution registry, separate from guest fuel/queue bounds.
+
 ## Persistence and verification limits
 
 The active server workspace and public capability policy are in memory too; saving
@@ -115,9 +136,10 @@ restore](settings-persistence.md) for exact storage and conflict behavior.
 
 Registrations, instruction receipts and local captured credentials are in memory.
 Do not replay external sends after a server/client process restart. Durable intent
-journals and vault-backed account sessions must be implemented before unattended
-crash recovery. Existing exports with removed manual token fields must have those
-fields removed before being submitted to the server; old secret-write requests fail.
+journals and explicit reconciliation with restored local account sessions are
+required before unattended crash recovery; a saved account is not an execution
+journal. Existing exports with removed manual token fields must have those fields
+removed before being submitted to the server; old secret-write requests fail.
 
 Tests use two independently instantiated real WASM fixture providers over real MCP
 HTTP, including fanout, receipts, echo merging, cross-actor rejection and disconnect.

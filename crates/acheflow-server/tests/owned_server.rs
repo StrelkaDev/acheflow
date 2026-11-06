@@ -38,7 +38,16 @@ fn config(directory: &Directory) -> LaunchConfig {
         rtmp = free_port();
     }
     LaunchConfig {
-        binary: PathBuf::from(env!("CARGO_BIN_EXE_acheflow-server")),
+        binary: PathBuf::from(
+            option_env!("CARGO_BIN_EXE_acheflow")
+                .or(option_env!("CARGO_BIN_EXE_acheflow-server"))
+                .unwrap(),
+        ),
+        server_args: if option_env!("CARGO_BIN_EXE_acheflow").is_some() {
+            vec!["--server".into()]
+        } else {
+            vec![]
+        },
         directory: directory.0.clone(),
         http_port: http,
         rtmp_port: rtmp,
@@ -52,6 +61,7 @@ async fn missing_binary_is_reported_without_starting_a_process() {
     let server = LocalServer::new().unwrap();
     let config = LaunchConfig {
         binary: directory.0.join("missing"),
+        server_args: vec![],
         directory: directory.0.clone(),
         http_port: 21295,
         rtmp_port: 1935,

@@ -384,7 +384,7 @@ fn malformed_oversized_and_wrong_target_frames_never_reach_the_inbox() {
         assert_eq!(read_reply(&mut stream), Err(ActivationError::Rejected));
     }
     let mut wrong = connect(&root.runtime());
-    send_frame(&mut wrong, &serde_json::to_vec(&json!({"version":1,"recipient":"client","request":{"type":"forward","url":"https://server.acheflow.com/fwd/example/open"}})).unwrap());
+    send_frame(&mut wrong, &serde_json::to_vec(&json!({"version":1,"recipient":"client","request":{"type":"forward","url":"https://app.acheflow.com/server/fwd/example/open"}})).unwrap());
     assert_eq!(read_reply(&mut wrong), Err(ActivationError::InvalidLink));
     let mut oversized = connect(&root.runtime());
     oversized.write_all(&u32::MAX.to_be_bytes()).unwrap();

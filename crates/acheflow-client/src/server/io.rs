@@ -46,6 +46,7 @@ pub(super) async fn info(client: &reqwest::Client, address: SocketAddr) -> Optio
 
 fn command(config: &LaunchConfig) -> Command {
     let mut command = Command::new(&config.binary);
+    command.args(&config.server_args);
     // Listener/config credentials from a standalone invocation must not silently
     // change the owned child's configuration. FFmpeg/PATH remain available.
     for name in [

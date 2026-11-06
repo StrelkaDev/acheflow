@@ -20,11 +20,16 @@ pub struct Receiver {
     primary: acheflow_launcher::Primary,
 }
 
-pub async fn prepare(args: &crate::settings::Args) -> Result<Launch, ActivationError> {
-    if !args.native_links && !args.forward_stdin {
+pub async fn prepare(
+    args: &crate::settings::Args,
+    initial: Option<Request>,
+) -> Result<Launch, ActivationError> {
+    if !args.native_links && !args.forward_stdin && initial.is_none() {
         return Ok(Launch::Serve(None));
     }
-    let request = if args.forward_stdin {
+    let request = if let Some(request) = initial {
+        request
+    } else if args.forward_stdin {
         acheflow_launcher::read_link(std::io::stdin().lock())?
     } else {
         Request::Show

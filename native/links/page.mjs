@@ -2,17 +2,19 @@
 export function applicationLink(input, recipient) {
   if (!['client', 'server'].includes(recipient)) throw new Error('Invalid recipient');
   if (new TextEncoder().encode(input).length > 16 * 1024 || /[\x00-\x20\x7f\\]/.test(input)) throw new Error('Invalid URL');
-  const origin = recipient === 'client' ? 'https://app.acheflow.com' : 'https://server.acheflow.com';
+  const origin = 'https://app.acheflow.com';
   if (!input.startsWith(`${origin}/`)) throw new Error('Wrong origin');
   const url = new URL(input);
   const relative = input.slice(origin.length);
   const path = relative.split(/[?#]/, 1)[0];
   if (path !== url.pathname) throw new Error('Invalid path');
-  validateRoute(path);
+  const prefix = recipient === 'server' ? '/server' : '';
+  if (!path.startsWith(`${prefix}/fwd/`)) throw new Error('Wrong recipient');
+  validateRoute(path.slice(prefix.length));
   validateEscapes(path, true);
   validateEscapes(url.search, false);
   validateEscapes(url.hash, false);
-  return `acheflow-${recipient}:/${relative}`;
+  return `acheflow://${recipient}${relative.slice(prefix.length)}`;
 }
 
 function validateRoute(path) {

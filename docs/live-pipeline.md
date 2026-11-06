@@ -1,11 +1,13 @@
-# Live pipeline
+# Live production and media pipeline
 
 The workspace model is shared by server and native/WASM GUI in
 `acheflow-media-api::workspace`; the GUI's `project.rs` re-exports it. Existing
 workspace JSON receives a generated identity and default offline source pattern size when
 those fields are absent. Importing a workspace in the GUI creates a separate
 identity. Disk/browser catalogs remain local; the server holds one applied
-workspace at a time and does not auto-start after a restart.
+workspace at a time. After a server restart, reapply the saved workspace; media
+production does not resume automatically. [Getting started](getting-started.md)
+covers application/server launch and the first broadcast.
 
 ## User flow
 
@@ -19,7 +21,8 @@ workspace at a time and does not auto-start after a restart.
    Layers remain inside the base canvas. The layer list runs front-to-back;
    Forward/Backward changes stacking order. Source crop insets select a region
    in native input pixels before it is fitted into the destination rectangle.
-   Rotation is not implemented.
+   These controls edit the flat layer canvas. 3D object/viewports and camera
+   transforms are described in [scene controls](controls.md#3d-scenes-and-viewports).
 3. In Mixer select a scene and configure source/track sends and stereo buses.
    Track zero of each distinct video-layer source defaults to Program; additional
    tracks need explicit sends. Destination cards omit routing controls; new outputs

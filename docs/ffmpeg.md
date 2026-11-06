@@ -2,8 +2,9 @@
 
 FFmpeg runs on the Tokio server as a managed executable. Browser WASM and native
 GUI use the same capability response and controls. The native Blitz `net` feature
-provides its HTTP runtime. Browser requests use the page origin; native requests
-use `ACHEFLOW_SERVER_URL` (default `http://127.0.0.1:21295`).
+provides its HTTP runtime. Requests follow the selected workspace server; a
+server-hosted browser client keeps its hosting server. `ACHEFLOW_SERVER_URL` supplies
+the native legacy-workspace startup default (`http://127.0.0.1:21295`).
 
 ## Discovery
 

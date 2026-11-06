@@ -7,7 +7,6 @@ import plistlib
 import shutil
 import subprocess
 import sys
-import tempfile
 
 from runtime_libraries import bundle_libraries
 
@@ -54,46 +53,32 @@ def sign(app):
     for path in sorted((contents / "MacOS").iterdir()):
         if path.is_file() and path.name != main_executable:
             subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(path)], check=True)
-    for helper in sorted((contents / "Helpers").glob("*.app")):
-        subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(helper)], check=True)
     subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(app)], check=True)
     subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)], check=True)
 
 
-def build_app(output, recipient, binaries, web, version, module_cache):
-    app = output / ("Acheflow.app" if recipient == "client" else "Acheflow Server.app")
+def build_app(output, binaries, web, version):
+    app = output / "Acheflow.app"
     subprocess.run([
         sys.executable, str(Path(__file__).with_name("build-dev-app.py")),
-        "--output", str(app), "--recipient", recipient,
-        "--bundle-id", "com.acheflow.client" if recipient == "client" else "com.acheflow.server.links",
-        "--module-cache", str(module_cache),
-        "--ui-bin" if recipient == "client" else "--server-bin",
-        str(binaries / ("acheflow-ui" if recipient == "client" else "acheflow-server")),
+        "--output", str(app), "--bundle-id", "com.acheflow",
+        "--binary", str(binaries / "acheflow"),
     ], check=True)
     contents = app / "Contents"
     macos = contents / "MacOS"
-    origins = {macos / "acheflow-server": binaries / "acheflow-server"}
-    if recipient == "client":
-        shutil.copy2(binaries / "acheflow-server", macos / "acheflow-server")
-        origins[macos / "acheflow-ui"] = binaries / "acheflow-ui"
-        helper = contents / "Helpers/AcheflowLink.app/Contents/MacOS/acheflow-launcher"
-        origins[helper] = helper
-    else:
-        origins[macos / "acheflow-launcher"] = macos / "acheflow-launcher"
+    origins = {macos / "acheflow": binaries / "acheflow"}
     resources = contents / "Resources"
     resources.mkdir(exist_ok=True)
     copy_extensions(ROOT / "extensions", resources / "extensions")
     shutil.copytree(web, resources / "dist")
     minimum = bundle_libraries(contents, origins)
-    for plist in [contents / "Info.plist", *contents.glob("Helpers/*.app/Contents/Info.plist")]:
+    for plist in [contents / "Info.plist"]:
         info = plistlib.loads(plist.read_bytes())
         info.update(CFBundleVersion=version, LSMinimumSystemVersion=minimum)
         plist.write_bytes(plistlib.dumps(info))
     shutil.copy2(ROOT / "crates/acheflow-ui/assets/DejaVu-LICENSE.txt", resources)
     sign(app)
-    for name, label in [("acheflow-server", "acheflow-server"), ("acheflow-ui", "Acheflow")]:
-        if (macos / name).exists():
-            verify_version(macos / name, label, version)
+    verify_version(macos / "acheflow", "Acheflow", version)
     return app
 
 
@@ -121,23 +106,20 @@ def main():
     if not args.skip_build:
         subprocess.run([sys.executable, str(ROOT / "extensions/build.py")], check=True)
         profile = ["--release"] if args.profile == "release" else []
-        subprocess.run([cargo, "build", "--locked", *profile, "-p", "acheflow-ui", "-p", "acheflow-server", "--bins"], cwd=ROOT, check=True)
+        subprocess.run([cargo, "build", "--locked", *profile, "-p", "acheflow", "--bin", "acheflow"], cwd=ROOT, check=True)
         subprocess.run(["trunk", "build", *profile], cwd=ROOT, check=True)
     binaries = Path(metadata["target_directory"]) / args.profile
-    for name, label in [("acheflow-ui", "Acheflow"), ("acheflow-server", "acheflow-server")]:
-        verify_version(binaries / name, label, version)
+    verify_version(binaries / "acheflow", "Acheflow", version)
     web = ROOT / "dist"
     if not (web / "index.html").is_file() or not list(web.glob("*.wasm")):
         raise ValueError("Build the browser client with trunk before packaging")
     output.mkdir(parents=True)
-    with tempfile.TemporaryDirectory(prefix="acheflow-swift-") as temporary:
-        apps = [build_app(output, recipient, binaries, web, version, Path(temporary))
-                for recipient in ("client", "server")]
+    apps = [build_app(output, binaries, web, version)]
     shutil.copy2(ROOT / "docs/desktop-installation.md", output / "INSTALL.md")
     inventory = {str(path.relative_to(output)): hashlib.sha256(path.read_bytes()).hexdigest()
                  for path in sorted(output.rglob("*")) if path.is_file()}
     (output / "package.json").write_text(json.dumps({"version": version, "profile": args.profile,
-        "architecture": subprocess.check_output(["/usr/bin/lipo", "-archs", str(apps[0] / "Contents/MacOS/acheflow-ui")], text=True).strip(),
+        "architecture": subprocess.check_output(["/usr/bin/lipo", "-archs", str(apps[0] / "Contents/MacOS/acheflow")], text=True).strip(),
         "signing": "ad-hoc; not notarized", "sha256": inventory}, indent=2) + "\n")
     if archive.exists():
         raise ValueError(f"Archive already exists: {archive}")

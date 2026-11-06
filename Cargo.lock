@@ -28,6 +28,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "acheflow"
+version = "0.1.3"
+dependencies = [
+ "acheflow-client",
+ "acheflow-extension-api",
+ "acheflow-launcher",
+ "acheflow-server",
+ "acheflow-ui",
+ "blitz-shell",
+ "block2",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "tokio",
+ "winit",
+]
+
+[[package]]
 name = "acheflow-client"
 version = "0.1.3"
 dependencies = [
@@ -166,7 +184,9 @@ dependencies = [
  "anyrender",
  "base64 0.22.1",
  "blitz-dom",
+ "blitz-net",
  "blitz-paint",
+ "blitz-shell",
  "blitz-traits",
  "chrono",
  "console_error_panic_hook",
@@ -190,6 +210,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
+ "webbrowser",
  "wgpu 30.0.1",
  "wgpu_context",
  "winit",

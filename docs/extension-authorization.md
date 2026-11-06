@@ -39,7 +39,7 @@ masking preserves the original value for submission and normal editing/selection
 No Acheflow application IDs or secrets are inserted automatically. Registering your
 own application lets you choose its owner, trust and quota; creating extra Google
 client IDs inside the same project does not create separate quota. See the
-[provider setup and registration record](provider-registration.md).
+[provider setup guide](provider-setup.md).
 
 The host supplies `environment.link` as
 `https://app.acheflow.com/fwd/<extension_id>`; the extension declares only its
@@ -67,10 +67,9 @@ credentials or automatic application defaults.
   The guest uses an authorization code with S256 PKCE and can renew a returned
   refresh token. Enter the Desktop client's application secret in local Application
   setup; it is stored with that workspace's credentials and is never sent to the
-  Acheflow server or browser. Google's documentation labels the parameter optional,
-  but the registered Acheflow Desktop client rejects exchange without it with
-  `invalid_request: client_secret is missing.` The manifest therefore requires it.
-  Live acceptance of a configured client must be checked separately from registration.
+  Acheflow server or browser. The current guest manifest requires this input before
+  Connect. Qualify the configured application's token exchange and renewal
+  separately from creating its registration.
 - Google browser: create a **Web application** OAuth client with the current browser
   origin authorized. `extensions/youtube/youtube-oauth.js` uses Google Identity
   Services' token model. No application secret or refresh token enters the browser.
@@ -95,7 +94,7 @@ without a refresh mechanism require reconnection after expiry.
 
 ## Storage and lifetime
 
-On this Mac, committed native credentials use macOS Keychain. Records are scoped to
+On macOS, committed native credentials use Keychain. Records are scoped to
 the selected server, workspace, extension and public application ID. One account is
 active per extension/workspace/application slot. Disconnect removes that record;
 disable stops the local instance without deleting the saved account. A locked or

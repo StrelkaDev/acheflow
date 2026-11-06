@@ -33,7 +33,7 @@ impl fmt::Debug for Request {
     }
 }
 impl Request {
-    /// Normalize OS-only scheme aliases before entering the canonical IPC API.
+    /// Normalize the single OS scheme before entering the canonical HTTPS IPC API.
     pub fn normalize(self, recipient: ForwardRecipient) -> Result<Self, ActivationError> {
         let Self::Forward { url } = self else {
             return Ok(self);
@@ -41,17 +41,34 @@ impl Request {
         if url.len() > MAX_FORWARD_URL_BYTES {
             return Err(ActivationError::InvalidLink);
         }
-        let scheme = match recipient {
-            ForwardRecipient::Client => "acheflow-client://",
-            ForwardRecipient::Server => "acheflow-server://",
+        let (scheme, prefix) = match recipient {
+            ForwardRecipient::Client => ("acheflow://client/", ""),
+            ForwardRecipient::Server => ("acheflow://server/", "/server"),
         };
         let url = match url.strip_prefix(scheme) {
-            Some(route) => format!("{}/{route}", recipient.origin()),
+            Some(route) => format!("{}{prefix}/{route}", recipient.origin()),
             None => url,
         };
         let request = Self::Forward { url };
         request.validate(recipient)?;
         Ok(request)
+    }
+    pub fn route(self) -> Result<(ForwardRecipient, Self), ActivationError> {
+        let recipient = match &self {
+            Self::Show => ForwardRecipient::Client,
+            Self::Forward { url } if url.starts_with("acheflow://server/") => {
+                ForwardRecipient::Server
+            }
+            Self::Forward { url } if url.starts_with("acheflow://client/") => {
+                ForwardRecipient::Client
+            }
+            Self::Forward { url } => {
+                ForwardLink::parse(url)
+                    .map_err(|_| ActivationError::InvalidLink)?
+                    .recipient
+            }
+        };
+        Ok((recipient, self.normalize(recipient)?))
     }
     pub fn validate(&self, recipient: ForwardRecipient) -> Result<(), ActivationError> {
         if let Self::Forward { url } = self {
@@ -159,7 +176,7 @@ pub fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Command, A
         [flag, url] if flag == "--forward" => {
             Ok(Command::Run(Request::Forward { url: url.clone() }))
         }
-        [url] if url.starts_with("https://") || url.starts_with("acheflow-") => {
+        [url] if url.starts_with("https://") || url.starts_with("acheflow://") => {
             Ok(Command::Run(Request::Forward { url: url.clone() }))
         }
         _ => Err(ActivationError::InvalidArguments),
@@ -182,45 +199,96 @@ pub fn read_link(reader: impl Read) -> Result<Request, ActivationError> {
 mod tests {
     use super::*;
     #[test]
+    fn unified_uri_preserves_payload_and_rejects_recipient_substitution() {
+        for (recipient, authority, prefix) in [
+            (ForwardRecipient::Client, "client", ""),
+            (ForwardRecipient::Server, "server", "/server"),
+        ] {
+            let request = Request::Forward {
+                url: format!("acheflow://{authority}/fwd/example/open?value=a%2Bb#opaque=x"),
+            };
+            let (selected, _) = request.clone().route().unwrap();
+            assert_eq!(selected, recipient);
+            let Request::Forward { url } = request.clone().normalize(recipient).unwrap() else {
+                panic!()
+            };
+            assert_eq!(
+                url,
+                format!("https://app.acheflow.com{prefix}/fwd/example/open?value=a%2Bb#opaque=x")
+            );
+            assert_eq!(Request::Forward { url }.route().unwrap().0, recipient);
+            let other = if recipient == ForwardRecipient::Client {
+                ForwardRecipient::Server
+            } else {
+                ForwardRecipient::Client
+            };
+            assert!(request.normalize(other).is_err());
+        }
+        for url in [
+            "acheflow://fwd/example/open",
+            "acheflow://client:80/fwd/example/open",
+            "acheflow://server@client/fwd/example/open",
+            "acheflow-client://fwd/example/open",
+            "acheflow-server://fwd/example/open",
+        ] {
+            assert!(
+                Request::Forward { url: url.into() }
+                    .normalize(ForwardRecipient::Client)
+                    .is_err()
+            );
+        }
+    }
+    #[test]
     fn os_schemes_preserve_payloads_and_cannot_change_recipient_or_authority() {
         for (recipient, scheme) in [
-            (ForwardRecipient::Client, "acheflow-client"),
-            (ForwardRecipient::Server, "acheflow-server"),
+            (ForwardRecipient::Client, "acheflow://client"),
+            (ForwardRecipient::Server, "acheflow://server"),
         ] {
             let suffix = "fwd/example/oauth/callback?code=a%2Bb&state=x%3Dy#extra=opaque";
             let request = Request::Forward {
-                url: format!("{scheme}://{suffix}"),
+                url: format!("{scheme}/{suffix}"),
             }
             .normalize(recipient)
             .unwrap();
             let Request::Forward { url } = request else {
                 panic!("expected forwarding");
             };
-            assert_eq!(url, format!("{}/{suffix}", recipient.origin()));
+            assert_eq!(
+                url,
+                format!(
+                    "{}{}{}",
+                    recipient.origin(),
+                    if recipient == ForwardRecipient::Server {
+                        "/server/"
+                    } else {
+                        "/"
+                    },
+                    suffix
+                )
+            );
             for invalid in [
-                "acheflow-other://fwd/example/open",
-                "acheflow-client://evil@fwd/example/open",
-                "acheflow-client://fwd:80/example/open",
-                "acheflow-client://fwd/example/open/../other",
-                "acheflow-client://fwd/example/open/%2Fsecret",
-                "acheflow-client://fwd/example/open?bad=%0a",
-                "acheflow-client://fwd/example/open\n",
+                "evil@fwd/example/open",
+                "fwd:80/example/open",
+                "fwd/example/open/../other",
+                "fwd/example/open/%2Fsecret",
+                "fwd/example/open?bad=%0a",
+                "fwd/example/open\n",
             ] {
                 assert!(
                     Request::Forward {
-                        url: invalid.into()
+                        url: format!("{scheme}/{invalid}")
                     }
                     .normalize(recipient)
                     .is_err()
                 );
             }
             let other = match recipient {
-                ForwardRecipient::Client => "acheflow-server",
-                ForwardRecipient::Server => "acheflow-client",
+                ForwardRecipient::Client => "acheflow://server",
+                ForwardRecipient::Server => "acheflow://client",
             };
             assert!(
                 Request::Forward {
-                    url: format!("{other}://{suffix}")
+                    url: format!("{other}/{suffix}")
                 }
                 .normalize(recipient)
                 .is_err()

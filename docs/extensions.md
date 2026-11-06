@@ -20,7 +20,7 @@ in the logic-server process.
 ```sh
 rustup target add wasm32-unknown-unknown
 python3 extensions/build.py
-cargo run -p acheflow-server --locked
+cargo run -p acheflow --locked -- --server
 ```
 
 `extensions/` is a separate Cargo workspace. `guest-sdk` wraps the checked linear
@@ -31,7 +31,7 @@ for low-level sandbox tests, but provider sources are Rust.
 
 Install server logic directories containing `manifest.json` and a module beneath
 `ACHEFLOW_EXTENSIONS_DIR`. Otherwise discovery uses `./extensions`, falling back
-to `extensions` beside the server executable. Restart the server to discover new
+to `extensions` beside the executable or packaged `Contents/Resources/extensions`. Restart the server to discover new
 installations. No provider list is compiled into the host. Only directories with
 manifests are considered. Maximum: 8 installations, 64 directory entries inspected,
 64 KiB manifest, 4 MiB module. Incompatible draft v1 manifests are rejected; build
@@ -48,8 +48,8 @@ v2 guests alongside the v2 host rather than silently reinterpreting the old ABI.
 ```
 
 Native provider discovery uses `ACHEFLOW_CLIENT_EXTENSIONS_DIR` when explicitly set;
-otherwise it tries `./extensions`, then `extensions` beside the client executable,
-then the client catalog bundled during compilation. An explicit unavailable directory
+otherwise it tries `./extensions`, then executable-relative or packaged extension
+directories, then the client catalog bundled during compilation. An explicit unavailable directory
 reports an installation error and does not silently fall back. Browser providers are
 bundled automatically from client manifests in the guest workspace: after adding a
 Rust guest/manifest and running `extensions/build.py`, rebuild the UI. No provider
@@ -64,8 +64,9 @@ New/legacy entries default to disabled; disabled cards collapse and retain confi
 Client toggles edit local workspace preferences without issuing server extension
 commands. They do not grant server permissions or connect an account by themselves.
 Server logic toggles retain their existing enabled-guest lifecycle and panel actions.
-The account UI/runtime scheduling is still pending; connected executors can already
-register separately through MCP. Policy and active capabilities are shown separately.
+Provider WASM account panels support local Connect/Disconnect and declared
+application setup. Continuous executor scheduling is separate; authorized executors
+can register through MCP. Policy and live capabilities are shown separately.
 
 ## Commands and events
 
@@ -154,8 +155,9 @@ cannot be overridden. Connections/sends have ten-second deadlines. Service welco
 interpreted by the guest. No redirects, HTTP, userinfo URLs or ungranted origins.
 `storage` stores a JSON `value` up to 64 KiB for this workspace/extension/session.
 Neither local storage nor credentials enter UI/MCP snapshots or exported workspaces.
-The native runtime holds credentials only in memory, one workspace/account per instance;
-there is no durable vault yet. Secret stores allow at most 32 handles of 8 KiB.
+The native execution runtime uses local credential handles, one workspace/account
+per instance. macOS account panels commit credentials to Keychain and can restore
+them into a matching runtime; browser account credentials remain in memory. Secret stores allow at most 32 handles of 8 KiB.
 Credential replacement is local to the executor; dispose the old runtime and withdraw
 its registration before connecting another account/generation.
 
@@ -163,7 +165,8 @@ The server accepts only declared public settings and rejects `secret: true` sett
 removed manual token fields and unknown extension configuration. There is no manual
 Save on server / Remove credential UI, `set_extension_secret` action or
 `configured_secrets` snapshot field. Client OAuth and local account panels are not
-forwarded by the typed MCP adapter. Browser/native account UI integration is pending.
+forwarded by the typed MCP adapter. Account UI is local to the client and does not
+start an executor by itself.
 
 wasmi 2.0.0 limits each call to 10 million fuel, 16 MiB linear memory, 1 MiB
 input/output and 64 effects. Host JSON/copy/template work also consumes fuel. Queues

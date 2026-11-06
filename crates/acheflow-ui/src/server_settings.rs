@@ -146,6 +146,18 @@ fn local_target(workspace: &Workspace, port: u16) -> bool {
         && url.path() == "/"
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn local_endpoint_if_current(
+    workspace: &Workspace,
+    identity: &(String, String),
+    port: u16,
+) -> Option<String> {
+    (identity.0 == workspace.id
+        && identity.1 == workspace.server_url
+        && local_target(workspace, port))
+    .then(|| format!("http://127.0.0.1:{port}"))
+}
+
 #[component]
 pub(crate) fn ServerSettings(
     project: Signal<Workspace>,

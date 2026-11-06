@@ -1,16 +1,15 @@
 # Extension contract v2: provider-neutral host
 
-Status: accepted by the project owner, 2026-11-02. Supersedes provider-specific
-host bindings in SPEC-extensions.md and SPEC-twitch.md.
+Status: accepted; the governing contract for client integrations and server logic.
 
-Authentication amendment, accepted 2026-11-03:
+Credential ownership:
 [ADR-002](decisions/002-client-execution-and-workspace-capabilities.md) moves all
 integration/bot/OAuth and external AI credentials and platform I/O to clients.
 The server receives normalized events, applies logic and returns typed instructions
 for an authorized client to execute. Workspace capabilities may be configured
 manually through MCP metadata or registered by a connected client, without secrets.
 Server credential storage and provider transports have been removed. Execution is specified in
-[the execution specification](SPEC-client-execution.md). A later managed executor/AI
+[the client execution guide](client-executor.md). A later managed executor/AI
 service is optional and acts as a client, not a credential store in the logic server.
 
 ## Ownership
@@ -43,7 +42,7 @@ by provider WASM guests; shared UI only renders their generic controls. OAuth fl
 permissions, validation and renewal stay under `extensions/`. Committed native Mac
 credentials use the client's system vault; browser credentials remain session-local.
 See [local authorization](extension-authorization.md) and the remaining executor
-boundary in [SPEC-client-execution.md](SPEC-client-execution.md).
+boundary in [client-executor.md](client-executor.md).
 
 ### Native streaming transport
 

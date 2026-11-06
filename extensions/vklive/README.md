@@ -31,3 +31,6 @@ Sources: [API entry point](https://dev.live.vkvideo.ru/docs/index),
 [authorization](https://dev.live.vkvideo.ru/docs/main/authorization),
 [chat](https://dev.live.vkvideo.ru/docs/method/chat),
 [channel](https://dev.live.vkvideo.ru/docs/method/channel).
+
+Use [provider setup](../../docs/provider-setup.md) for user-owned application registration.
+Do not include live application/account identifiers or callback data in examples.

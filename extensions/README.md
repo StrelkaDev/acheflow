@@ -33,3 +33,6 @@ reference declared secret slots. Each platform supplies its own instructions and
 optional active address source. The SDK emits generic setting/copy controls; the
 host resolves them against the current installed/enabled extension. Another
 provider needs only its manifest and guest, with no shared UI or server edit.
+
+Use [provider setup](../docs/provider-setup.md) for user-owned application registration.
+Do not include live application/account identifiers or callback data in examples.

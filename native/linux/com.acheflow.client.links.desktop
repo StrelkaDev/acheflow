@@ -1,7 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Acheflow Client Link
-Exec=acheflow-link client %u
-NoDisplay=true
-Terminal=false
-MimeType=x-scheme-handler/acheflow-client;

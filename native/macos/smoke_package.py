@@ -20,14 +20,23 @@ def free_port():
 
 def smoke(app, version, working):
     subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)], check=True)
-    binary = app / "Contents/MacOS/acheflow-server"
+    binary = app / "Contents/MacOS/acheflow"
+    assert {p.name for p in binary.parent.iterdir()} == {"acheflow"}
+    assert not (app / "Contents/Helpers").exists()
+    handler = app / "Contents/Info.plist"
+    import plistlib
+    info = plistlib.loads(handler.read_bytes())
+    assert info["CFBundleURLTypes"][0]["CFBundleURLSchemes"] == ["acheflow"]
     environment = {k: v for k, v in os.environ.items() if not k.startswith(("ACHEFLOW_", "DYLD_"))}
+    # Unix-domain sockets have a short platform path limit; extracted package
+    # paths intentionally contain spaces and may exceed that limit.
+    runtime = tempfile.TemporaryDirectory(prefix="af-link-", dir="/tmp")
     environment.update(PATH="/usr/bin:/bin", ACHEFLOW_FFMPEG="/nonexistent/ffmpeg",
-                       ACHEFLOW_DESKTOP_INSTANCE="a" * 32)
+                       ACHEFLOW_DESKTOP_INSTANCE="a" * 32, ACHEFLOW_RUNTIME_DIR=str(Path(runtime.name) / "run"))
     port, rtmp = free_port(), free_port()
     while port == rtmp:
         rtmp = free_port()
-    process = subprocess.Popen([str(binary), "--desktop-managed", "--listen", "127.0.0.1",
+    process = subprocess.Popen([str(binary), "--server", "--native-links", "--desktop-managed", "--listen", "127.0.0.1",
         "--port", str(port), "--rtmp-listen", "127.0.0.1", "--rtmp-port", str(rtmp),
         "--config", str(working / "server.json")], cwd=working, env=environment,
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -62,6 +71,7 @@ def smoke(app, version, working):
             process.kill()
             process.wait()
         process.stderr.close()
+        runtime.cleanup()
     print(f"PASS {app.name}: version, identity, guest, web/WASM, graceful stop; no developer PATH/FFmpeg")
 
 
@@ -76,12 +86,12 @@ def main():
         assert len(roots) == 1
         package = roots[0]
         assert {path.name for path in package.iterdir()} == {
-            "Acheflow.app", "Acheflow Server.app", "INSTALL.md", "package.json"
+            "Acheflow.app", "INSTALL.md", "package.json"
         }, "Distribution includes unexpected build artifacts"
         manifest = json.loads((package / "package.json").read_text())
         for name, checksum in manifest["sha256"].items():
             assert hashlib.sha256((package / name).read_bytes()).hexdigest() == checksum, name
-        for name in ["Acheflow.app", "Acheflow Server.app"]:
+        for name in ["Acheflow.app"]:
             working = installed / (name + " data")
             working.mkdir()
             smoke(package / name, manifest["version"], working)

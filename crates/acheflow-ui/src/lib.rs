@@ -14,6 +14,8 @@ mod live_client;
 mod media;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_activation;
+#[cfg(target_os = "macos")]
+pub mod native_window;
 mod project;
 mod scene_canvas;
 mod scene_geometry;
@@ -87,8 +89,6 @@ fn font_context() -> dioxus_native::FontContext {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn launch_native() -> Result<(), String> {
     use acheflow_launcher::Command;
-    #[cfg(not(unix))]
-    use acheflow_launcher::{ActivationError, Request};
     let command =
         acheflow_launcher::parse_args(std::env::args_os().skip(1)).map_err(|e| e.to_string())?;
     let request = match command {
@@ -107,6 +107,13 @@ pub fn launch_native() -> Result<(), String> {
             acheflow_launcher::read_link(std::io::stdin().lock()).map_err(|e| e.to_string())?
         }
     };
+    launch_native_request(request)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn launch_native_request(request: acheflow_launcher::Request) -> Result<(), String> {
+    #[cfg(not(unix))]
+    use acheflow_launcher::{ActivationError, Request};
     #[cfg(unix)]
     {
         use acheflow_extension_api::forwarding::ForwardRecipient;

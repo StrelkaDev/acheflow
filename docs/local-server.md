@@ -1,10 +1,9 @@
 # Desktop-owned local server
 
-DL-09 supplies the native `acheflow_client::server` lifecycle service. DL-10
-connects it to Settings / Server, with opt-in startup and exit preferences.
-Browser builds show connection availability and an editable workspace endpoint
-(or the fixed hosting server), without local process controls. Unified
-executable/URI dispatch remains DL-13.
+The native `acheflow_client::server` service launches and monitors a child server
+for the desktop studio. Settings / Server uses it for lifecycle controls and exit
+policy. Browser clients show connection state without local process controls.
+The production desktop and server share the `acheflow` executable.
 
 ## Desktop settings
 
@@ -17,23 +16,28 @@ readiness; a remote target remains configured until Use local server is chosen.
 
 The workspace catalog stores global HTTP/RTMP ports, `start_with_client` and
 `keep_running_on_exit` preferences. Both lifecycle preferences default to false,
-including catalogs saved before this feature. They stay outside workspace exports.
+including catalogs saved before this feature. A configured local/default target
+starts a server on desktop startup if none is available, regardless of the opt-in
+preference; that preference also starts a local server for remote workspaces.
+Independent servers are inspected without adoption. These preferences stay outside
+workspace exports.
 The managed data directory is `server` beside the native workspace catalog.
 The owning Tokio runtime outlives the UI tree and awaits the exit policy after
 the window closes. Browser clients never apply these process preferences.
 
 ## Launch and ownership
 
-`LaunchConfig::bundled(directory)` resolves a fixed `acheflow-server` sibling of
-the client executable (`.exe` on Windows), including the macOS
-`Contents/MacOS` layout in the [desktop distribution](desktop-installation.md).
-There is no PATH search or shell. A development build can place both in `target/debug`
-or pass an explicit absolute binary path. Missing binaries fail with an actionable
+`LaunchConfig::bundled(directory)` reuses the installed `acheflow` executable
+(`.exe` on Windows), including the macOS `Contents/MacOS` layout in the
+[desktop distribution](desktop-installation.md). Development `acheflow-ui` resolves
+a fixed `acheflow` sibling. Explicit `server_args` select `--server`, plus
+`--native-links` on Unix, independently of the filename. There is no PATH search or shell. Tests/custom callers
+can supply an explicit absolute binary and its mode arguments. Missing binaries fail with an actionable
 status. Data/configuration uses an explicit absolute application-data directory,
 never the Finder/caller working directory.
 
 `LocalServer::new()` runs inside a Tokio runtime. `start(config)` first checks
-`acheflow-server --version`, with a three-second deadline and bounded output;
+`acheflow --server --version`, with a three-second deadline and bounded output;
 the version must exactly match the client's package version. It then checks the
 requested HTTP and RTMP ports, spawns the child with argument-array invocation,
 and waits for readiness. HTTP defaults to `127.0.0.1:21295`, RTMP to
@@ -81,9 +85,9 @@ Start clears the previous run's output; stop keeps the final output.
 The server's explicit `--desktop-managed` mode observes its private stdin pipe;
 EOF, an unrecognized byte, or a read error initiates existing graceful shutdown.
 The private `D` command releases parent lifetime monitoring and changes
-`desktop_attached` to false. This mode conflicts with native activation flags and
-cannot hand off to another process. Ordinary standalone server stdin behavior is
-unchanged. Native server link reception remains the separate opt-in launcher path.
+`desktop_attached` to false. Managed lifetime stdin conflicts only with `--forward-stdin`; native link
+reception uses a separate private socket. Ordinary standalone server stdin
+behavior is unchanged. A standalone server opts in with `--native-links`.
 
 `stop()` closes only the captured child pipe, waits up to twelve seconds, and
 force-kills/reaps that same `Child` if needed (a further two-second wait).
@@ -111,8 +115,8 @@ the first manager's server, but cannot stop it.
 
 ## Verification
 
-`cargo test --offline --locked -p acheflow-server --test owned_server` exercises
-the production executable for readiness, matching identity/version, saved-listener
+`cargo test --locked -p acheflow --test owned_server` exercises
+the unified production executable for readiness, matching identity/version, saved-listener
 overrides, graceful stop/restart, owner drop, crash and cross-manager isolation.
 Small real executable fixtures exercise incompatible versions, startup timeout,
 large diagnostic output, canceled startup, wrong launch identity and forced

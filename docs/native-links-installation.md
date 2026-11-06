@@ -1,180 +1,134 @@
-# Native forwarding installation and hosting
+# Native link installation
 
-These are DL-06 artifacts, not a signed release. The app return page is deployed
-as recorded below. Server/client activation and delivery follow
-[forwarding.md](forwarding.md). The generator itself does not change DNS, publish
-pages, install handlers or sign software automatically.
+Acheflow ships one application, one `acheflow` executable and one `acheflow://` scheme.
+Client URIs use `acheflow://client/fwd/<extension>/<action>/...`; server URIs use
+`acheflow://server/fwd/<extension>/<action>/...`. Canonical HTTPS equivalents are
+`https://app.acheflow.com/fwd/...` and `https://app.acheflow.com/server/fwd/...`.
+OAuth callbacks remain client-only. See [forwarding.md](forwarding.md) for the
+runtime security/lifecycle contract and [desktop-installation.md](desktop-installation.md)
+for complete packages.
 
-## macOS bundles
-
-For a complete client/server distribution with extension artifacts, browser UI and
-relocated runtime libraries, use [desktop-installation.md](desktop-installation.md).
-The commands below remain minimal development adapters for isolated link tests.
-
-Build the matching Rust binaries, then create new unsigned output bundles:
+## macOS development bundle
 
 ```sh
-cargo build -p acheflow-ui -p acheflow-server -p acheflow-launcher --bins
+cargo build -p acheflow --bin acheflow --locked
 python3 native/macos/build-dev-app.py \
-  --output target/Acheflow.app --recipient client \
-  --bundle-id com.acheflow.client --ui-bin target/debug/acheflow-ui
-python3 native/macos/build-dev-app.py \
-  --output target/AcheflowServer.app --recipient server \
-  --bundle-id com.acheflow.server.links --server-bin target/debug/acheflow-server
+  --output target/Acheflow.app --bundle-id com.acheflow \
+  --binary target/debug/acheflow
 ```
 
-The client GUI retains its own app identity. Its URL adapter is
-`Acheflow.app/Contents/Helpers/AcheflowLink.app` with identity
-`com.acheflow.client.links`. The server app is itself the AppKit URL adapter,
-identity `com.acheflow.server.links`, with the Rust server at
-`Contents/MacOS/acheflow-server`. Each declares only its own custom scheme and
-`NSUserActivityTypeBrowsingWeb`; neither registers as a general HTTPS handler.
-The adapters pass URLs over stdin and select fixed bundled executables without a
-shell. Finder launches use `~/Library/Application Support/Acheflow/Client` or
-`…/Server` as their working directory; the standalone Rust client's existing
-workspace storage location is unchanged. `ACHEFLOW_CONFIG` may specify an absolute
-server configuration path. Separate profiles may set `ACHEFLOW_RUNTIME_DIR`.
+Choose a new output path. The app has one executable,
+`Contents/MacOS/acheflow`, and registers the shared scheme and browsing user
+activities on the main bundle. There is no nested launcher application.
 
-Without `--bundle-id`, builds use development identities. If those identities are
-used for domain testing, pass their exact handler IDs to the site generator too.
-The development bundle copies the named binary only. The DL-11 packager adds the
-matching owned server, extensions, web assets and runtime libraries. Developer ID
-signing and notarization remain external rollout requirements.
+At startup the executable parses explicit arguments before creating any UI. A
+normal macOS app launch first installs its AppKit event receiver and waits for the
+launch intent. A URL launch selects its recipient before creating a window; a
+server link starts the server runtime without constructing the studio. Ordinary
+launch creates the studio after that selection. Later URL events use bounded
+background IPC to reach the selected recipient. A missing recipient can start
+another process of the same executable; URLs travel through stdin without a shell
+or payload logging. One executable does not require client and server to share a
+process lifetime.
 
-After preparing the final signed installation, install it in Applications and
-launch its URL adapter once so LaunchServices discovers it. For the client this
-means opening the nested `AcheflowLink.app`; for the server, opening its main app.
-Then verify the exact scheme-to-adapter registration on the target macOS version.
-This repository does not run registration or change the user's default handlers.
-Test from an actual Applications installation. On macOS 27.0.1, the DL-12 helper
-could be present in LaunchServices' claims while remaining unavailable for URL
-selection in the system temporary directory; the same ad-hoc signed bundle under
-the user's Applications directory resolved and received the Twitch OAuth callback.
+`ACHEFLOW_CONFIG` may select server configuration; otherwise an OS-activated
+server uses `~/Library/Application Support/Acheflow/Server`. `ACHEFLOW_RUNTIME_DIR`
+isolates local client/server receivers. Ordinary standalone servers can opt in
+with `acheflow --server --native-links`. URL parameters cannot choose executables
+or profiles.
+
+The development builder copies only the named Rust binary. The distribution
+packager adds extensions, web assets and runtime libraries. Development identities
+default to `com.acheflow.development`; generated association metadata must match
+the actual installed main bundle identity.
+
+Open the installed app for LaunchServices discovery and verify scheme registration
+on the target macOS. Build scripts do not change the user's default handlers.
+Temporary development bundles, ad-hoc signatures and local IPC tests do not
+establish installed signed HTTPS association.
 
 ## Apple HTTPS association
 
-Each host needs a matching AASA file and its adapter needs the associated-domains
-entitlement. Apple describes this two-way binding in
+The app host and main bundle require matching two-way association as described in
 [Supporting associated domains](https://developer.apple.com/documentation/xcode/supporting-associated-domains).
-Universal links arrive as a browsing `NSUserActivity`; the Swift adapter handles
-that callback as documented in
+The application's AppKit delegate receives browsing activities as described in
 [Supporting universal links](https://developer.apple.com/documentation/xcode/supporting-universal-links-in-your-app).
-
-Generate with the real Apple Team ID and registered handler bundle IDs:
 
 ```sh
 python3 native/links/build.py --output target/acheflow-links-signed \
-  --apple-team-id YOURTEAMID \
-  --client-handler-id com.acheflow.client.links \
-  --server-handler-id com.acheflow.server.links
+  --apple-team-id YOURTEAMID --handler-id com.acheflow
 ```
 
-`YOURTEAMID` is an example argument; substitute your actual 10-character ID.
-If the registered Application Identifier Prefix differs from the Team ID, also
-supply `--apple-app-prefix`. Match it to the provisioning profile's application
-identifier. Generated entitlements in `macos/` declare only that recipient's
-`applinks:<host>` domain and identity; AASA claims only `/fwd/*`. It does not claim
-the website, browser client, other subdomains or unrelated paths.
+Replace the example with the real 10-character Team ID. If the Application
+Identifier Prefix differs, supply `--apple-app-prefix`. Generated
+`macos/links.entitlements` identifies the main app and `applinks:app.acheflow.com`.
+One AASA entry claims only `/fwd/*` and `/server/fwd/*`; the browser root and
+ordinary browser navigation remain unclaimed.
 
-Enable Associated Domains for each adapter's App ID, obtain matching provisioning
-profiles and embed each profile in its adapter's `Contents/embedded.provisionprofile`.
-Use an appropriate Apple signing identity to sign inner Rust executables first,
-then the adapter with its generated entitlements, then the enclosing client app.
-Verify signatures, identifiers and granted entitlements before notarization and
-installation. Avoid signing only the outer app or treating generated entitlements
-as proof that Apple granted the capability. Actual identity/profile access and
-installed universal-link validation are external rollout requirements.
+Enable Associated Domains for the main App ID, obtain its matching profile, and
+embed it in the app's `Contents/embedded.provisionprofile`. Sign runtime libraries
+first, then the app with its generated entitlements. Verify signatures, identifiers
+and granted entitlements before notarization and installation. Generated metadata
+does not establish granted Apple capabilities. Signing/profile access and
+installed universal-link verification remain external rollout requirements.
+Local packaging uses ad-hoc signatures only.
 
-## HTTPS hosting
-
-For fallback pages without an Apple identity, omit the signing arguments:
+## Shared-domain HTTPS fallback
 
 ```sh
 python3 native/links/build.py --output target/acheflow-links
 ```
 
-The output contains `app.acheflow.com/` and `server.acheflow.com/` document roots
-and a Caddyfile. The former client domain is not generated. The app host uses
-`forward.html` and `/_acheflow-links/` assets; it never replaces browser `index.html`
-or claims `/` as a native route. Merge the generated app routes/files with the
-actual browser-client deployment when sharing this host. Without a real Team ID,
-the builder emits no AASA file or
-Apple entitlement. Do not publish test identity metadata from fixtures.
+The output contains only `app.acheflow.com/` plus a Caddyfile. Client requests
+`/fwd/*` serve `forward.html`; server requests `/server/fwd/*` serve
+`server-forward.html`. Both load isolated `/_acheflow-links/` assets. The generator
+never replaces the browser client's `index.html`. Merge these files and routes
+with the browser deployment. Without a real Team ID no AASA/entitlement is emitted.
 
-Copy the host document roots to a deployment directory, set `ACHEFLOW_LINK_ROOT`
-to that directory (for example `target/acheflow-links` when serving from the project
-root), and use the generated Caddyfile with the corresponding DNS/TLS configuration.
-The Caddyfile serves
-`/fwd/*` as the fallback page while keeping the original browser address for JS
-validation; association metadata is a separate JSON resource. Other missing paths
-return 404. It sets CSP, no-referrer, no-store, frame and MIME restrictions, and
-adds no access-log directive. Caddy itself is a deployment dependency; its config
-has not been executed in this workspace.
+Caddy uses `ACHEFLOW_LINK_ROOT` as the parent of the host document root. It
+preserves the original URL, serves association metadata separately as JSON, and
+sets no-store, no-referrer, CSP, frame and MIME restrictions for link resources.
+Caddy itself remains a deployment dependency; its configuration is not validated
+by local artifact generation alone.
 
-For Cloudflare Pages Direct Upload, upload only the contents of the app document
-root, including `_headers`, `_redirects` and `/_acheflow-links/`. The generated
-200 rewrite keeps `/fwd/*` in the browser address. Its destination is `/forward`,
-because Pages canonicalizes `.html` destinations with a redirect. Add the custom
-domain in Pages and, with external DNS, point its CNAME at the project's Pages
-hostname. This does not require moving the parent zone.
+For Cloudflare Pages Direct Upload, upload the host root including `_headers`,
+`_redirects` and isolated assets. The two 200 rewrites target extensionless
+`/forward` and `/server-forward`, avoiding Pages' `.html` redirects. Deploy both
+routes and the shared assets together with the matching installed scheme handler.
+Generated local files do not establish live fallback or AASA support.
 
-On 2026-11-05, `acheflow-app.pages.dev` and the REG.RU CNAME for
-`app.acheflow.com` were deployed. Pages reports the custom domain Active. Both
-Twitch and VK callback paths and all three assets return public HTTPS 200; the
-Twitch page matches the generated bytes, keeps the original URL, and serves the
-required no-store/no-referrer/CSP headers. No AASA was published: signed identity
-and installed universal-link delivery remain unverified.
+Serve AASA over valid public HTTPS without redirects or authentication and check
+Apple CDN propagation. Do not enable analytics or callback-bearing access/debug
+logs. The initial HTTP request reaches hosting infrastructure; client history
+cleanup cannot erase it. Fallback activation requires an explicit click and
+retains the URL only in memory. The Get Acheflow link carries no callback data.
 
-Serve `/.well-known/apple-app-site-association` over valid public HTTPS as JSON,
-without authentication or redirects. Validate each host independently, including
-Apple CDN propagation. Do not enable analytics, request/Referer/body logging or
-CDN traces containing callback URLs. The first HTTP request necessarily reaches
-the hosting infrastructure when the OS/browser chooses the website. The page
-scrubs the browser history entry only after loading; it cannot erase upstream logs.
-The Get Acheflow link points to the product website and carries no callback data.
+## Linux registration artifacts
 
-## Linux desktop adapters
-
-Build `acheflow-link` with the command above. Install it alongside the actual
-`acheflow-ui` and `acheflow-server` binaries in a trusted directory on the desktop
-session's PATH. The adapter resolves its child relative to its own executable,
-not by a caller-supplied path. Install the two `.desktop` files from `native/linux`
-in `~/.local/share/applications`, then explicitly register:
+Install the unified `acheflow` executable in a trusted desktop PATH directory and
+`native/linux/com.acheflow.links.desktop` in `~/.local/share/applications`:
 
 ```sh
-xdg-mime default com.acheflow.client.links.desktop x-scheme-handler/acheflow-client
-xdg-mime default com.acheflow.server.links.desktop x-scheme-handler/acheflow-server
+xdg-mime default com.acheflow.links.desktop x-scheme-handler/acheflow
 ```
 
-The desktop `Exec` entry uses a single `%u` URL argument, following the
+The single `%u` argument follows the
 [Desktop Entry specification](https://xdg.pages.freedesktop.org/xdg-specs/desktop-entry/latest/exec-variables.html).
-It uses no shell or general HTTPS handler. Treat OS-supplied URI arguments as
-sensitive in system process/debug tooling. Native parsing, manifest declarations,
-callback correlation and workspace/instance guards still apply. Reverting a
-registration requires restoring the user's previous scheme-handler preference;
-do not remove an unrelated application's preference. Linux desktop integration
-requires verification on a Linux desktop and does not claim verified HTTPS-domain
-association.
+It invokes `acheflow --forward` without a shell or general HTTPS handler. OS-supplied
+URI arguments are sensitive in process/debug tools. Native parser, manifest,
+workspace, instance and callback checks still apply. Linux desktop registration
+requires validation on Linux. Windows activation is not implemented and no Windows
+handler is advertised.
 
-## Current verification boundaries
+## Migration and rollout
 
-Local checks cover Rust normalization/rejection, fallback payload preservation,
-explicit-click behavior, history cleanup, generator identity separation, native
-Clippy/builds, Swift type-check and unsigned macOS bundle layout. The browser was
-checked at desktop and 320px widths. Its valid-state fixture supplied a dummy
-canonical HTTPS link and replaced OS navigation with a test callback; it did not
-launch an installed handler. The actual localhost page rejects its noncanonical
-origin as expected, with no console warnings/errors.
-
-Signed macOS installation, live AASA delivery, Linux desktop registration
-and complete cold/warm cross-process activation remain unverified. Windows has no
-native activation transport yet, so no working Windows registration is generated.
-A Windows packaged URI handler must be implemented before publishing matching
-web-to-app claims. DL-06 stays open for those acceptance checks.
-DL-12 additionally verified a warm macOS custom-scheme callback from Safari to the
-installed ad-hoc bundle, real Twitch token validation, and authorization restoration
-after restart. It does not establish signed HTTPS association or other platforms.
-
-Future DL-13 introduces one `acheflow://` scheme and one executable with an
-explicit recipient and server-only/client-with-server modes. That design is
-recorded separately; current schemes are temporary transport aliases.
+Replace the separate client/server apps and registrations with the unified app
+and its main-bundle registration. Retire `acheflow-client` / `acheflow-server` handlers and the old
+client/server forwarding domains; the Rust parser rejects them. Restore any
+previous handler preference deliberately when uninstalling, without modifying
+unrelated applications. Preserve workspace files and credentials outside the app.
+Provider callback registrations on `https://app.acheflow.com/fwd/...` stay unchanged.
+Replace hosted fallback JavaScript together with installed handlers: old deployed
+pages emit the old scheme until updated. Domain/signing/default-handler changes
+are separate external rollout actions. Track their product-level completion in
+the [roadmap](roadmap.md), without publishing live registration/test identifiers.

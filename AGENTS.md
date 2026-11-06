@@ -48,3 +48,16 @@ work is a Git task; do not restart implementation or a full feature workflow.
   tests; keep source, manifests and WASM artifacts matched.
 - Publish only from enabled live instances. Test two independent providers and
   lifecycle/cancellation boundaries; use real WASM guests, not native substitutes.
+
+
+## Documentation
+
+- Keep README focused on Acheflow as a content-creation studio, with streaming
+  capabilities described at their actual implementation level.
+- Use `docs/README.md` as the guide index and `docs/roadmap.md` for unfinished work.
+  Update current guides instead of accumulating completed plans or session logs.
+- Use placeholders in examples. Never copy real application/client/account/project,
+  workspace/session or process identifiers, user emails, callback payloads, tokens
+  or machine-specific paths from verification runs into documentation.
+- Check local links, launch commands and identifier leakage after documentation
+  edits. Keep live test evidence in private or ignored temporary artifacts.

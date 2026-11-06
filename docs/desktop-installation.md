@@ -1,23 +1,20 @@
 # Desktop installation
 
-The macOS distribution contains `Acheflow.app` (desktop client with its matching
-local server) and `Acheflow Server.app` (optional standalone server). Install the
-client to manage a local server from Settings / Server, or use it to connect to
-an existing remote server. Install the standalone app only on a machine that
-needs an independently running server. Both use the same package version.
+The macOS distribution contains one `Acheflow.app`. Its `acheflow` executable
+opens the desktop by default and supports headless `--server` operation. The
+desktop starts the same executable as its managed local server when needed.
 
 ## Install and run on macOS
 
-1. Extract the ZIP and copy `Acheflow.app` to Applications. For standalone
-   operation, also copy `Acheflow Server.app`. Keep each `.app` intact: moving
-   individual executables separates them from their runtime libraries and assets.
-2. Open Acheflow, then Settings / Server. Choose **Start server**. The client
-   connects after the bundled server reports readiness. The initial ports are
-   HTTP 21295 and RTMP 1935; change them here before starting if already in use.
-3. Enable **Start local server with the desktop app** if desired. Both autostart
-   and **Keep local server running when the app closes** default to disabled.
-   Stop/Restart control only a server started by this client. An already running
-   or detached server appears external and cannot be stopped by a different client.
+1. Extract the ZIP and copy `Acheflow.app` to Applications. Keep the app intact;
+   its executable depends on the packaged runtime libraries and assets.
+2. Open Acheflow. A workspace targeting its configured local endpoint starts a
+   server if none is available. Settings / Server exposes state, Start/Stop/Restart
+   and ports (initial HTTP 21295, RTMP 1935). A remote target stays remote.
+3. **Start local server with the desktop app** also starts a local server for
+   remote workspaces. **Keep local server running when the app closes** defaults
+   to disabled. An existing independent or detached server remains external;
+   Stop/Restart control only this client's child.
 
 Rust, Python, Xcode and Homebrew are build tools, and are not needed to run the
 installed apps or to start/connect to the local server. The package includes its
@@ -38,7 +35,7 @@ environment. This distribution does not redistribute FFmpeg or its codec librari
 
 The current archive is ad-hoc signed for local execution and has **no Developer ID
 signature or notarization**. Public downloads require the signing/notarization
-rollout described in `docs/native-links-installation.md` in the source repository.
+work described in [native link installation](https://github.com/StrelkaDev/acheflow/blob/main/docs/native-links-installation.md).
 On a trusted local build, follow macOS's Open Anyway flow if prompted; never disable
 Gatekeeper globally. A local smoke test is not proof of downloaded/quarantined or
 signed universal-link behavior.
@@ -57,18 +54,19 @@ Local startup preserves a remote endpoint until **Use local server** is chosen.
 Configure the server's permitted browser origins and HTTPS when hosting a remote
 browser client; desktop process control is available only for the client's own child.
 
-Open `Acheflow Server.app` to run an independent server with native-link reception.
-It uses `~/Library/Application Support/Acheflow/Server/` for configuration and data,
-serves the bundled browser UI on `http://localhost:21295`, and defaults standalone
-HTTP/RTMP listeners to all interfaces. Quit this app to stop its standalone child.
-Do not run it on the same ports as an owned server. For explicit listener/config
-settings, launch the packaged binary from a terminal (no developer tools needed):
+For an independent server, run the same installed executable with `--server`.
+Add `--native-links` to receive same-user server links; omit it for ordinary
+multi-server operation. Explicit listener/configuration flags follow `--server`:
 
 ```sh
-"/Applications/Acheflow Server.app/Contents/MacOS/acheflow-server" \
+"/Applications/Acheflow.app/Contents/MacOS/acheflow" --server --native-links \
   --listen 127.0.0.1 --port 21295 --rtmp-listen 127.0.0.1 --rtmp-port 1935 \
   --config "$HOME/Library/Application Support/Acheflow/Server/acheflow-server.json"
 ```
+
+Standalone defaults bind HTTP/RTMP to loopback (`127.0.0.1`). Remote access
+requires an explicit bind-address change and an appropriate access boundary. Stop a terminal-owned server
+with Ctrl-C. Do not use the same ports as another server.
 
 Direct terminal launches use the caller's working directory. Packaged extensions
 and browser assets are found in the app's `Contents/Resources/` directory;
@@ -80,26 +78,29 @@ listeners and their separate writable data directory.
 
 ## Link handlers
 
-The client includes `Contents/Helpers/AcheflowLink.app`, which declares
-`acheflow-client://`; the standalone app declares `acheflow-server://`. Open the
-installed client helper once to let LaunchServices discover it, and open the
-standalone server app if that recipient is needed. Verify the scheme registration
-on the target macOS version. Packaging does not change default handlers or claim
-general HTTPS links. Provider callbacks still require the installed/enabled
-extension and a current authorization request. Associated-domain identities,
-profiles, entitlements, live AASA hosting and signed activation remain separate
-rollout work. The future unified executable/scheme remains DL-13.
+The main app declares the single
+`acheflow://` scheme. URI authorities `client` and `server` choose their recipient;
+HTTPS routes use `/fwd/*` and `/server/fwd/*` on `app.acheflow.com`. OAuth remains
+client-only. The same executable receives macOS URL events and selects its mode
+before creating the UI. Open the installed app for LaunchServices discovery, then
+verify scheme registration. Packaging does not change the user's default handlers.
+
+Old `acheflow-client://`, `acheflow-server://` and separate forwarding domains are
+rejected. Replace the hosted fallback assets together with the installed handler
+before rollout. Provider callback registrations remain unchanged. Associated-domain
+identities, provisioning, signed activation and live fallback deployment remain
+external rollout; local package verification does not establish them.
 
 ## Build a distribution (maintainers)
 
 From the source checkout on macOS with Rust/WASM target, Trunk and Xcode tools:
 
 ```sh
-python3 native/macos/package.py --output target/acheflow-0.1.3-macos
+python3 native/macos/package.py --output target/acheflow-macos
 ```
 
-This rebuilds the guests, release client/server and release browser UI, checks
-exact binary versions, creates both apps, relocates non-system dynamic libraries,
+This rebuilds the guests, unified release executable and release browser UI, checks
+exact versions, creates one app, relocates non-system dynamic libraries,
 copies available runtime license notices, computes the minimum OS requirement,
 ad-hoc signs inside-out and verifies signatures. It creates a ZIP and SHA-256
 sidecar beside the new output directory. It refuses an existing output/archive.

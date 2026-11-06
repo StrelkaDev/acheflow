@@ -1,7 +1,8 @@
 # Interaction, audience, 3D scenes and MCP
 
 Implementation follows the [provider-neutral v2 contract](extension-contract.md).
-Client account UI, model import, lighting and authored animations are later milestones.
+Local account panels are implemented. Continuous executor integration, model import,
+lighting and authored animations remain unfinished; see the [roadmap](roadmap.md).
 
 ## Extensions and interaction
 
@@ -19,11 +20,13 @@ and connected executors are shown separately for the active workspace.
 
 Client provider cards report a connected executor or **Not connected**. Their toggle
 saves a local preference; it does not register permissions or authorize an account.
-The native library owns WASM, OAuth captures and I/O, while main-UI account connection
-and scheduling remain pending. External executors can already register via MCP using
+Provider WASM panels handle local account connection in the shared UI. The native
+library owns WASM, credential captures and bounded I/O; continuous executor
+scheduling and its studio integration remain separate. External executors can already register via MCP using
 explicit workspace policy without provider installation on the server. There is no
 server token input or server-side platform transport. [Setup and implementation
-limits](client-executor.md) describe the bridge; live accounts remain unverified.
+limits](client-executor.md) describe the bridge. Qualify actual provider operations
+with the configured applications/accounts before production use.
 
 Chat is part of Live / Studio and moves to the shared sidebar during streaming.
 Select All channels or one registered destination; available choices are supplied
@@ -43,7 +46,10 @@ supports 2–5 choices, 15–1800 seconds and the service's text limits. There i
 `!vote` fallback. The same page shows normalized donations and direct/registered
 interactions. User-created and extension-declared interactions use the common
 validated scene action path; users may bind an extension interaction through the
-control API. Chat commands retain normalized role checks and cooldowns.
+control API. Chat commands retain normalized role checks and cooldowns. They invoke only
+registered typed actions for allowed channels/roles; replay and concurrent cooldown
+checks cannot bypass that policy. Reading external chat text does not execute it,
+and no arbitrary shell, code or unrestricted MCP call is a chat action.
 
 Session history retains 2,000 messages with bounded cursor reads and explicit
 gaps. Polls, donations, interactions and channel discovery are session state.
@@ -83,6 +89,9 @@ before that migration step. World space is right-handed, +Y up, camera toward -Z
 default units are legacy canvas pixels. Rotation is Euler XYZ in degrees, and
 perspective FOV is in degrees. Canvas resolution and world dimensions are separate.
 
+Current object types are video viewport planes, colored planes and cubes; model
+import/material/lighting workflows are not implemented.
+
 Live / Scenes has two view modes:
 
 - **Scene editor** uses an independent, transient editor camera. The scene collection
@@ -118,9 +127,9 @@ revisions. The dedicated listener binds only loopback. Generate a token with
 `openssl rand -hex 32`, then configure the server:
 
 ```sh
-export ACHEFLOW_MCP_TOKEN='paste-generated-token-here'
+export ACHEFLOW_MCP_TOKEN="$(openssl rand -hex 32)"
 export ACHEFLOW_MCP_PORT=21296
-cargo run -p acheflow-server --locked
+cargo run -p acheflow --release --locked -- --server
 ```
 
 Configured tokens must be 32+ characters. Without one MCP stays disabled. Configure
@@ -153,9 +162,9 @@ runs a WASM-mapped chat command through a 3D object edit and real encoded output
 Live Twitch OAuth/EventSub/send checks additionally require a registered Client ID
 and user account authorization; fixture tests do not prove that live check.
 Native pointer tests additionally cover 3D picking, axis dragging outside the view,
-Escape cancellation and camera-preview isolation. Run all checks in the [capability map](../CAPABILITY-MAP.md).
+Escape cancellation and camera-preview isolation. Run the relevant checks in the [development guide](development.md).
 
-Official sources: [Twitch device authorization](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#device-code-grant-flow),
+Official sources: [Twitch OAuth flows](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/),
 [chat authorization](https://dev.twitch.tv/docs/chat/authenticating/),
 [EventSub lifecycle](https://dev.twitch.tv/docs/eventsub/handling-websocket-events/),
 [Get Streams](https://dev.twitch.tv/docs/api/reference/#get-streams),

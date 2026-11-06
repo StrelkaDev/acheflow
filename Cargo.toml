@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/acheflow-client", "crates/acheflow-composition", "crates/acheflow-server", "crates/acheflow-ui", "crates/acheflow-extension-api", "crates/acheflow-media-api", "crates/acheflow-control", "crates/acheflow-launcher"]
+members = ["crates/acheflow", "crates/acheflow-client", "crates/acheflow-composition", "crates/acheflow-server", "crates/acheflow-ui", "crates/acheflow-extension-api", "crates/acheflow-media-api", "crates/acheflow-control", "crates/acheflow-launcher"]
 resolver = "3"
 
 [workspace.package]

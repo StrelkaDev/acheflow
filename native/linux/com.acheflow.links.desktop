@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Acheflow Link
+Exec=acheflow --forward %u
+NoDisplay=true
+Terminal=false
+MimeType=x-scheme-handler/acheflow;

@@ -1,6 +1,6 @@
 # Settings persistence and restore
 
-Verified against the client/server implementation on 2026-11-03. Local save,
+Local save,
 applying a workspace to a server, and saving server listener settings are separate
 operations. The logic server has no durable workspace catalog or platform credentials.
 
@@ -15,7 +15,9 @@ operations. The logic server has no durable workspace catalog or platform creden
 | Active workspace and its public capability policy on the server | Server process memory | Apply sends the selected local workspace to its server. Server restart/deactivation clears the active workspace; apply the saved client workspace again. |
 | HTTP/RTMP bind settings and TLS certificate/key **paths** | `acheflow-server.json` relative to the server working directory; `--config` or `ACHEFLOW_CONFIG` selects another file | Loaded at server startup. Saving creates missing parent directories and atomically replaces the file. Listener changes need a restart. |
 | Live client registrations, leases, receipts, chat/session state | Process memory | Not restored as live authority. Reconnect/re-register using a new generation; do not replay uncertain external sends. |
-| Captured provider OAuth credentials in `acheflow-client` | Client runtime memory only | No durable vault yet. Disposing/restarting the executor loses these credentials. They are excluded from server state, client workspace JSON and public MCP DTOs. |
+| Native macOS committed provider accounts/application secrets | Keychain, scoped to server/workspace/extension/application | Local account panels restore matching records; Disconnect removes them. No plaintext fallback. Other native vault adapters remain unfinished. |
+| Browser account credentials and runtime opaque handles | Local process/session memory | Browser reload/disposal loses credentials. A native execution runtime must explicitly receive a matching local account. Values never enter server state, workspace JSON or public MCP DTOs. |
+| Desktop server startup/exit policy and ports | Catalog `preferences.server` | Shared across this catalog; excluded from workspace-only exports. The owned server configuration lives in sibling `server/`. |
 
 A workspace import through **Add from file** creates a new workspace identity.
 Update any executor endpoint's pinned `workspace_id` before using that imported copy.
@@ -32,8 +34,8 @@ Server logic `extensions` settings are included in Apply and their enable/disabl
 commands. The server rejects nonempty client integration maps submitted directly.
 Known installed providers migrate from the older shared `extensions` map when the
 client loads/imports a workspace, without overwriting newer local preferences.
-A client provider still needs a registered executor; saved enablement does not open
-a platform connection on the server. Client preferences survive server-side merges
+An enabled client card can authorize a local account; live server capabilities
+still require an executor. Saved enablement does not open provider I/O on the server. Client preferences survive server-side merges
 and conflict resolution. They are not a server-wide enable/disable switch.
 
 Server `set_client_capabilities` and extension control commands update the active
@@ -78,7 +80,8 @@ arriving after conflict resolution may require another reconciliation.
 and `restart_required`. `PUT /api/server/settings` validates and saves listener/TLS
 path settings, leaving the currently bound listeners unchanged. Invalid settings or
 certificate/key files do not replace the saved JSON. The main UI has no listener
-settings editor; its Settings tab controls client appearance.
+TLS/bind-address editor. Desktop Settings / Server manages the owned process,
+local launch ports and connection; those controls do not hot-rebind active listeners.
 
 Priority on startup: CLI arguments > environment overrides > saved JSON > defaults.
 Remove a corresponding launch override to use a saved value. Saving workspace
@@ -92,14 +95,7 @@ resolution, stale Apply rejection, native disk restore with two isolated workspa
 policy/export roundtrips, catalog permissions/defaults, nested server settings paths,
 fresh server-state loading and failed-write validation preserving the old file.
 
-A separate loopback server and a real Chrome/WebGPU client additionally verified:
-background animation surviving reload; an extension public draft surviving reload;
-a server policy change while the client was disconnected producing a visible
-conflict; choosing the server version and reloading; listener JSON being loaded by
-a restarted server without port flags; and the saved browser workspace restoring
-capability policy through Apply after that restart. The current split additionally
-verifies that migrated client provider preferences survive reload while the API lists
-only server logic, local toggles leave the server revision unchanged, and Apply
-excludes the local provider config entirely.
-The test tab/server were stopped afterward; the user's running server was untouched.
-Live platform OAuth and durable executor credentials remain separate unfinished work.
+Local disk/browser restore and process restart need separate integration checks.
+Verify public drafts/policy across reload, conflict resolution after disconnected
+server edits, listener JSON after restart, and reapplication of the saved workspace.
+Use isolated catalogs and local ports; keep live account data out of test reports.

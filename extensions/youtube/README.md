@@ -35,11 +35,14 @@ are not exposed by this version. API quotas still apply; streaming is not an
 unlimited/free API bypass. Broadcast discovery and audience sampling remain
 periodic. The stream executes in the native provider runtime library; the browser
 account-setup UI remains supported, while an always-on/browser executor is still
-pending under [the execution specification](../../docs/SPEC-client-execution.md).
-No live-account qualification was performed for this implementation.
+unfinished; see [client execution](../../docs/client-executor.md). Qualify actual
+account access, token renewal and the intended operations with your own application.
 
 Sources: [streamList](https://developers.google.com/youtube/data/live/reference/rest/v3/liveChatMessages/streamList),
 [official gRPC example and schema](https://developers.google.com/youtube/data/live/streaming-live-chat),
 [chat insert](https://developers.google.com/youtube/data/live/reference/rest/v3/liveChatMessages/insert),
 [videos](https://developers.google.com/youtube/data/reference/rest/v3/videos/list),
 [desktop OAuth](https://developers.google.com/youtube/data/guides/auth/installed-apps).
+
+Use [provider setup](../../docs/provider-setup.md) for user-owned application registration.
+Do not include live application/account identifiers or callback data in examples.

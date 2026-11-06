@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted by the project owner, 2026-11-03. Server boundary and native client/MCP libraries implemented; UI authorization remains pending.
+Accepted. The server boundary, native client/MCP libraries and provider-owned local
+account panels are implemented. Continuous studio executor integration remains
+unfinished; see [current boundaries](../client-executor.md).
 Supersedes [ADR-001](001-provider-authentication.md), including its server-held
 bot credentials and server-side provider execution.
 
@@ -116,7 +118,8 @@ arbitrarily call tools in the connected client. A suitable application-level
 mapping lets the client register, publish events, retrieve pending instructions
 and report results through typed MCP tools. Action batches may be returned directly
 or retrieved by bounded cursor reads. This requires no public inbound listener on
-the client. These application tools are proposed, not currently registered tools.
+the client. The implemented executor endpoint exposes `acheflow_executor` with
+`register`, `publish`, `claim`, `report` and `unregister` operations.
 
 If client-local MCP tools are used for provider/AI execution, the executor acts as
 their MCP host/client locally. The logic server returns validated domain intents;
@@ -136,8 +139,8 @@ Content reaches a remote/managed AI service only when explicitly configured.
 
 The earlier server-held bot model is removed: there is no server secret-write action,
 credential store or provider HTTP/WebSocket effect handler. Provider manifests are
-client-only and discovered by the client. The owner explicitly chose removal before completing the new account UI;
-client extensions remain unavailable until a registered executor is connected.
+client-only and discovered by the client. Local account authorization runs in client-owned panels. Server-visible provider
+capabilities remain unavailable until an authorized executor registers them.
 
 The native `acheflow-client` library owns WASM provider execution and bounded I/O.
 Its catalog discovers client installations; browser builds bundle those manifests and
@@ -149,12 +152,14 @@ Authenticated MCP executor endpoints register public connections, ingest typed e
 claim instructions and report results. Workspace policy is saved independently of live
 registrations. The shared chat command uses this outbox for client-owned channels.
 
-[The execution specification](../SPEC-client-execution.md) records implemented limits
+[The client execution guide](../client-executor.md) records implemented limits
 and remaining work. Two independent WASM fixture executors are verified through real
 loopback MCP, including receipts and echoes. The actual Twitch/YouTube/VK guests are
 also tested in the client runtime without accounts. Neither proves live OAuth or
-platform access. Browser execution, account UI, durable credentials/intent journals,
-and native provider polls across the new bridge remain pending. A managed executor
+platform access. Continuous browser execution, integrated executor scheduling, durable intent
+journals and native provider polls across the bridge remain unfinished. Native
+macOS account panels persist committed credentials in the system vault; browser
+credentials remain in memory. A managed executor
 service remains optional future work.
 
 ## References

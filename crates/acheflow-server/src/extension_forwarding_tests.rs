@@ -114,7 +114,7 @@ async fn forwarded_actions_reach_only_the_target_real_guest_and_retries_do_not_r
     let intent = request(
         &host,
         forward(
-            "https://server.acheflow.com/fwd/alpha/increment",
+            "https://app.acheflow.com/server/fwd/alpha/increment",
             &instance(&host, "alpha"),
         ),
     );
@@ -141,8 +141,8 @@ async fn server_forwarding_rejects_wrong_recipient_missing_target_undeclared_act
     let current = instance(&host, "alpha");
     for url in [
         "https://app.acheflow.com/fwd/alpha/increment",
-        "https://server.acheflow.com/fwd/missing/increment",
-        "https://server.acheflow.com/fwd/alpha/undeclared",
+        "https://app.acheflow.com/server/fwd/missing/increment",
+        "https://app.acheflow.com/server/fwd/alpha/undeclared",
     ] {
         assert!(
             host.execute(request(&host, forward(url, &current)))
@@ -153,7 +153,10 @@ async fn server_forwarding_rejects_wrong_recipient_missing_target_undeclared_act
     }
     let mut other_workspace = request(
         &host,
-        forward("https://server.acheflow.com/fwd/alpha/increment", &current),
+        forward(
+            "https://app.acheflow.com/server/fwd/alpha/increment",
+            &current,
+        ),
     );
     other_workspace.workspace_id = "another-workspace".into();
     assert!(host.execute(other_workspace).await.is_err());
@@ -169,7 +172,7 @@ async fn stopped_and_restarted_instances_cannot_receive_an_old_forwarding_intent
     let host = host();
     enable_both(&host).await;
     let old_instance = instance(&host, "alpha");
-    let url = "https://server.acheflow.com/fwd/alpha/increment";
+    let url = "https://app.acheflow.com/server/fwd/alpha/increment";
 
     set_enabled(&host, "alpha", false).await;
     assert!(
@@ -221,7 +224,7 @@ async fn native_activation_rechecks_expiry_after_waiting_for_the_control_lock() 
     let live = AtomicBool::new(true);
     let delivery = crate::native_activation::dispatch(
         &host,
-        "https://server.acheflow.com/fwd/alpha/increment",
+        "https://app.acheflow.com/server/fwd/alpha/increment",
         || live.load(Ordering::Acquire),
     );
     tokio::pin!(delivery);
@@ -246,7 +249,7 @@ async fn native_activation_rechecks_expiry_at_the_guest_inbox() {
     let live = AtomicBool::new(true);
     let delivery = crate::native_activation::dispatch(
         &host,
-        "https://server.acheflow.com/fwd/alpha/increment",
+        "https://app.acheflow.com/server/fwd/alpha/increment",
         || live.load(Ordering::Acquire),
     );
     tokio::pin!(delivery);
@@ -266,7 +269,7 @@ async fn native_activation_targets_only_enabled_declared_server_guests() {
     use acheflow_launcher::ActivationError;
     let host = host();
     enable_both(&host).await;
-    let alpha = "https://server.acheflow.com/fwd/alpha/increment";
+    let alpha = "https://app.acheflow.com/server/fwd/alpha/increment";
     crate::native_activation::dispatch(&host, alpha, || true)
         .await
         .unwrap();
@@ -278,11 +281,11 @@ async fn native_activation_targets_only_enabled_declared_server_guests() {
             ActivationError::InvalidLink,
         ),
         (
-            "https://server.acheflow.com/fwd/missing/increment",
+            "https://app.acheflow.com/server/fwd/missing/increment",
             ActivationError::NotFound,
         ),
         (
-            "https://server.acheflow.com/fwd/alpha/undeclared",
+            "https://app.acheflow.com/server/fwd/alpha/undeclared",
             ActivationError::Rejected,
         ),
     ] {
@@ -316,7 +319,7 @@ async fn native_activation_cannot_follow_a_workspace_switch_while_queued() {
     let lock = host.command_lock.lock().await;
     let delivery = crate::native_activation::dispatch(
         &host,
-        "https://server.acheflow.com/fwd/alpha/increment",
+        "https://app.acheflow.com/server/fwd/alpha/increment",
         || true,
     );
     tokio::pin!(delivery);

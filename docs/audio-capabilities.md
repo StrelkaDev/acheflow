@@ -1,7 +1,7 @@
 # Audio capability map
 
-Implemented as of 2026-11-01. This map describes the current audio path; the
-module specifications below retain its design and acceptance criteria.
+This guide describes the implemented audio path, its scene contracts, controls
+and verification boundaries.
 
 ## Current scope
 
@@ -41,11 +41,11 @@ decoder and execution limits.
 
 ## Capability boundaries
 
-| Module id | Responsibility | Depends on |
+| Stage | Responsibility | Depends on |
 | --- | --- | --- |
-| [audio-ingest](SPEC-audio-ingest.md) | Discover stable source/track identities, retain track metadata, decode each incoming track independently, expose arrival and level information, report unsupported input formats. | — |
-| [audio-mixer](SPEC-audio-mixer.md) | Per-scene input strips keyed by source and track; gain, mute, solo and balance; stereo buses and sends; bus gain/mute and meters; bounded PCM processing and explicit clipping. | audio-ingest |
-| [output-audio-routing](SPEC-output-audio-routing.md) | Persist each destination's bus selection per scene, feed that bus to its AAC encoder, show the applied route, allow live mixer/routing changes without restarting video encoding. | audio-mixer |
+| Audio ingest | Discover stable source/track identities, retain track metadata, decode each incoming track independently, expose arrival and level information, report unsupported input formats. | — |
+| Scene mixer | Per-scene input strips keyed by source and track; gain, mute, solo and balance; stereo buses and sends; bus gain/mute and meters; bounded PCM processing and explicit clipping. | Audio ingest |
+| Output routing | Persist each destination's bus selection per scene, feed that bus to its AAC encoder, show the applied route, allow live mixer/routing changes without restarting video encoding. | audio-mixer |
 
 Dependency order: audio-ingest → audio-mixer → output-audio-routing.
 
@@ -86,21 +86,6 @@ not local audio playback; monitoring is not implemented.
   removal, legacy imports and workspace export/import.
 - Check bounded queues and audio timing during a sustained run. A test that
   merely finds nonzero samples is insufficient evidence for mixer correctness.
-
-## Decisions resolved in the module specifications
-
-- Supported multitrack RTMP packet format and producer/FFmpeg compatibility,
-  verified against the actual owning implementations.
-- Incoming channel-layout handling and the explicit conversion into stereo
-  mixer strips; incoming tracks and PCM channels are different identities.
-- Initial bus membership for imported projects, track discovery/removal and
-  solo scope; newly discovered tracks must not unexpectedly duplicate program
-  audio in an existing mix.
-- Live apply semantics, meter freshness, queue/backpressure handling, and
-  timestamp-based alignment between audio tracks and video.
-
-The completed implementation and historical verification results are recorded in
-[tasks/todo.md](../tasks/todo.md).
 
 ## Implemented verification
 

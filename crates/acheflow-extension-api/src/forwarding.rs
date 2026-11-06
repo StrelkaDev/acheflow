@@ -36,9 +36,12 @@ pub enum ForwardRecipient {
 }
 impl ForwardRecipient {
     pub const fn origin(self) -> &'static str {
+        "https://app.acheflow.com"
+    }
+    pub const fn path_prefix(self) -> &'static str {
         match self {
-            Self::Client => "https://app.acheflow.com",
-            Self::Server => "https://server.acheflow.com",
+            Self::Client => "/fwd/",
+            Self::Server => "/server/fwd/",
         }
     }
 }
@@ -86,6 +89,16 @@ impl fmt::Display for ForwardError {
 impl std::error::Error for ForwardError {}
 
 impl ForwardLink {
+    /// Identify the HTTPS recipient without interpreting provider parameters.
+    pub fn parse(input: &str) -> Result<Self, ForwardError> {
+        let recipient = if input.starts_with("https://app.acheflow.com/server/") {
+            ForwardRecipient::Server
+        } else {
+            ForwardRecipient::Client
+        };
+        Self::parse_for(input, recipient)
+    }
+
     pub fn parse_for(input: &str, recipient: ForwardRecipient) -> Result<Self, ForwardError> {
         let relative = recipient_relative_address(input, recipient)?;
         let url = url::Url::parse(input).map_err(|_| ForwardError::InvalidAddress)?;
@@ -100,8 +113,18 @@ impl ForwardLink {
             return Err(ForwardError::InvalidRoute);
         }
         let route = raw_path
-            .strip_prefix("/fwd/")
-            .ok_or(ForwardError::InvalidRoute)?;
+            .strip_prefix(recipient.path_prefix())
+            .ok_or_else(|| {
+                let other = match recipient {
+                    ForwardRecipient::Client => ForwardRecipient::Server,
+                    ForwardRecipient::Server => ForwardRecipient::Client,
+                };
+                if raw_path.starts_with(other.path_prefix()) {
+                    ForwardError::WrongRecipient
+                } else {
+                    ForwardError::InvalidRoute
+                }
+            })?;
         let mut segments = route.splitn(3, '/');
         let extension_id = segments.next().unwrap_or_default();
         let action = segments.next().unwrap_or_default();
@@ -182,18 +205,7 @@ fn recipient_relative_address(
     // Require a canonical authority, excluding credentials, explicit ports,
     // suffix domains and URL-parser normalization of alternate host spellings.
     let relative = |origin| input.strip_prefix(origin).filter(|s| s.starts_with('/'));
-    let Some(relative) = relative(recipient.origin()) else {
-        let other = match recipient {
-            ForwardRecipient::Client => ForwardRecipient::Server,
-            ForwardRecipient::Server => ForwardRecipient::Client,
-        };
-        return Err(if relative(other.origin()).is_some() {
-            ForwardError::WrongRecipient
-        } else {
-            ForwardError::InvalidAddress
-        });
-    };
-    Ok(relative)
+    relative(recipient.origin()).ok_or(ForwardError::InvalidAddress)
 }
 
 fn valid_encoding(text: &str, path: bool) -> bool {
@@ -219,6 +231,30 @@ fn valid_encoding(text: &str, path: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_host_has_disjoint_client_and_server_routes() {
+        let client = "https://app.acheflow.com/fwd/example/open?value=a%2Bb#opaque=x";
+        let server = "https://app.acheflow.com/server/fwd/example/open?value=a%2Bb#opaque=x";
+        assert!(ForwardLink::parse_for(client, ForwardRecipient::Client).is_ok());
+        let link = ForwardLink::parse_for(server, ForwardRecipient::Server).unwrap();
+        assert_eq!(link.query.as_deref(), Some("value=a%2Bb"));
+        assert_eq!(link.fragment.as_deref(), Some("opaque=x"));
+        assert_eq!(
+            ForwardLink::parse_for(client, ForwardRecipient::Server),
+            Err(ForwardError::WrongRecipient)
+        );
+        assert_eq!(
+            ForwardLink::parse_for(server, ForwardRecipient::Client),
+            Err(ForwardError::WrongRecipient)
+        );
+        for recipient in [ForwardRecipient::Client, ForwardRecipient::Server] {
+            assert!(
+                ForwardLink::parse_for("https://server.acheflow.com/fwd/example/open", recipient)
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn app_domain_routes_extensions_only_to_the_client_and_preserves_opaque_fields() {
@@ -301,7 +337,7 @@ mod tests {
         let manifest: GuestManifest = serde_json::from_value(base.clone()).unwrap();
         manifest.validate().unwrap();
         let server = ForwardLink::parse_for(
-            "https://server.acheflow.com/fwd/example/open",
+            "https://app.acheflow.com/server/fwd/example/open",
             ForwardRecipient::Server,
         )
         .unwrap();
@@ -316,7 +352,7 @@ mod tests {
         .unwrap();
         assert!(client.declaration(&manifest).is_err());
         let undeclared = ForwardLink::parse_for(
-            "https://server.acheflow.com/fwd/example/other",
+            "https://app.acheflow.com/server/fwd/example/other",
             ForwardRecipient::Server,
         )
         .unwrap();
@@ -362,7 +398,7 @@ mod tests {
 
     #[test]
     fn recipients_cannot_consume_each_others_addresses() {
-        let input = "https://server.acheflow.com/fwd/example/open/settings";
+        let input = "https://app.acheflow.com/server/fwd/example/open/settings";
         assert_eq!(
             ForwardLink::parse_for(input, ForwardRecipient::Client),
             Err(ForwardError::WrongRecipient)

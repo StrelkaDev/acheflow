@@ -242,3 +242,21 @@ fn automatic_connection_does_not_replace_remote_or_unrelated_local_targets() {
         ));
     }
 }
+
+#[test]
+fn discovered_server_on_a_custom_port_connects_only_the_unchanged_local_workspace() {
+    let mut workspace = Workspace {
+        server_url: String::new(),
+        ..Default::default()
+    };
+    let identity = (workspace.id.clone(), workspace.server_url.clone());
+    assert_eq!(
+        local_endpoint_if_current(&workspace, &identity, 22345).as_deref(),
+        Some("http://127.0.0.1:22345")
+    );
+    workspace.server_url = "https://remote.example".into();
+    assert!(local_endpoint_if_current(&workspace, &identity, 22345).is_none());
+    workspace.server_url.clear();
+    workspace.id.push_str("-switched");
+    assert!(local_endpoint_if_current(&workspace, &identity, 22345).is_none());
+}

@@ -39,6 +39,11 @@ acheflow-launcher = { path = "../acheflow-launcher" }
 winit = "=0.31.0-beta.4"
 tokio.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+blitz-shell = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false }
+blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false }
+webbrowser = "1"
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 js-sys = "0.3"

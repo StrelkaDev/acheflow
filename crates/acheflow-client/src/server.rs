@@ -17,6 +17,8 @@ mod worker;
 #[derive(Clone, Debug)]
 pub struct LaunchConfig {
     pub binary: PathBuf,
+    /// Explicit mode arguments; independent of the executable's filename.
+    pub server_args: Vec<std::ffi::OsString>,
     /// Stable, explicit application-data directory; never the caller's cwd.
     pub directory: PathBuf,
     pub http_port: u16,
@@ -29,6 +31,11 @@ impl LaunchConfig {
             binary: bundled_binary(
                 &std::env::current_exe().map_err(|_| ServerError::BinaryMissing)?,
             )?,
+            server_args: if cfg!(unix) {
+                vec!["--server".into(), "--native-links".into()]
+            } else {
+                vec!["--server".into()]
+            },
             directory,
             http_port: 21295,
             rtmp_port: 1935,
@@ -52,20 +59,27 @@ impl LaunchConfig {
     }
 }
 
-/// Development and installed layouts both use a fixed sibling, with no PATH search.
+/// Installed clients reuse their own executable; development UI uses its sibling.
 pub fn bundled_binary(client_executable: &Path) -> Result<PathBuf, ServerError> {
     if !client_executable.is_absolute() {
         return Err(ServerError::InvalidConfig);
     }
     let name = if cfg!(windows) {
-        "acheflow-server.exe"
+        "acheflow.exe"
     } else {
-        "acheflow-server"
+        "acheflow"
     };
-    let path = client_executable
-        .parent()
-        .ok_or(ServerError::BinaryMissing)?
-        .join(name);
+    let path = if client_executable
+        .file_name()
+        .is_some_and(|file| file == name)
+    {
+        client_executable.to_owned()
+    } else {
+        client_executable
+            .parent()
+            .ok_or(ServerError::BinaryMissing)?
+            .join(name)
+    };
     path.canonicalize().map_err(|_| ServerError::BinaryMissing)
 }
 

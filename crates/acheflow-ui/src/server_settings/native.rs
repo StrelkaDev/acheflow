@@ -95,10 +95,8 @@ pub(super) fn provide(
     use_future(move || {
         let manager = manager.clone();
         async move {
-            if preferences.peek().start_with_client
-                && let Some(manager) = manager
-            {
-                launch(state, &manager, preferences.peek().clone(), project, false).await;
+            if let Some(manager) = manager {
+                start_when_needed(state, &manager, preferences.peek().clone(), project).await;
             }
         }
     });
@@ -119,6 +117,30 @@ pub(super) fn provide(
         }
     });
 }
+async fn start_when_needed(
+    mut state: ServerState,
+    manager: &LocalServer,
+    preferences: ServerPreferences,
+    mut project: Signal<Workspace>,
+) {
+    if !preferences.start_with_client && !local_target(&project.peek(), preferences.http_port) {
+        return;
+    }
+    let identity = (project.peek().id.clone(), project.peek().server_url.clone());
+    // Independent servers remain externally owned, but can satisfy a local target.
+    match acheflow_client::server::inspect_local(preferences.http_port).await {
+        Ok(Some(_)) => {
+            let endpoint =
+                local_endpoint_if_current(&project.peek(), &identity, preferences.http_port);
+            if let Some(endpoint) = endpoint {
+                project.write().server_url = endpoint;
+            }
+        }
+        Ok(None) => launch(state, manager, preferences, project, false).await,
+        Err(error) => state.error.set(error.to_string()),
+    }
+}
+
 pub(super) fn action(
     mut state: ServerState,
     project: Signal<Workspace>,
@@ -183,8 +205,8 @@ async fn launch(
             endpoint: Some(endpoint),
             ..
         }) => {
-            if identity == (project.peek().id.clone(), project.peek().server_url.clone())
-                && local_target(&project.peek(), preferences.http_port)
+            if local_endpoint_if_current(&project.peek(), &identity, preferences.http_port)
+                .is_some()
             {
                 project.write().server_url = endpoint;
             }

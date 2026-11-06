@@ -3,30 +3,31 @@
 The forwarding address contract is implemented by
 `acheflow_extension_api::forwarding::ForwardLink::parse_for`. Manifest-declared
 delivery is available for live client sessions and server guests. Unix desktop
-clients also provide a local activation receiver. Signed OS/domain association
-and hosted fallback pages are subsequent tasks; parsing an address alone does not
-authorize an extension action.
+clients also provide a local activation receiver. Generated fallback and association
+artifacts require coordinated deployment and signed installation validation. Parsing
+an address alone does not authorize an extension action.
 
 ## Addresses
 
-| Origin | Recipient |
+| Address prefix | Recipient |
 | --- | --- |
-| `https://app.acheflow.com` | Installed client |
-| `https://server.acheflow.com` | Installed server |
+| `https://app.acheflow.com/fwd/` | Installed desktop client |
+| `https://app.acheflow.com/server/fwd/` | Local server |
+| `acheflow://client/fwd/` | Installed desktop client |
+| `acheflow://server/fwd/` | Local server |
 
-Both use `/fwd/<extension_id>/<action>/...`. For example:
+Each route continues with `<extension_id>/<action>/...`. Client callback URLs
+remain unchanged, e.g. `https://app.acheflow.com/fwd/example/oauth/callback`.
+The server's explicit `/server` prefix carries routing outside provider payloads.
+Query/fragment fields never select the recipient. Custom URIs normalize into the
+matching HTTPS form before private IPC or domain APIs receive them.
 
-```text
-https://app.acheflow.com/fwd/example/oauth/callback?code=opaque&state=opaque
-```
-
-`acheflow.com` remains the product website. `app.acheflow.com` serves the browser
-client and reserves `/fwd/*` for installed-client links; ordinary browser routes
-are not app links. The former `client.acheflow.com` origin is rejected (no release
-requires compatibility). The forwarding origin is not a user's server endpoint.
-Each receiver supplies its expected recipient to the parser; server/client links
-cannot be substituted for each other. Canonical HTTPS authorities are required,
-without explicit ports, user information or alternate host spellings.
+`acheflow.com` remains the product website. Ordinary `app.acheflow.com` browser
+routes are separate from installed-app activation. The former client/server
+forwarding domains and `acheflow-client://` / `acheflow-server://` schemes are
+rejected. No release requires compatibility aliases. The forwarding host is not
+the user's server API endpoint. Canonical authorities are required, without ports,
+user information or alternate host spellings. Wrong-recipient delivery fails closed.
 
 The extension ID is the exact, case-sensitive manifest ID, validated by the same
 rules as installation discovery. It is not a display name or a directory name.
@@ -54,7 +55,9 @@ Manifests optionally declare up to 16 unique actions. Existing manifests default
 no forwarding support. The provider chooses the action names and callback flow:
 
 ```json
-"forwarding": [{"id":"oauth","mode":"callback"}]
+{
+  "forwarding": [{"id":"oauth","mode":"callback"}]
+}
 ```
 
 `event` actions require a live instance. `callback` actions are client-only and also
@@ -98,130 +101,77 @@ port. Browser callbacks retain their browser origin/path. The browser effect
 carries the selected `callback_uri`; native driving waits on the prepared loopback
 listener or the checked app-link mailbox, with a five-minute deadline and
 cancellation. Portal setup, hosting and signed app association still require
-live verification before official defaults are enabled.
+validation for the configured installation; application credentials have no
+embedded defaults.
 
-## Desktop client activation
+## Unified native activation
 
-On Unix, `acheflow-ui` accepts `--show` (also the default), `--forward <URL>`,
-a single forwarding URL argument, or `--forward-stdin`. `--help` and `--version` do not
-start a GUI or activation listener. OS adapters should use `--forward-stdin`,
-write the exact URL bytes, then close stdin. This keeps callback credentials out
-of process arguments. Input is bounded to 16 KiB; trailing whitespace is rejected.
-
-`acheflow-launcher` elects one client per user/runtime directory using a held file
-lock. A later invocation hands the request to that client and exits. The receiver
-uses a mode-0600 Unix socket in an owned mode-0700 directory; it opens no TCP port
-and stores no callback payload on disk. The default directory is
-`<system temporary directory>/acheflow-<uid>`. `ACHEFLOW_RUNTIME_DIR` can select a
-different private directory for isolated development profiles. Client and server
-use separate locks and socket names. Stale owned sockets are recovered only while
-holding the election lock; regular files and symlinks are rejected.
-
-Handoffs use bounded frames, queues and receipt deadlines. A successful reply means
-the live local session accepted the event, not that a provider authorized an
-account or completed a later HTTP operation. If the receiver cannot confirm the
-result, the sender reports an unknown outcome and does not automatically resend.
-Queued requests are checked again for expiry before delivery.
-
-The desktop UI restores/focuses its window and selects Extensions for forwarded
-requests. Missing/conflicting installations, disabled extensions and unavailable
-sessions produce explicit errors without displaying the callback URL. Delivery is
-bound to the workspace, configuration generation and current session instance.
-An incoming callback can complete a pending native browser operation; invalid
-callbacks leave the legitimate operation pending. Browser builds retain their
-separate navigation and authorization flow. Windows activation is not implemented;
-ordinary desktop launch remains available there.
-
-## macOS development bundle
-
-The AppKit adapter in `native/macos/ClientLauncher.swift` receives URL-open and
-browsing-user-activity events and launches the fixed bundled Rust client with stdin
-handoff. It contains no provider logic. Build a local bundle with:
+The production executable is `acheflow`:
 
 ```sh
-cargo build -p acheflow-ui --bin acheflow-ui
-python3 native/macos/build-dev-app.py \
-  --output target/AcheflowDev.app \
-  --ui-bin target/debug/acheflow-ui
+acheflow                                      # desktop; local server on demand
+acheflow --client --show                       # explicit desktop
+acheflow --server --native-links --config /path/to/server.json
+acheflow --server --help                       # existing server flags
+acheflow --forward-stdin                       # route one exact address from stdin
 ```
 
-Choose a new output directory. The main bundle owns the Rust GUI executable;
-`Contents/Helpers/AcheflowLink.app` is the URL-event helper. For isolated manual
-testing, launch the helper with `ACHEFLOW_RUNTIME_DIR` and
-`ACHEFLOW_WORKSPACE_FILE` pointing to temporary profile paths. Opening a URL with
-an explicitly selected helper exercises its URL-event adapter; the development
-bundle does not register itself as the default HTTPS handler.
+`--forward <address>` and a single address argument also work. OS adapters use
+stdin and close it after writing, so callbacks do not enter child process
+arguments. Input is bounded to 16 KiB and trailing whitespace is rejected.
+Explicit `--client` rejects server links; `--server --forward-stdin` rejects client
+links. `--help`/`--version` initialize neither a GUI nor a native receiver. The
+separate `acheflow-ui` and `acheflow-server` Cargo entrypoints remain development
+wrappers around the shared libraries; distribution includes only `acheflow`.
 
-This bundle is unsigned and does not establish HTTPS domain association. The
-association/site artifacts and handler installation instructions are described in
-[native-links-installation.md](native-links-installation.md). Production signing
-remains external rollout work; complete local desktop packages are described in
-[desktop-installation.md](desktop-installation.md). The IPC/process suite and native visual smoke check remain pending
-for this slice; compilation alone does not verify cold/warm OS activation.
+On Unix, `acheflow-launcher` elects one client and one opted-in server per private
+runtime directory. Warm requests hand off and exit; cold requests initialize only
+the requested recipient. The UI restores/focuses its window and selects Extensions.
+Missing/conflicting/disabled/not-ready installations produce fixed errors without
+showing the URL. A fresh server has no configured workspace and rejects forwarding
+rather than enabling an extension. The receiver uses the existing control command
+boundary, checking workspace/revision, live instance, cancellation and expiry.
 
-## Native server activation
+The default runtime directory is `<system temporary directory>/acheflow-<uid>`;
+`ACHEFLOW_RUNTIME_DIR` selects a private isolated profile. URLs cannot select that
+profile. Each receiver uses its own lock and mode-0600 socket in an owned mode-0700
+directory. No TCP activation endpoint or callback payload file is created. Stale
+owned sockets are recovered under the lock; symlinks and regular files are rejected.
+Handoffs have bounded frames, queues and receipt deadlines. Success means that a
+live session accepted delivery, not provider authorization. Unknown outcomes are
+not automatically retried. Windows native activation remains unsupported.
 
-Server reception is explicitly enabled on Unix:
+Standalone `--server` preserves ordinary multi-server operation; add
+`--native-links` to participate in local dispatch. The desktop's owned child uses
+`--server --native-links --desktop-managed`, sharing the client's runtime directory.
+Its lifetime/diagnostic pipe remains separate from link stdin. An independent or
+detached server remains externally owned. Native callback correlation and pending
+browser operations retain all cancellation/replay protections.
 
-```sh
-acheflow-server --native-links --config /path/to/acheflow-server.json
-```
+## Installation and fallback
 
-A launcher writes the exact server forwarding URL to `acheflow-server
---forward-stdin` and closes stdin. The invocation hands off to an existing
-native-link server in the same runtime directory. If none is running, it elects a
-primary and starts the server with its usual configuration flags; `--config` and
-listener overrides can be supplied for this cold start. The receiver starts after
-server listeners and the control host are initialized. There is no active
-workspace on a fresh server until the client configures one, so an initial event
-then reports NotReady rather than configuring a workspace or enabling a guest.
+The macOS app's single executable receives both URI recipients and supported
+HTTPS user activities through its own AppKit delegate. Cold activation selects
+the recipient before UI construction; later events use bounded background IPC.
+If the recipient is absent, the same executable can launch in that mode with the
+URL supplied through stdin, without a shell, payload logs or disk storage.
+Linux has one `acheflow` scheme desktop entry invoking `acheflow --forward %u`.
+See [installation integration](native-links-installation.md) and
+[desktop distribution](desktop-installation.md) for build, signing and registration.
 
-Ordinary server startup without either flag keeps its existing standalone
-behavior and does not claim the native-link endpoint. Only one opted-in server
-can own `server.sock` in a runtime directory. Use distinct private
-`ACHEFLOW_RUNTIME_DIR` values for independent local server installations; this
-directory selects the recipient, not a URL parameter. Client and server endpoints
-can coexist in one runtime directory.
+The shared-domain fallback uses `/fwd/*` for client links and `/server/fwd/*` for
+server links. It never replaces browser `index.html` or activates ordinary browser
+navigation. Opening requires a user click; history path/query/fragment are removed
+before leaving the page. Payload stays only in memory; refresh loses it. There are
+no analytics, third-party assets or JavaScript network requests. The installation
+link goes to `acheflow.com` without the callback. Hosting access/debug logs must
+omit callback URLs: browser history cleanup cannot erase the initial HTTP request.
 
-The server accepts declared `event` actions only. It resolves the currently active
-workspace, enabled extension and live instance, then submits the existing
-`forward_extension` control command with the observed revision and a fresh intent
-ID. Workspace, revision, manifest and instance checks still apply. The receipt's
-expiry/cancellation is checked after waiting for the command lock and again after
-waiting for the guest inbox lock. Server shutdown cancels an outstanding native
-wait; an unconfirmed outcome is not retried automatically. Missing/disabled/not-ready
-recipients and rejected events produce fixed diagnostics without the original URL.
+The site generator emits one optional AASA identity covering only those two paths
+and one associated-domain entitlement for `app.acheflow.com`. Custom schemes alone
+are not verified domain association; all authorization checks remain necessary.
+Local builds do not deploy fallback pages, register handlers or establish signed
+universal links. Replace older fallback assets together with the shared-scheme
+handlers before rollout; old server-domain links are no longer emitted.
 
-This ingress adds no remote endpoint and does not execute shell commands or
-provider authorization. The same-user private socket is its local access boundary;
-provider credentials and OAuth callbacks remain client-side. Signed server URL
-handlers need signing/installation validation and production packaging remains
-DL-11. The server routing tests use
-real independent WASM guests; full cross-process activation is still pending.
-
-## Browser-to-application fallback
-
-The current platform schemes are `acheflow-client://fwd/<id>/<action>/...` and
-`acheflow-server://fwd/<id>/<action>/...`. They are transport aliases: the native
-launcher converts only its own scheme to the matching canonical HTTPS origin,
-then uses the same parser and session checks. IPC and guest APIs continue to
-require canonical HTTPS addresses. No application claims the system-wide `https`
-scheme. Linux desktop entries use a small `acheflow-link` adapter with fixed
-sibling binaries and stdin handoff; the URI appears in the adapter's OS-supplied
-arguments, but never in its child's arguments or diagnostic output.
-
-The generated HTTPS fallback page opens an application only after the user clicks
-Open. It removes path/query/fragment from the current history entry and retains
-the URL in memory, without analytics, storage, third-party assets or network I/O
-from its JavaScript. The installation action goes to `acheflow.com` without the
-callback. Refreshing after history cleanup loses the pending payload; users must
-return to the original link. The initial HTTPS request can still be visible to
-the hosting infrastructure, so access/CDN/debug logging must omit callback URLs.
-
-Custom schemes are not a verified app/domain association: another application can
-register the same scheme. Prefer signed HTTPS universal links for provider flows
-that support them; keep correlation/state and provider-specific protections.
-The shared `acheflow://` dispatcher and a combined executable are explicitly future
-DL-13 work; no URI layout or execution flags for that design are finalized here.
-
-Implementation progress: [task list](../tasks/todo-desktop-links.md).
+See [installation](native-links-installation.md) and [remaining work](roadmap.md).

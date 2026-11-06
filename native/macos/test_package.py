@@ -1,5 +1,8 @@
 """Run with python3 -m unittest discover -s native/macos -p 'test_*.py'."""
 import json
+import plistlib
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -8,6 +11,22 @@ from package import copy_extensions, verify_version
 
 
 class PackageTests(unittest.TestCase):
+    def test_bundle_registers_links_on_its_only_executable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "acheflow"
+            binary.write_bytes(b"isolated package fixture")
+            app = root / "One executable.app"
+            subprocess.run([sys.executable, str(Path(__file__).with_name("build-dev-app.py")),
+                            "--output", str(app), "--binary", str(binary)],
+                           check=True, capture_output=True)
+            contents = app / "Contents"
+            self.assertEqual({p.name for p in (contents / "MacOS").iterdir()}, {"acheflow"})
+            self.assertFalse((contents / "Helpers").exists())
+            info = plistlib.loads((contents / "Info.plist").read_bytes())
+            self.assertEqual(info["CFBundleExecutable"], "acheflow")
+            self.assertEqual(info["CFBundleURLTypes"][0]["CFBundleURLSchemes"], ["acheflow"])
+            self.assertIn("NSUserActivityTypeBrowsingWeb", info["NSUserActivityTypes"])
     def test_wrong_binary_version_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             binary = Path(temporary) / "server with spaces"

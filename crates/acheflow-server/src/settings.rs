@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 #[command(version, about = "Acheflow stream server")]
 pub struct Args {
     /// Desktop-owned process: parent stdin lifetime controls graceful shutdown.
-    #[arg(long, conflicts_with_all = ["native_links", "forward_stdin"])]
+    #[arg(long, conflicts_with = "forward_stdin")]
     pub desktop_managed: bool,
     /// Enable same-user native link reception (one server per runtime directory).
     #[arg(long)]
@@ -306,9 +306,8 @@ mod tests {
         assert!(settings.validate().is_ok());
         assert!(Args::try_parse_from(["server", "--port", "0"]).is_err());
         assert!(Args::try_parse_from(["server", "--port", "65536"]).is_err());
-        for flag in ["--native-links", "--forward-stdin"] {
-            assert!(Args::try_parse_from(["server", "--desktop-managed", flag]).is_err());
-        }
+        assert!(Args::try_parse_from(["server", "--desktop-managed", "--native-links"]).is_ok());
+        assert!(Args::try_parse_from(["server", "--desktop-managed", "--forward-stdin"]).is_err());
     }
 
     #[tokio::test]

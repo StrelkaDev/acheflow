@@ -20,13 +20,13 @@ class BuildTests(unittest.TestCase):
             self.assertFalse((root / "index.html").exists())
             self.assertTrue((root / "_acheflow-links/entry.mjs").is_file())
             detail = json.loads((root / ".well-known/apple-app-site-association").read_text())["applinks"]["details"][0]
-            self.assertEqual(detail["appIDs"],["ABCD123456.com.acheflow.client.links"])
-            self.assertEqual(detail["components"],[{"/":"/fwd/*","comment":"Extension forwarding only"}])
+            self.assertEqual(detail["appIDs"],["ABCD123456.com.acheflow"])
+            self.assertEqual([item["/"] for item in detail["components"]], ["/fwd/*", "/server/fwd/*"])
             self.assertFalse((output / "client.acheflow.com").exists())
             config=(output / "Caddyfile").read_text().split("https://app.acheflow.com {",1)[1].split("https://server.acheflow.com",1)[0]
-            self.assertIn("@links path /fwd/*\n",config)
+            self.assertIn("handle /fwd/* {",config)
             self.assertIn("rewrite * /forward.html",config)
-            self.assertEqual((root / "_redirects").read_text(),"/fwd/* /forward 200\n")
+            self.assertEqual((root / "_redirects").read_text(),"/fwd/* /forward 200\n/server/fwd/* /server-forward 200\n")
             headers=(root / "_headers").read_text()
             self.assertTrue(headers.startswith("/fwd/*\n"))
             self.assertNotIn("\n/*\n",headers)
@@ -34,26 +34,26 @@ class BuildTests(unittest.TestCase):
             self.assertIn("  Referrer-Policy: no-referrer",headers)
             self.assertIn("header @linkResources",config)
 
-    def test_signed_metadata_has_exact_separate_hosts_paths_and_identities(self):
+    def test_signed_metadata_has_one_handler_for_both_routes_and_no_old_host(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "sites"
             builder.build(output, "ABCD123456", "PREFIX1234")
-            for recipient in ("client", "server"):
-                host = "app.acheflow.com" if recipient == "client" else "server.acheflow.com"
-                root = output / host
-                metadata = json.loads((root / ".well-known/apple-app-site-association").read_text())
-                detail = metadata["applinks"]["details"][0]
-                with (output / "macos" / f"{recipient}.links.entitlements").open("rb") as file:
-                    entitlement = plistlib.load(file)
-                self.assertEqual(detail["appIDs"], [f"PREFIX1234.com.acheflow.{recipient}.links"])
-                self.assertEqual(detail["components"][0]["/"], "/fwd/*")
-                self.assertEqual(entitlement["com.apple.application-identifier"], detail["appIDs"][0])
-                self.assertEqual(entitlement["com.apple.developer.associated-domains"], [f"applinks:{host}"])
-                page = "forward.html" if recipient == "client" else "index.html"
-                self.assertIn(f'data-recipient="{recipient}"', (root / page).read_text())
+            root = output / "app.acheflow.com"
+            metadata = json.loads((root / ".well-known/apple-app-site-association").read_text())
+            detail = metadata["applinks"]["details"][0]
+            with (output / "macos/links.entitlements").open("rb") as file:
+                entitlement = plistlib.load(file)
+            self.assertEqual(detail["appIDs"], ["PREFIX1234.com.acheflow"])
+            self.assertEqual([c["/"] for c in detail["components"]], ["/fwd/*", "/server/fwd/*"])
+            self.assertEqual(entitlement["com.apple.application-identifier"], detail["appIDs"][0])
+            self.assertEqual(entitlement["com.apple.developer.associated-domains"], ["applinks:app.acheflow.com"])
+            for recipient, name in (("client", "forward"), ("server", "server-forward")):
+                self.assertIn(f'data-recipient="{recipient}"', (root / f"{name}.html").read_text())
+            self.assertFalse((output / "server.acheflow.com").exists())
             config = (output / "Caddyfile").read_text()
             self.assertNotIn("https://acheflow.com", config)
-            self.assertIn("https://app.acheflow.com", config)
+            self.assertNotIn("https://server.acheflow.com", config)
+            self.assertIn("handle /server/fwd/* {", config)
             self.assertIn("frame-ancestors 'none'", config)
 
     def test_unsigned_output_does_not_claim_any_apple_identity(self):
@@ -67,7 +67,7 @@ class BuildTests(unittest.TestCase):
 
     def test_bad_or_shared_identities_are_rejected_before_writing(self):
         for options in ({"team_id": "placeholder"}, {"app_prefix": "PREFIX1234"},
-                        {"client_handler_id": "bad/id"}, {"server_handler_id": "com.acheflow.client.links"}):
+                        {"handler_id": "bad/id"}):
             with tempfile.TemporaryDirectory() as temporary:
                 output = Path(temporary) / "sites"
                 with self.assertRaises(ValueError):
