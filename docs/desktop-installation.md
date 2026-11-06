@@ -97,6 +97,7 @@ From the source checkout on macOS with Rust/WASM target, Trunk and Xcode tools:
 
 ```sh
 python3 native/macos/package.py --output target/acheflow-macos
+open target/acheflow-macos/Acheflow.app
 ```
 
 This rebuilds the guests, unified release executable and release browser UI, checks
@@ -106,6 +107,14 @@ ad-hoc signs inside-out and verifies signatures. It creates a ZIP and SHA-256
 sidecar beside the new output directory. It refuses an existing output/archive.
 The script uses a file allowlist for extension artifacts and never copies the
 checkout, source configuration or user home directory into an app.
+
+The app uses `achedev-logo` in Finder and the Dock, including direct executable
+launches. Packaging copies the checked-in `achedev-logo.icns`. After changing the
+shared SVG, regenerate it before building the executable and package:
+
+```sh
+swift native/macos/build-icon.swift
+```
 
 For an already validated local debug build:
 

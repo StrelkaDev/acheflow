@@ -37,10 +37,14 @@ macos.mkdir(parents=True)
 target = macos / "acheflow"
 shutil.copy2(binary, target)
 os.chmod(target, 0o755)
+resources = contents / "Resources"
+resources.mkdir()
+shutil.copy2(root / "crates/acheflow-ui/assets/achedev-logo.icns", resources / "Acheflow.icns")
 base_info = {
     "CFBundleIdentifier": bundle_id,
     "CFBundleName": "Acheflow",
     "CFBundleExecutable": "acheflow",
+    "CFBundleIconFile": "Acheflow.icns",
     "CFBundlePackageType": "APPL",
     "CFBundleVersion": "1",
     "CFBundleShortVersionString": version,

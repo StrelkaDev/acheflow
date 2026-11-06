@@ -5,14 +5,16 @@
 use acheflow_extension_api::forwarding::MAX_FORWARD_URL_BYTES;
 use acheflow_launcher::{ActivationError, INBOX_CAPACITY, Request};
 use objc2::{
-    MainThreadMarker, MainThreadOnly, define_class, extern_methods, rc::Retained,
+    AnyThread, MainThreadMarker, MainThreadOnly, define_class, extern_methods, rc::Retained,
     runtime::ProtocolObject,
 };
 use objc2_app_kit::{
-    NSApplication, NSApplicationDelegate, NSApplicationTerminateReply, NSUserActivityRestoring,
+    NSApplication, NSApplicationDelegate, NSApplicationTerminateReply, NSImage,
+    NSUserActivityRestoring,
 };
 use objc2_foundation::{
-    NSArray, NSNotification, NSNumber, NSObject, NSObjectProtocol, NSURL, NSUserActivity, ns_string,
+    NSArray, NSData, NSNotification, NSNumber, NSObject, NSObjectProtocol, NSURL, NSUserActivity,
+    ns_string,
 };
 use std::{cell::RefCell, collections::VecDeque, ptr::NonNull};
 use winit::event_loop::EventLoopProxy;
@@ -139,6 +141,19 @@ pub struct Registration {
     application: Retained<NSApplication>,
     _delegate: Retained<Delegate>,
 }
+
+// AppKit's setter accepts an NSImage. Require a non-null image here, resolving
+// objc2's nullable-argument safety caveat without allowing unsafe call sites.
+trait ApplicationIcon {
+    fn set_icon(&self, image: &NSImage);
+}
+impl ApplicationIcon for NSApplication {
+    extern_methods!(
+        #[unsafe(method(setApplicationIconImage:))]
+        fn set_icon(&self, image: &NSImage);
+    );
+}
+
 impl Registration {
     pub fn install(proxy: EventLoopProxy) -> Result<Self, String> {
         let marker =
@@ -161,6 +176,11 @@ impl Registration {
         })
     }
     pub fn show_dock(&self) {
+        // Also brand direct CLI launches, where there is no .app bundle metadata.
+        let data = NSData::with_bytes(include_bytes!("../../acheflow-ui/assets/achedev-logo.icns"));
+        if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+            self.application.set_icon(&image);
+        }
         self.application
             .setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Regular);
     }
