@@ -64,9 +64,10 @@ impl Running {
         info.version == env!("CARGO_PKG_VERSION")
             && Some(info.process_id) == self.child.id()
             && info.managed_instance.as_ref() == Some(&self.instance)
-            && info.http_address == self.config.address()
+            && info.http_address
+                == std::net::SocketAddr::from((self.config.listen_ip(), self.config.http_port))
             && info.rtmp_address
-                == std::net::SocketAddr::from(([127, 0, 0, 1], self.config.rtmp_port))
+                == std::net::SocketAddr::from((self.config.listen_ip(), self.config.rtmp_port))
     }
     fn complete(&mut self, result: Result<Status, ServerError>) {
         if let Some(reply) = self.pending.take() {

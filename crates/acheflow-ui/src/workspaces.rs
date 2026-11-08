@@ -509,6 +509,7 @@ mod preference_tests {
         let prefs = crate::server_settings::ServerPreferences {
             start_with_client: true,
             keep_running_on_exit: true,
+            allow_network: true,
             http_port: 22345,
             rtmp_port: 22346,
         };
@@ -520,6 +521,7 @@ mod preference_tests {
         let workspace = restored.current().json().unwrap();
         assert!(!workspace.contains("start_with_client"));
         assert!(!workspace.contains("keep_running_on_exit"));
+        assert!(!workspace.contains("allow_network"));
         assert_eq!(restored.current().server_url, "https://remote.example");
         std::fs::remove_file(path).unwrap();
     }

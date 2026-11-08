@@ -49,6 +49,7 @@ fn config(preferences: &ServerPreferences) -> Result<LaunchConfig, String> {
     let mut config = LaunchConfig::bundled(directory()?).map_err(|e| e.to_string())?;
     config.http_port = preferences.http_port;
     config.rtmp_port = preferences.rtmp_port;
+    config.allow_network = preferences.allow_network;
     Ok(config)
 }
 pub(super) fn provide(

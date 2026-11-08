@@ -51,6 +51,7 @@ fn config(directory: &Directory) -> LaunchConfig {
         directory: directory.0.clone(),
         http_port: http,
         rtmp_port: rtmp,
+        allow_network: false,
         startup_timeout: Duration::from_secs(15),
     }
 }
@@ -65,6 +66,7 @@ async fn missing_binary_is_reported_without_starting_a_process() {
         directory: directory.0.clone(),
         http_port: 21295,
         rtmp_port: 1935,
+        allow_network: false,
         startup_timeout: Duration::from_secs(1),
     };
     assert_eq!(
@@ -92,6 +94,14 @@ async fn production_server_becomes_ready_stops_and_restarts() {
         env!("CARGO_PKG_VERSION")
     );
     assert_eq!(ready.info.as_ref().unwrap().process_id, ready.pid.unwrap());
+    assert_eq!(
+        ready.info.as_ref().unwrap().http_address.ip(),
+        std::net::Ipv4Addr::LOCALHOST
+    );
+    assert_eq!(
+        ready.info.as_ref().unwrap().rtmp_address.ip(),
+        std::net::Ipv4Addr::LOCALHOST
+    );
     let old_instance = ready.info.unwrap().managed_instance.unwrap();
     assert_eq!(
         server.start(config.clone()).await.unwrap_err(),
@@ -110,6 +120,45 @@ async fn production_server_becomes_ready_stops_and_restarts() {
             .iter()
             .any(|line| line.contains("Acheflow listening"))
     );
+}
+
+#[tokio::test]
+async fn network_listeners_become_ready_and_restart_back_to_loopback() {
+    let directory = Directory::new();
+    let mut config = config(&directory);
+    config.allow_network = true;
+    let server = LocalServer::new().unwrap();
+    let ready = server.start(config.clone()).await.unwrap();
+    let info = ready.info.unwrap();
+    assert_eq!(info.http_address, ([0, 0, 0, 0], config.http_port).into());
+    assert_eq!(info.rtmp_address, ([0, 0, 0, 0], config.rtmp_port).into());
+    assert_eq!(
+        ready.endpoint,
+        Some(format!("http://127.0.0.1:{}", config.http_port))
+    );
+    assert!(
+        acheflow_client::server::inspect_local(config.http_port)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        tokio::net::TcpStream::connect(("127.0.0.1", config.rtmp_port))
+            .await
+            .is_ok()
+    );
+    config.allow_network = false;
+    let ready = server.restart(config.clone()).await.unwrap();
+    assert_eq!(
+        ready.info.as_ref().unwrap().http_address,
+        ([127, 0, 0, 1], config.http_port).into()
+    );
+    assert_eq!(
+        ready.info.as_ref().unwrap().rtmp_address,
+        ([127, 0, 0, 1], config.rtmp_port).into()
+    );
+    server.stop().await.unwrap();
+    assert!(server.status().pid.is_none());
 }
 
 #[tokio::test]

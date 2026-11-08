@@ -215,10 +215,12 @@ fn validate_managed(settings: &ServerSettings) -> Result<(), String> {
     ] {
         if !host
             .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback())
+            .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified())
             || !tls.cert.is_empty()
         {
-            return Err("Desktop-managed listeners must use loopback IPs without TLS".into());
+            return Err(
+                "Desktop-managed listeners must use loopback or wildcard IPs without TLS".into(),
+            );
         }
     }
     Ok(())
@@ -257,9 +259,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn managed_listeners_reject_remote_wildcard_and_tls_configuration() {
+    fn managed_listeners_allow_loopback_and_wildcard_but_reject_specific_remote_ips_and_tls() {
         assert!(validate_managed(&ServerSettings::default()).is_ok());
-        for host in ["0.0.0.0", "::", "192.0.2.1", "localhost"] {
+        for host in ["0.0.0.0", "::"] {
+            let settings = ServerSettings {
+                http_host: host.into(),
+                rtmp_host: host.into(),
+                ..Default::default()
+            };
+            assert!(validate_managed(&settings).is_ok(), "{host}");
+        }
+        for host in ["192.0.2.1", "localhost"] {
             let settings = ServerSettings {
                 http_host: host.into(),
                 ..Default::default()

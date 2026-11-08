@@ -11,6 +11,7 @@ pub(crate) mod native;
 pub(crate) struct ServerPreferences {
     pub start_with_client: bool,
     pub keep_running_on_exit: bool,
+    pub allow_network: bool,
     pub http_port: u16,
     pub rtmp_port: u16,
 }
@@ -19,6 +20,7 @@ impl Default for ServerPreferences {
         Self {
             start_with_client: false,
             keep_running_on_exit: false,
+            allow_network: false,
             http_port: 21295,
             rtmp_port: 1935,
         }
@@ -288,6 +290,14 @@ fn LocalControls(
                 },"Save ports"}
             }
             if !ports_error().is_empty() {p {class:"error",role:"alert","{ports_error}"}}
+            div {class:"server-preferences",
+                label {input {r#type:"checkbox",id:"server-allow-network",checked:preferences.allow_network,disabled:busy,
+                    onkeydown:move|e|{if !busy && !e.is_auto_repeating() && (e.key()==Key::Character(" ".into())||e.key()==Key::Named(NamedKey::Enter)) {e.prevent_default();let mut prefs=catalog.peek().server_preferences();prefs.allow_network= !prefs.allow_network;catalog.write().set_server_preferences(prefs);}},
+                    oninput:move|e|{if !busy {let mut prefs=catalog.peek().server_preferences();prefs.allow_network=e.checked();catalog.write().set_server_preferences(prefs);}}
+                }span {"Allow connections from other devices"}}
+            }
+            p {class:"form-help","Keep off for localhost only. Enable for network access; start or restart the server to apply."}
+            if preferences.allow_network {p {class:"form-help","On another device, use this computer’s network IP and HTTP port {preferences.http_port}."}}
             div {class:"server-preferences",
                 label {input {r#type:"checkbox",id:"server-auto-start",checked:preferences.start_with_client,onkeydown:move|e|{if !e.is_auto_repeating() && (e.key()==Key::Character(" ".into())||e.key()==Key::Named(NamedKey::Enter)) {e.prevent_default();let mut prefs=catalog.peek().server_preferences();prefs.start_with_client= !prefs.start_with_client;catalog.write().set_server_preferences(prefs);}},oninput:move|e|{let mut prefs=catalog.peek().server_preferences();prefs.start_with_client=e.checked();catalog.write().set_server_preferences(prefs);}}span {"Start local server with the desktop app"}}
                 label {input {r#type:"checkbox",id:"server-keep-running",checked:preferences.keep_running_on_exit,onkeydown:move|e|{if !e.is_auto_repeating() && (e.key()==Key::Character(" ".into())||e.key()==Key::Named(NamedKey::Enter)) {e.prevent_default();let mut prefs=catalog.peek().server_preferences();prefs.keep_running_on_exit= !prefs.keep_running_on_exit;if let Some(manager)=&keyboard_manager {manager.set_keep_running_on_exit(prefs.keep_running_on_exit);}catalog.write().set_server_preferences(prefs);}},oninput:move|e|{let mut prefs=catalog.peek().server_preferences();prefs.keep_running_on_exit=e.checked();if let Some(manager)=&manager {manager.set_keep_running_on_exit(prefs.keep_running_on_exit);}catalog.write().set_server_preferences(prefs);}}span {"Keep local server running when the app closes"}}

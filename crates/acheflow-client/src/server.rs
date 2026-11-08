@@ -23,6 +23,8 @@ pub struct LaunchConfig {
     pub directory: PathBuf,
     pub http_port: u16,
     pub rtmp_port: u16,
+    /// Opt in to HTTP/RTMP connections on all IPv4 interfaces.
+    pub allow_network: bool,
     pub startup_timeout: Duration,
 }
 impl LaunchConfig {
@@ -39,6 +41,7 @@ impl LaunchConfig {
             directory,
             http_port: 21295,
             rtmp_port: 1935,
+            allow_network: false,
             startup_timeout: Duration::from_secs(30),
         })
     }
@@ -56,6 +59,13 @@ impl LaunchConfig {
     }
     fn address(&self) -> std::net::SocketAddr {
         ([127, 0, 0, 1], self.http_port).into()
+    }
+    fn listen_ip(&self) -> std::net::Ipv4Addr {
+        if self.allow_network {
+            std::net::Ipv4Addr::UNSPECIFIED
+        } else {
+            std::net::Ipv4Addr::LOCALHOST
+        }
     }
 }
 

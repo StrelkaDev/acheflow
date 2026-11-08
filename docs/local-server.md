@@ -8,17 +8,26 @@ The production desktop and server share the `acheflow` executable.
 ## Desktop settings
 
 Settings / Server exposes Start, Stop, Restart, Use local server, actual process/API
-state, ports, version, PID, recent diagnostic output and errors. Stop remains
-available during startup. A superseded launch cannot overwrite a later stop or
+state, ports, network access, version, PID, recent diagnostic output and errors.
+Stop remains available during startup. A superseded launch cannot overwrite a later stop or
 the connection of a workspace switched while startup was pending. Starting a
 local server automatically connects a matching local/default workspace after
 readiness; a remote target remains configured until Use local server is chosen.
 
-The workspace catalog stores global HTTP/RTMP ports, `start_with_client` and
-`keep_running_on_exit` preferences. Both lifecycle preferences default to false,
-including catalogs saved before this feature. A configured local/default target
+The workspace catalog stores global HTTP/RTMP ports, `allow_network`,
+`start_with_client` and `keep_running_on_exit` preferences. All three boolean
+preferences default to false, including catalogs saved before this feature. A configured local/default target
 starts a server on desktop startup if none is available, regardless of the opt-in
 preference; that preference also starts a local server for remote workspaces.
+
+Enable **Allow connections from other devices** to listen on all IPv4 interfaces
+for both HTTP and RTMP. With it disabled, only this computer can connect through
+localhost. The choice is saved globally and takes effect on the next Start or
+Restart, including automatic startup. On a phone or another computer on the same
+network, use the server computer's network IP and configured port, for example
+`http://<server-ip>:21295`. The desktop itself keeps using `127.0.0.1` in either
+mode. Wildcard binding also accepts connections on other reachable interfaces.
+
 Independent servers are inspected without adoption. These preferences stay outside
 workspace exports.
 The managed data directory is `server` beside the native workspace catalog.
@@ -43,7 +52,8 @@ requested HTTP and RTMP ports, spawns the child with argument-array invocation,
 and waits for readiness. HTTP defaults to `127.0.0.1:21295`, RTMP to
 `127.0.0.1:1935`. Both ports are configurable and distinct. The process loads
 `acheflow-server.json` from its data directory, while launch arguments override
-both listeners to loopback. Managed mode rejects TLS settings; standalone/remote
+both listeners to loopback or `0.0.0.0`, according to the desktop network-access
+preference. Managed mode rejects TLS settings; standalone/remote
 servers retain their existing HTTP(S)/RTMP(S) configuration.
 
 Standalone listener/TLS/config and MCP credential environment overrides are
@@ -117,7 +127,8 @@ the first manager's server, but cannot stop it.
 
 `cargo test --locked -p acheflow --test owned_server` exercises
 the unified production executable for readiness, matching identity/version, saved-listener
-overrides, graceful stop/restart, owner drop, crash and cross-manager isolation.
+overrides, loopback/network binding and switching modes on restart, graceful
+stop/restart, owner drop, crash and cross-manager isolation.
 Small real executable fixtures exercise incompatible versions, startup timeout,
 large diagnostic output, canceled startup, wrong launch identity and forced
 termination. Tests use temporary directories and ephemeral loopback ports;

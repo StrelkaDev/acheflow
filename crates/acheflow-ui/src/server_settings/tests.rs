@@ -116,6 +116,22 @@ fn click(doc: &mut DioxusDocument, selector: &str) {
     doc.handle_ui_event(UiEvent::PointerUp(pointer(false)));
     settle(doc);
 }
+#[test]
+fn network_access_is_opt_in_and_restores_from_preferences() {
+    let old = r#"{"start_with_client":true,"keep_running_on_exit":false,"http_port":21295,"rtmp_port":1935}"#;
+    let preferences: ServerPreferences = serde_json::from_str(old).unwrap();
+    assert_eq!(
+        serde_json::to_value(preferences).unwrap()["allow_network"],
+        false
+    );
+    let network = r#"{"allow_network":true}"#;
+    let preferences: ServerPreferences = serde_json::from_str(network).unwrap();
+    assert_eq!(
+        serde_json::to_value(preferences).unwrap()["allow_network"],
+        true
+    );
+}
+
 #[tokio::test]
 async fn server_controls_follow_ownership_and_preferences_work_with_keyboard() {
     let harness = Rc::new(Harness::default());
@@ -136,6 +152,16 @@ async fn server_controls_follow_ownership_and_preferences_work_with_keyboard() {
     settle(&mut doc);
     assert!(exists(&doc, "#local-server-start:not([disabled])"));
     assert!(exists(&doc, "#local-server-stop[disabled]"));
+    click(&mut doc, "#server-allow-network");
+    assert_eq!(
+        serde_json::to_value(harness.catalog.get().unwrap().read().server_preferences()).unwrap()["allow_network"],
+        true
+    );
+    press(&mut doc, Key::Character(" ".into()), Code::Space);
+    assert_eq!(
+        serde_json::to_value(harness.catalog.get().unwrap().read().server_preferences()).unwrap()["allow_network"],
+        false
+    );
     click(&mut doc, "#server-auto-start");
     assert!(
         harness
@@ -196,6 +222,7 @@ async fn server_controls_follow_ownership_and_preferences_work_with_keyboard() {
     settle(&mut doc);
     assert!(exists(&doc, "#local-server-stop:not([disabled])"));
     assert!(exists(&doc, "#local-server-restart[disabled]"));
+    assert!(exists(&doc, "#server-allow-network[disabled]"));
     doc.vdom.in_scope(ScopeId::APP, || {
         state.process.set(Status::default());
         state.busy.set(false);
