@@ -93,7 +93,12 @@ pub async fn start(
         ))
         .arg("-g")
         .arg((fps * 2).to_string());
-    command.args(encoder_options(&encoder));
+    command.args(stream_encoder_options(
+        &encoder,
+        &output.resolution,
+        fps,
+        output.bitrate_kbps,
+    )?);
     command
         .args([
             "-c:a",
@@ -242,6 +247,16 @@ async fn report_progress(
 
 // Encoder-specific switches select actual rate control rather than only a ceiling.
 fn rate_control(encoder: &str, mode: BitrateMode, kbps: u32) -> Vec<String> {
+    if mode == BitrateMode::Cbr && encoder.ends_with("_videotoolbox") {
+        // FFmpeg maps maxrate to DataRateLimits after ConstantBitRate. Setting
+        // both overrides strict CBR on Apple Silicon, even for static video.
+        return vec![
+            "-b:v".into(),
+            format!("{kbps}k"),
+            "-constant_bit_rate".into(),
+            "1".into(),
+        ];
+    }
     let mut args = vec![
         "-b:v".into(),
         format!("{kbps}k"),
@@ -297,6 +312,49 @@ fn encoder_options(encoder: &str) -> &'static [&'static str] {
         _ => &[],
     }
 }
+fn stream_encoder_options(
+    encoder: &str,
+    size: &Resolution,
+    fps: u32,
+    kbps: u32,
+) -> Result<Vec<String>, String> {
+    let mut options: Vec<String> = encoder_options(encoder)
+        .iter()
+        .map(|s| (*s).into())
+        .collect();
+    if encoder == "h264_videotoolbox" {
+        // VideoToolbox AutoLevel can declare 4.0 even for 1080p60. Select a
+        // supported High-profile level using H.264 frame, rate and bitrate limits.
+        // https://github.com/FFmpeg/FFmpeg/blob/n9.0/libavcodec/h264_levels.c
+        let width = u64::from(size.width).div_ceil(16);
+        let height = u64::from(size.height).div_ceil(16);
+        let blocks = width * height;
+        let level = [
+            ("4.0", 8192, 245_760, 25_000),
+            ("4.1", 8192, 245_760, 62_500),
+            ("4.2", 8704, 522_240, 62_500),
+            ("5.1", 36_864, 983_040, 300_000),
+            ("5.2", 36_864, 2_073_600, 300_000),
+        ]
+        .into_iter()
+        .find(|(_, max_frame, max_rate, max_kbps)| {
+            blocks <= *max_frame
+                && width * width <= max_frame * 8
+                && height * height <= max_frame * 8
+                && blocks * u64::from(fps) <= *max_rate
+                && kbps <= *max_kbps
+        })
+        .map(|(level, ..)| level)
+        .ok_or("Output exceeds supported VideoToolbox H.264 levels; reduce resolution or FPS")?;
+        options.extend([
+            "-profile:v".into(),
+            "high".into(),
+            "-level:v".into(),
+            level.into(),
+        ]);
+    }
+    Ok(options)
+}
 fn fail(status: &Mutex<OutputStatus>, error: String) {
     let mut status = status.lock().unwrap();
     status.state = OutputState::Failed;
@@ -306,6 +364,141 @@ fn fail(status: &Mutex<OutputStatus>, error: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn videotoolbox_cbr_does_not_override_constant_rate_with_data_rate_limits() {
+        for encoder in ["h264_videotoolbox", "hevc_videotoolbox"] {
+            let cbr = rate_control(encoder, BitrateMode::Cbr, 9000);
+            assert!(cbr.windows(2).any(|p| p == ["-constant_bit_rate", "1"]));
+            assert!(cbr.windows(2).any(|p| p == ["-b:v", "9000k"]));
+            assert!(
+                !cbr.iter()
+                    .any(|s| ["-maxrate", "-minrate", "-bufsize"].contains(&s.as_str()))
+            );
+            let vbr = rate_control(encoder, BitrateMode::Vbr, 9000);
+            assert!(vbr.windows(2).any(|p| p == ["-maxrate", "9000k"]));
+            assert!(vbr.windows(2).any(|p| p == ["-constant_bit_rate", "0"]));
+        }
+    }
+    #[tokio::test]
+    #[cfg(target_os = "macos")]
+    #[ignore = "requires actual VideoToolbox hardware; run explicitly"]
+    async fn videotoolbox_cbr_keeps_the_requested_rate_on_static_video() {
+        for (width, height, fps, kbps) in [(1920, 1080, 60, 9000), (1080, 1920, 30, 8000)] {
+            for pattern in ["color=c=red:s", "testsrc2=s"] {
+                let result = tokio::process::Command::new(crate::ffmpeg::executable())
+                    .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
+                    .arg(format!("{pattern}={width}x{height}:r={fps}"))
+                    .args(["-t", "8", "-c:v", "h264_videotoolbox"])
+                    .args(rate_control("h264_videotoolbox", BitrateMode::Cbr, kbps))
+                    .args(
+                        stream_encoder_options(
+                            "h264_videotoolbox",
+                            &Resolution { width, height },
+                            fps,
+                            kbps,
+                        )
+                        .unwrap(),
+                    )
+                    .args(["-f", "h264", "pipe:1"])
+                    .kill_on_drop(true)
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                let actual_kbps = result.stdout.len() as f64 * 8. / 8. / 1000.;
+                assert!(
+                    (0.85..=1.15).contains(&(actual_kbps / f64::from(kbps))),
+                    "{pattern} {width}x{height}@{fps}: requested {kbps} kbps, measured {actual_kbps:.0} kbps"
+                );
+                println!(
+                    "{pattern} {width}x{height}@{fps}: requested {kbps} kbps, measured {actual_kbps:.0} kbps"
+                );
+            }
+        }
+    }
+    #[tokio::test]
+    #[cfg(target_os = "macos")]
+    #[ignore = "requires actual VideoToolbox hardware; run explicitly"]
+    async fn videotoolbox_hd60_declares_a_compatible_h264_level() {
+        let size = Resolution {
+            width: 1920,
+            height: 1080,
+        };
+        let result = tokio::process::Command::new(crate::ffmpeg::executable())
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=1920x1080:r=60",
+                "-frames:v",
+                "6",
+                "-c:v",
+                "h264_videotoolbox",
+            ])
+            .args(rate_control("h264_videotoolbox", BitrateMode::Cbr, 9000))
+            .args(stream_encoder_options("h264_videotoolbox", &size, 60, 9000).unwrap())
+            .args(["-f", "h264", "pipe:1"])
+            .kill_on_drop(true)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let sps = result
+            .stdout
+            .windows(7)
+            .find(|b| b[..3] == [0, 0, 1] && b[3] & 31 == 7)
+            .expect("encoded video must include an SPS");
+        assert!(
+            sps[6] >= 42,
+            "1080p60 needs H.264 level 4.2 or higher, got {}",
+            sps[6]
+        );
+    }
+    #[test]
+    fn videotoolbox_levels_cover_frame_rate_orientation_and_bitrate() {
+        for (width, height, fps, kbps, level) in [
+            (1920, 1080, 30, 9000, "4.0"),
+            (1080, 1920, 30, 8000, "4.0"),
+            (1920, 1080, 60, 9000, "4.2"),
+            (1080, 1920, 60, 9000, "4.2"),
+            (1920, 1080, 30, 30_000, "4.1"),
+            (3840, 2160, 30, 30_000, "5.1"),
+            (3840, 2160, 60, 40_000, "5.2"),
+        ] {
+            let options = stream_encoder_options(
+                "h264_videotoolbox",
+                &Resolution { width, height },
+                fps,
+                kbps,
+            )
+            .unwrap();
+            assert!(options.windows(2).any(|p| p == ["-level:v", level]));
+        }
+        let size = Resolution {
+            width: 7680,
+            height: 4320,
+        };
+        assert!(stream_encoder_options("h264_videotoolbox", &size, 60, 50_000).is_err());
+        assert_eq!(
+            stream_encoder_options("libx264", &size, 60, 50_000).unwrap(),
+            encoder_options("libx264")
+        );
+        assert_eq!(
+            stream_encoder_options("hevc_videotoolbox", &size, 60, 50_000).unwrap(),
+            encoder_options("hevc_videotoolbox")
+        );
+    }
     #[test]
     fn videotoolbox_is_required_to_use_hardware() {
         for encoder in ["h264_videotoolbox", "hevc_videotoolbox"] {

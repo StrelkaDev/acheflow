@@ -16,6 +16,7 @@ struct Frame {
     rgba: Vec<u8>,
 }
 type Latest = Arc<Mutex<Option<Arc<Frame>>>>;
+const MAX_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
 
 #[component]
 pub fn VideoPreview(
@@ -89,20 +90,28 @@ pub(crate) async fn download_snapshot(
     let native_size = dimension("x-frame-width").zip(dimension("x-frame-height"));
     if response
         .content_length()
-        .is_some_and(|n| n > 2 * 1024 * 1024)
+        .is_some_and(|n| n > MAX_SNAPSHOT_BYTES as u64)
     {
         return None;
     }
     let bytes = response.bytes().await.ok()?;
-    if bytes.len() > 2 * 1024 * 1024 {
+    if bytes.len() > MAX_SNAPSHOT_BYTES {
         return None;
     }
+    decode_snapshot(&bytes, native_size)
+}
+
+fn decode_snapshot(
+    bytes: &[u8],
+    native_size: Option<(u32, u32)>,
+) -> Option<(image::RgbImage, acheflow_media_api::workspace::Resolution)> {
     let mut reader =
         image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Jpeg);
     let mut limits = image::Limits::default();
-    limits.max_image_width = Some(480);
-    limits.max_image_height = Some(854);
-    limits.max_alloc = Some(16 * 1024 * 1024);
+    // The server sends native-resolution JPEGs, including portrait and 4K frames.
+    limits.max_image_width = Some(7680);
+    limits.max_image_height = Some(7680);
+    limits.max_alloc = Some(256 * 1024 * 1024);
     reader.limits(limits);
     let image = reader.decode().ok()?.to_rgb8();
     // Older servers have no dimension headers; retain their snapshot aspect ratio.
@@ -249,5 +258,51 @@ impl Widget for PreviewWidget {
             &Rect::new(0., 0., frame.width as f64, frame.height as f64),
         );
         scene
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn jpeg(width: u32, height: u32) -> Vec<u8> {
+        let image = image::RgbImage::from_pixel(width, height, image::Rgb([210, 50, 30]));
+        let mut bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 95)
+            .encode_image(&image)
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn native_hd_and_4k_snapshots_keep_their_pixels_and_dimensions() {
+        for (width, height) in [(1920, 1080), (1080, 1920), (3840, 2160), (2160, 3840)] {
+            let (image, size) = decode_snapshot(&jpeg(width, height), Some((width, height)))
+                .expect("native server snapshots must reach source and studio previews");
+            assert_eq!(image.dimensions(), (width, height));
+            assert_eq!((size.width, size.height), (width, height));
+            let pixel = image.get_pixel(width / 2, height / 2).0;
+            assert!(pixel[0] > 190 && pixel[1] < 70 && pixel[2] < 50);
+        }
+    }
+
+    #[test]
+    fn legacy_snapshots_keep_native_headers_or_fall_back_to_jpeg_dimensions() {
+        let bytes = jpeg(480, 270);
+        for (headers, expected) in [(Some((1920, 1080)), (1920, 1080)), (None, (480, 270))] {
+            let (image, size) = decode_snapshot(&bytes, headers).unwrap();
+            assert_eq!(image.dimensions(), (480, 270));
+            assert_eq!((size.width, size.height), expected);
+        }
+    }
+
+    #[test]
+    fn malformed_and_oversized_snapshot_dimensions_are_rejected() {
+        assert!(decode_snapshot(b"invalid JPEG", None).is_none());
+        assert!(decode_snapshot(&jpeg(7681, 1), None).is_none());
+        let bytes = jpeg(16, 16);
+        for size in [(0, 16), (16, 0), (7681, 16), (16, 7681)] {
+            assert!(decode_snapshot(&bytes, Some(size)).is_none());
+        }
     }
 }
