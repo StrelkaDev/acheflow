@@ -522,7 +522,7 @@ async fn application_setup_renders_guest_links_addresses_and_local_failures_in_e
             .inner
             .borrow()
             .query_selector_all(&format!("{card} .extension-disclosure-toggle"))
-            .unwrap()[1];
+            .unwrap()[2];
         doc.inner.borrow_mut().set_focus_to(disclosure);
         press_tab_key(&mut doc, NamedKey::Enter, Code::Enter);
         assert!(exists(&doc, &format!("{card} a[href^='https://']")));
@@ -550,10 +550,13 @@ async fn application_setup_renders_guest_links_addresses_and_local_failures_in_e
                     == format!("https://app.acheflow.com/fwd/{provider}/oauth/callback")));
             drop(document);
         }
+        open_application_credentials(&mut doc, provider);
         assert_eq!(
             exists(
                 &doc,
-                &format!("{card} .client-authorization > label input[type='password']")
+                &format!(
+                    "{card} .client-authorization .extension-disclosure-content input[type='password']"
+                )
             ),
             provider == "youtube"
         );
@@ -613,16 +616,21 @@ async fn youtube_connect_requires_public_id_and_local_secret_without_leaking_the
         .or_default()
         .enabled = true;
     settle(&mut doc);
+    assert!(!exists(
+        &doc,
+        "#client-extension-youtube .client-authorization input"
+    ));
+    open_application_credentials(&mut doc, "youtube");
     let button = "#client-extension-youtube .local-extension-action.primary";
     assert!(exists(&doc, &format!("{button}[disabled]")));
     for (selector, value, ready) in [
         (
-            "#client-extension-youtube .client-authorization > label input[type='text']",
+            "#client-extension-youtube .client-authorization .extension-disclosure-content input[type='text']",
             "own-client",
             false,
         ),
         (
-            "#client-extension-youtube .client-authorization > label input[type='password']",
+            "#client-extension-youtube .client-authorization .extension-disclosure-content input[type='password']",
             "local-secret-draft",
             true,
         ),
@@ -657,14 +665,14 @@ async fn youtube_connect_requires_public_id_and_local_secret_without_leaking_the
         "another application cannot reuse an unsubmitted credential draft"
     );
 }
-fn open_application_setup(doc: &mut DioxusDocument, provider: &str) {
+fn open_application_credentials(doc: &mut DioxusDocument, provider: &str) {
     let disclosure = doc
         .inner
         .borrow()
         .query_selector_all(&format!(
             "#client-extension-{provider} .extension-disclosure-toggle"
         ))
-        .unwrap()[1];
+        .unwrap()[0];
     doc.inner.borrow_mut().set_focus_to(disclosure);
     press_tab_key(doc, NamedKey::Enter, Code::Enter);
 }
@@ -687,7 +695,7 @@ async fn client_installations_are_editable_offline_and_never_mutate_server_setti
     assert!(client.project.read().client_extensions[id].enabled);
     assert!(client.project.read().extensions.is_empty());
     assert!(!(client.busy)());
-    open_application_setup(&mut doc, id);
+    open_application_credentials(&mut doc, id);
     let input = doc
         .inner
         .borrow()
@@ -717,7 +725,7 @@ async fn client_installations_are_editable_offline_and_never_mutate_server_setti
     assert!(!exists(&doc, &format!("#client-extension-{id} input")));
     client.project.set(first);
     settle(&mut doc);
-    open_application_setup(&mut doc, id);
+    open_application_credentials(&mut doc, id);
     assert!(exists(&doc, &format!("#client-extension-{id} input")));
     assert_eq!(
         client.project.read().client_extensions[id].config[field],
@@ -742,9 +750,8 @@ async fn local_guest_panel_keeps_manual_tokens_out_of_workspace_and_server_paylo
     let disclosure = doc
         .inner
         .borrow()
-        .query_selector(".client-authorization button[aria-expanded='false']")
-        .unwrap()
-        .expect("manual token fields start collapsed");
+        .query_selector_all(".client-authorization button[aria-expanded='false']")
+        .unwrap()[1];
     doc.inner.borrow_mut().set_focus_to(disclosure);
     press_tab_key(&mut doc, NamedKey::Enter, Code::Enter);
     assert!(exists(&doc, ".client-authorization input[type='password']"));
@@ -824,9 +831,8 @@ async fn local_guest_panel_keeps_manual_tokens_out_of_workspace_and_server_paylo
     let disclosure = doc
         .inner
         .borrow()
-        .query_selector(".client-authorization button[aria-expanded='false']")
-        .unwrap()
-        .expect("new workspace instance starts collapsed");
+        .query_selector_all(".client-authorization button[aria-expanded='false']")
+        .unwrap()[1];
     doc.inner.borrow_mut().set_focus_to(disclosure);
     press_tab_key(&mut doc, NamedKey::Enter, Code::Enter);
     let input = doc
@@ -892,7 +898,7 @@ async fn extension_scope_tabs_keep_drafts_separate_and_follow_keyboard_focus() {
     toggle(&mut doc);
     let catalog = acheflow_client::catalog::ClientCatalog::bundled();
     let local = catalog.installed.keys().next().unwrap();
-    open_application_setup(&mut doc, local);
+    open_application_credentials(&mut doc, local);
     let input = doc
         .inner
         .borrow()
@@ -1167,7 +1173,7 @@ async fn compact_extension_controls_share_rows_and_wrap_without_horizontal_overf
             );
         }
         drop(document);
-        open_application_setup(&mut doc, "youtube");
+        open_application_credentials(&mut doc, "youtube");
         let document = doc.inner.borrow();
         for id in document.query_selector_all("#client-extension-youtube .field, #client-extension-youtube .extension-copy-field button").unwrap() {
             let node = document.get_node(id).unwrap();

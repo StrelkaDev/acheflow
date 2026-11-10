@@ -17,4 +17,6 @@ for manifest_path in sorted(root.glob('*/manifest.json')):
     if Path(module).name!=module or not module.endswith('.wasm'):
         raise ValueError(f'Expected a local .wasm module: {manifest_path}')
     shutil.copyfile(artifacts/f'{target}.wasm',manifest_path.parent/module)
-shutil.copyfile(artifacts/'acheflow_extension_fixture.wasm',root.parent/'crates/acheflow-server/tests/fixtures/domain.wasm')
+fixture=root.parent/'crates/acheflow-server/tests/fixtures/domain.wasm'
+fixture.parent.mkdir(parents=True,exist_ok=True)
+shutil.copyfile(artifacts/'acheflow_extension_fixture.wasm',fixture)

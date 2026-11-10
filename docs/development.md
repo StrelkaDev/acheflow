@@ -30,9 +30,12 @@ available, but installation docs and packages use the unified `acheflow` binary.
 
 ## Standard checks
 
-After guest/SDK changes, rebuild guests before running host tests. Keep source,
-manifests and checked-in WASM artifacts matched. Do not substitute native guest
-code for real-WASM integration tests.
+On a fresh checkout and after guest/SDK changes, build guests before host builds
+or tests. Keep source, manifests and generated local WASM artifacts matched.
+These build outputs, including the domain test fixture, are ignored by Git and
+must not be committed. CI must run the guest build before host checks; macOS
+packaging runs it automatically unless explicitly reusing an existing build.
+Do not substitute native guest code for real-WASM integration tests.
 
 ```sh
 python3 extensions/build.py

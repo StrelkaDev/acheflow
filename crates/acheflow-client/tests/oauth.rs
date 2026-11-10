@@ -119,8 +119,14 @@ fn provider_setup_uses_active_platform_addresses_and_only_required_local_secrets
                 .unwrap();
             let widgets = setup["widgets"].as_array().unwrap();
             let visible = panel["widgets"].as_array().unwrap();
+            let credentials = visible
+                .iter()
+                .find(|w| w["label"] == "Application credentials")
+                .expect("application credentials can be collapsed independently");
+            assert_eq!(credentials["type"], "disclosure");
+            let credential_fields = credentials["widgets"].as_array().unwrap();
             assert!(
-                visible
+                credential_fields
                     .iter()
                     .any(|w| w["type"] == "setting_input" && w["id"] == "client_id")
             );
@@ -158,9 +164,7 @@ fn provider_setup_uses_active_platform_addresses_and_only_required_local_secrets
                 }
             );
             assert_eq!(
-                panel["widgets"]
-                    .as_array()
-                    .unwrap()
+                credential_fields
                     .iter()
                     .any(|w| w["type"] == "secret_input" && w["id"] == "client_secret"),
                 !browser && provider == "youtube"

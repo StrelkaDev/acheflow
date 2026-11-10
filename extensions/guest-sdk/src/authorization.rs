@@ -119,7 +119,9 @@ impl Authorization {
         if input["environment"]["browser"] != true && auth["native_pkce"] == true {
             fields.push(json!({"type":"secret_input","id":"refresh_token","label":"Refresh token (optional)"}));
         }
-        let mut widgets = application_setup::fields(manifest, input);
+        let mut widgets = vec![
+            json!({"type":"disclosure","label":"Application credentials","widgets":application_setup::fields(manifest, input)}),
+        ];
         let mut actions = vec![];
         if !self.authorized {
             actions.push(json!({"type":"button","id":"connect","label":format!("Connect with {}",manifest["name"].as_str().unwrap_or("account")),"primary":true,"requires":required}));

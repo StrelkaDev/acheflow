@@ -15,12 +15,12 @@ become Workspace fields, server commands, snapshots or MCP events.
 
 ## Setup
 
-Enable an installed extension, fill the fields above Connect, and expand
-**Application setup instructions** when registering the application.
+Enable an installed extension and enter its fields under **Application credentials**.
+Expand **Application setup instructions** when registering the application.
 Each provider declares console/documentation links, platform-specific instructions
 and public fields bound to its own setting IDs. Enter your application's public
-Client ID above Connect and enable only the functions you need. The guest displays the
-requested permissions and the exact active callback or authorized origin with
+Client ID in **Application credentials** and enable only the functions you need.
+The guest displays the requested permissions and the exact active callback or authorized origin with
 **Copy**. If the clipboard is unavailable, select the read-only address manually.
 These declarations use the shared typed application-setup contract; the UI has no
 provider list, console URL or provider-specific setting binding.
@@ -29,8 +29,9 @@ Enter your own application's **Application Client ID** in the enabled extension
 card before Connect. Native YouTube also requires **Application secret**; Twitch
 and VK Video Live implicit sign-in do not. The guest declares which fields are
 required. Connect remains disabled for missing or malformed inputs. Saved local
-secrets show a placeholder instead of their value. A different application ID uses
-a separate credential slot. After authorization, use the visible **Disconnect account**
+secrets show a placeholder and a **Saved locally** note instead of their value.
+Leave the input blank to keep a saved secret, or enter a new value to replace it.
+A different application ID uses a separate credential slot. After authorization, use the visible **Disconnect account**
 button to clear that account and pending callbacks.
 
 Secret and token inputs render only asterisks, including in the native Blitz UI;

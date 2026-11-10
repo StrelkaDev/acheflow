@@ -26,7 +26,11 @@ cargo run -p acheflow --locked -- --server
 `extensions/` is a separate Cargo workspace. `guest-sdk` wraps the checked linear
 memory ABI; `sample/src/lib.rs` is a minimal authoring example and
 `twitch/src/lib.rs` contains the complete first provider. The build script installs
-matching `.wasm` artifacts beside their manifests. WAT remains supported by wasmi
+matching `.wasm` artifacts beside their manifests and creates the domain test
+fixture. These files are generated locally, ignored by Git and excluded from
+source control. Run the guest build on a fresh checkout before compiling or
+testing the host; release packages include the generated modules.
+WAT remains supported by wasmi
 for low-level sandbox tests, but provider sources are Rust.
 
 Install server logic directories containing `manifest.json` and a module beneath

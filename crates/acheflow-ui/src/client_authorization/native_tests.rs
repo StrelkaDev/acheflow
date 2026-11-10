@@ -71,7 +71,14 @@ fn app() -> Element {
     harness.signals.set(Some(signals));
     harness.notice.set(Some(notice));
     harness.page.set(Some(page));
-    rsx! {crate::native_activation::Notice {value:notice}}
+    rsx! {
+        crate::native_activation::Notice {value:notice}
+        if let Some(panel) = signals.panel.read().as_ref() {
+            for widget in panel.widgets.clone() {
+                {render_widget(widget, harness.provider.clone(), signals, Callback::new(|_| {}))}
+            }
+        }
+    }
 }
 
 struct Fixture {
@@ -510,4 +517,99 @@ fn root_router_displays_unknown_and_disabled_recipient_errors_without_the_url() 
         assert!(!text.contains("native-url-marker"));
         assert!(!text.contains("https://"));
     }
+}
+
+#[test]
+fn saved_local_secret_remains_available_when_an_empty_replacement_is_submitted() {
+    let mut fixture = Fixture::new("youtube");
+    let (mut session, _) = fixture.session();
+    // Finish the guest's validation using captured credentials, without a provider request.
+    session
+        .capture(
+            &mut json!({"access_token":"fixture-token"}),
+            &json!({"access_token":"/access_token"}),
+        )
+        .unwrap();
+    session.step(json!({"type":"local_http","id":"auth:validate","status":200,"payload":{"aud":"public-id","expires_in":3600,"scope":"https://www.googleapis.com/auth/youtube.force-ssl"}}), &json!({"browser":false}), now()).unwrap();
+    assert!(session.has_secret("client_secret"));
+    // A new authorization lifecycle must reuse the committed application secret.
+    session
+        .step(
+            json!({"type":"local_stop"}),
+            &json!({"browser":false}),
+            now(),
+        )
+        .unwrap();
+    session
+        .step(
+            json!({"type":"local_start"}),
+            &json!({"browser":false}),
+            now(),
+        )
+        .unwrap();
+    assert!(session.has_secret("client_secret"));
+    fixture.scope(|| {
+        let mut signals = fixture.signals();
+        let key = session_key(&signals.identity.peek(), "youtube");
+        signals.sessions.write().insert(key, session);
+        signals.panel.set(Some(ExtensionPanel {
+            extension_id: "youtube".into(),
+            title: "Account authorization".into(),
+            widgets: vec![PanelWidget::SecretInput {
+                id: "client_secret".into(),
+                label: "Application secret".into(),
+            }],
+        }));
+    });
+    fixture.settle();
+    {
+        let document = fixture.doc.inner.borrow();
+        let note = document
+            .query_selector(".local-secret-saved")
+            .unwrap()
+            .expect("saved credentials have a visible status");
+        assert!(
+            document
+                .get_node(note)
+                .unwrap()
+                .text_content()
+                .contains("Saved locally")
+        );
+        let input = document
+            .query_selector("input[type='password']")
+            .unwrap()
+            .unwrap();
+        assert!(
+            !document
+                .get_node(input)
+                .unwrap()
+                .element_data()
+                .unwrap()
+                .attrs()
+                .iter()
+                .any(|a| a.value.contains("fixture-local-secret"))
+        );
+    }
+    fixture.scope(|| {
+        let mut signals = fixture.signals();
+        signals
+            .drafts
+            .write()
+            .insert("client_secret".into(), String::new());
+        assert!(required_inputs_ready(
+            &["client_secret".into()],
+            "youtube",
+            signals
+        ));
+        dispatch("youtube", "noop".into(), signals);
+        assert!(
+            signals
+                .sessions
+                .read()
+                .get(&session_key(&signals.identity.peek(), "youtube"))
+                .unwrap()
+                .has_secret("client_secret")
+        );
+    });
+    fixture.settle();
 }

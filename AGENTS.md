@@ -45,7 +45,9 @@ work is a Git task; do not restart implementation or a full feature workflow.
 - Register settings, channels and capabilities through the manifest/domain API.
   Adding a provider must not require editing the server or shared UI.
 - After changing guest/SDK source, run `python3 extensions/build.py` before host
-  tests; keep source, manifests and WASM artifacts matched.
+  builds or tests; keep source, manifests and local WASM artifacts matched.
+  WASM compiled from repository source is generated output: never track or commit
+  it, including test fixtures. Generate it during setup, CI and packaging.
 - Publish only from enabled live instances. Test two independent providers and
   lifecycle/cancellation boundaries; use real WASM guests, not native substitutes.
 

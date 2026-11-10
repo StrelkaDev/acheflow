@@ -270,6 +270,10 @@ fn dispatch(
         return;
     };
     for (secret_id, value) in drafts.take() {
+        // Empty replacement fields keep the saved credential. Disconnect clears it.
+        if value.is_empty() {
+            continue;
+        }
         if let Err(reason) = session.set_secret(&secret_id, value) {
             error.set(reason);
             sessions.write().insert(key, session);
@@ -517,7 +521,9 @@ fn render_widget(
                 .read()
                 .get(&session_key(&signals.identity.peek(), &extension))
                 .is_some_and(|s| s.has_secret(&id));
-            rsx! {label{class:"field",span{"{label}"}input{r#type:"password",autocomplete:"off",placeholder:if saved{"********"}else{""},disabled:busy(),maxlength:8192,value:drafts.read().get(&id).cloned().unwrap_or_default(),oninput:move|event|{drafts.write().insert(id.clone(),event.value());}}}}
+            rsx! {label{class:"field",span{"{label}"}input{r#type:"password",autocomplete:"off",placeholder:if saved{"********"}else{""},disabled:busy(),maxlength:8192,value:drafts.read().get(&id).cloned().unwrap_or_default(),oninput:move|event|{drafts.write().insert(id.clone(),event.value());}}
+                if saved {span{class:"form-help local-secret-saved","Saved locally. Leave blank to keep it, or enter a new value to replace it."}}
+            }}
         }
         PanelWidget::Link { label, url } => {
             rsx! {a{href:url,target:"_blank",rel:"noopener noreferrer","{label}"}}
@@ -552,6 +558,7 @@ fn required_inputs_ready(requires: &[String], extension: &str, signals: PanelSig
         session.manifest.secret_fields.contains_key(id)
             && drafts
                 .get(id)
+                .filter(|value| !value.is_empty())
                 .map_or_else(|| session.has_secret(id), |v| valid_required_input(v, 8192))
     })
 }
