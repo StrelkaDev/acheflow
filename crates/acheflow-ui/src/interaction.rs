@@ -482,7 +482,7 @@ fn ClientIntegrationCard(id: String, name: String) -> Element {
                 div{class:"extension-fields",for setting in manifest.settings.iter().filter(|s|!s.secret && !s.toggle && !manifest.application_setup.as_ref().is_some_and(|setup|setup.settings.contains(&s.id))).cloned(){ExtensionSetting{key:"{setting.id}",extension:id.clone(),setting,local:true}}}
                 div{class:"extension-functions",for setting in manifest.settings.iter().filter(|s|!s.secret && s.toggle).cloned(){ExtensionSetting{key:"{setting.id}",extension:id.clone(),setting,local:true}}}
                 crate::client_authorization::ClientAuthorization{key:"{client.project.read().id}:{id}",id:id.clone(),name:name.clone()}
-                if !connected {p{class:"form-help","An authorized client executor must connect before messages can be collected or sent."}}
+                {client_execution_panel(id.clone())}
             }}
         }
     }
@@ -535,5 +535,17 @@ fn money(amount: u64, places: u8) -> String {
             amount % scale,
             width = usize::from(places.min(6))
         )
+    }
+}
+
+fn client_execution_panel(id: String) -> Element {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        rsx! {crate::client_authorization::ClientExecutionPanel {id}}
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = id;
+        rsx! {p{class:"form-help","Continuous live chat is available in the desktop client."}}
     }
 }

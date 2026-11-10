@@ -447,3 +447,10 @@ button.selected { background:var(--accent-surface); color:var(--accent-text); bo
 .server-preferences input { width:18px; height:18px; margin:0; padding:0; flex:0 0 18px; }
 .server-logs { max-height:180px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; padding:12px; background:#10151d; border:1px solid #252c38; border-radius:8px; font-size:12px; }
 @media (max-width:740px) { .server-connection { align-items:stretch; flex-direction:column; } .server-section-heading { align-items:flex-start; flex-direction:column; } }
+
+.extension-select { min-width:0; position:relative; }
+.extension-select-toggle { width:100%; display:flex; justify-content:space-between; text-align:left; overflow-wrap:anywhere; }
+.extension-select-options { display:flex; flex-direction:column; gap:4px; max-height:240px; overflow-y:auto; padding:6px; border:1px solid #283141; border-radius:8px; }
+.extension-select-options button { text-align:left; overflow-wrap:anywhere; }
+.extension-select-options button[aria-selected="true"] { color:var(--accent-text); border-color:var(--accent); }
+.local-execution-panel { display:flex; flex-direction:column; gap:10px; border-top:1px solid #283141; padding-top:14px; }

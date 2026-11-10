@@ -6,6 +6,40 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+/// Same trusted-operator boundary as /api/control/commands, not an MCP credential
+/// bypass. Registration still intersects the saved workspace capability policy.
+pub async fn studio(
+    axum::extract::State(host): axum::extract::State<Arc<ControlHost>>,
+    axum::Json(request): axum::Json<acheflow_media_api::control::StudioExecutorRequest>,
+) -> Result<axum::Json<Value>, (axum::http::StatusCode, axum::Json<Value>)> {
+    let result = if !request.client_id.starts_with("studio-")
+        || !acheflow_extension_api::integration::valid_id(&request.client_id, 64)
+    {
+        Err("invalid_argument: invalid Studio client identity".into())
+    } else {
+        call(
+            &host,
+            &ExecutorCredential {
+                id: request.client_id,
+                workspace_id: request.workspace_id,
+                token: String::new(),
+            },
+            request.operation,
+        )
+        .await
+    };
+    result.map(axum::Json).map_err(|message: String| {
+        let status = if message.starts_with("conflict") {
+            axum::http::StatusCode::CONFLICT
+        } else if message.starts_with("forbidden") {
+            axum::http::StatusCode::FORBIDDEN
+        } else {
+            axum::http::StatusCode::BAD_REQUEST
+        };
+        (status, axum::Json(json!({"error":{"message":message}})))
+    })
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutorCredential {
@@ -289,6 +323,11 @@ mod tests {
     use std::collections::BTreeSet;
 
     fn setup() -> (Arc<ControlHost>, Vec<(ExecutorCredential, ProviderRuntime)>) {
+        setup_with_prefix("client")
+    }
+    fn setup_with_prefix(
+        prefix: &str,
+    ) -> (Arc<ControlHost>, Vec<(ExecutorCredential, ProviderRuntime)>) {
         let (mut host, mut workspace) = crate::control::tests::host();
         let inner = Arc::get_mut(&mut host).unwrap();
         inner.installed.clear();
@@ -313,7 +352,7 @@ mod tests {
                 capabilities: connection.capabilities.clone(),
             });
             let actor = ExecutorCredential {
-                id: format!("client-{n}"),
+                id: format!("{prefix}-{n}"),
                 workspace_id: workspace.id.clone(),
                 token: format!("test-distinct-executor-credential-{n:04}"),
             };
@@ -336,6 +375,76 @@ mod tests {
         host.snapshot(0, 1);
         (host, clients)
     }
+    #[tokio::test]
+    async fn studio_http_bridge_delivers_two_real_guests_and_rejects_wrong_sources_and_revoked_policy()
+     {
+        let (host, mut clients) = setup_with_prefix("studio");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route("/api/control/executor", axum::routing::post(studio))
+            .with_state(host.clone());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let endpoint = format!("http://{address}/api/control/executor");
+        let mut bridges = vec![];
+        for (actor, runtime) in &mut clients {
+            let bridge = ExecutorConnection::studio(
+                endpoint.clone(),
+                actor.workspace_id.clone(),
+                actor.id.clone(),
+            )
+            .unwrap();
+            bridge.heartbeat(runtime).await.unwrap();
+            runtime
+                .turn(json!({"type":"start"}), now_ms())
+                .await
+                .unwrap();
+            let output=runtime.turn(json!({"type":"command","name":"chat.send","request_id":actor.id,"text":"Studio fixture message"}),now_ms()).await.unwrap();
+            bridge.publish(runtime, &output).await.unwrap();
+            bridges.push(bridge);
+        }
+        let state = host.snapshot(0, 200);
+        assert_eq!(state.client_executors.len(), 2);
+        for id in ["alpha", "beta"] {
+            assert!(state.chat.entries.iter().any(|e| e.message.platform==id && e.message.text=="Studio fixture message"));
+        }
+        let wrong_workspace = ExecutorConnection::studio(
+            endpoint.clone(),
+            "foreign-workspace".into(),
+            "studio-foreign".into(),
+        )
+        .unwrap();
+        assert!(wrong_workspace.heartbeat(&clients[0].1).await.is_err());
+        let wrong_actor = ExecutorConnection::studio(
+            endpoint.clone(),
+            clients[0].0.workspace_id.clone(),
+            "client-external".into(),
+        )
+        .unwrap();
+        assert!(wrong_actor.heartbeat(&clients[0].1).await.is_err());
+        let invalid= reqwest::Client::new().post(&endpoint).json(&json!({"workspace_id":clients[0].0.workspace_id,"client_id":"studio-injected","operation":{"type":"publish","generation":1,"connection_id":"local","event":{"type":"chat","access_token":"forbidden"}}})).send().await.unwrap();
+        assert!(!invalid.status().is_success());
+        let request = ControlRequest {
+            workspace_id: clients[0].0.workspace_id.clone(),
+            request_id: format!("{}:studio-revoke", now_ms()),
+            expected_revision: host.snapshot(0, 1).revision,
+            action: ControlAction::SetClientCapabilities { grants: vec![] },
+        };
+        host.execute(request).await.unwrap();
+        let output=clients[0].1.turn(json!({"type":"command","name":"chat.send","request_id":"revoked","text":"must not publish"}),now_ms()).await.unwrap();
+        assert!(bridges[0].publish(&clients[0].1, &output).await.is_err());
+        for bridge in bridges {
+            assert!(
+                bridge.disconnect(1).await.is_err(),
+                "revoked registrations are already inactive"
+            );
+        }
+        assert!(host.snapshot(0, 200).channels.is_empty());
+        server.abort();
+    }
+
     #[tokio::test]
     async fn real_mcp_and_two_wasm_executors_complete_chat_without_server_provider_io() {
         let (host, mut clients) = setup();

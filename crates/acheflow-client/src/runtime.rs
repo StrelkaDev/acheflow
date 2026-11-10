@@ -73,6 +73,19 @@ impl ProviderRuntime {
     pub fn identity(&self) -> &Identity {
         &self.identity
     }
+    /// A discovered channel replaces the old registration with a new generation.
+    pub fn select_connection(&mut self, connection: Connection) -> Result<(), String> {
+        if connection.provider != self.manifest.id {
+            return Err("provider identity mismatch".into());
+        }
+        self.identity.connection = connection;
+        self.identity.generation = self
+            .identity
+            .generation
+            .checked_add(1)
+            .ok_or("generation exhausted")?;
+        Ok(())
+    }
     pub(crate) fn restore_local(&mut self, secrets: Secrets, storage: Value) {
         self.secrets = secrets;
         self.storage = storage;

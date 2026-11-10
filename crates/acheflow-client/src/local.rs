@@ -25,6 +25,7 @@ pub struct LocalSession {
     #[cfg(not(target_arch = "wasm32"))]
     vault_key: Option<String>,
     dirty: bool,
+    credential_revision: u64,
     workspace_id: Option<String>,
     forwarding: forwarding::LocalForwarding,
 }
@@ -49,6 +50,7 @@ impl LocalSession {
             #[cfg(not(target_arch = "wasm32"))]
             vault_key: None,
             dirty: false,
+            credential_revision: 0,
             workspace_id: None,
             forwarding,
         })
@@ -107,6 +109,20 @@ impl LocalSession {
         }
         self.dirty = false;
         Ok(())
+    }
+    /// Committed credential version; drafts never activate provider execution.
+    pub fn credential_revision(&self) -> Option<u64> {
+        self.state
+            .secrets
+            .contains_key("access_token")
+            .then_some(self.credential_revision)
+    }
+    pub fn account_id(&self) -> String {
+        self.state.storage["account"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .unwrap_or("local-account")
+            .to_owned()
     }
     /// Presence only; local form rendering never receives credential values.
     pub fn has_secret(&self, key: &str) -> bool {
@@ -260,6 +276,9 @@ impl LocalSession {
                             if let Some(keep) = effect["keep"].as_array() {
                                 staged.retain(|key, _| keep.iter().any(|value| value == key));
                             }
+                            if self.state.secrets != staged {
+                                self.credential_revision += 1;
+                            }
                             self.state.secrets = staged;
                             self.dirty = true;
                         }
@@ -270,6 +289,7 @@ impl LocalSession {
                     }
                     Some("secret_clear") => {
                         self.forwarding.cancel();
+                        self.credential_revision += 1;
                         self.state.secrets.clear();
                         self.staged = None;
                         self.dirty = true;

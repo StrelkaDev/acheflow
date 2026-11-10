@@ -21,8 +21,8 @@ implemented features in the [roadmap](docs/roadmap.md).
 - Author client integrations and server logic as sandboxed Rust/WASM extensions.
 - Connect provider accounts locally and expose authorized application control via MCP.
 
-Provider account authorization and the continuous executor are separate systems.
-The account panels work; a complete always-on executor workflow remains unfinished.
+The desktop runs enabled, locally authorized provider integrations continuously.
+Continuous browser execution and production provider qualification remain unfinished.
 See [integration boundaries](docs/client-executor.md) before relying on chat,
 audience or automation for a production broadcast.
 

@@ -42,8 +42,8 @@
     },
     {
       "id": "video_id",
-      "label": "Video ID",
-      "help": "ID from the YouTube watch URL. Leave empty to discover an active broadcast for the authorized account.",
+      "label": "Video ID override (optional)",
+      "help": "Leave empty to follow your active broadcasts automatically. If several are live, choose one below. Enter a video ID only to pin a specific broadcast.",
       "max_length": 128
     },
     {

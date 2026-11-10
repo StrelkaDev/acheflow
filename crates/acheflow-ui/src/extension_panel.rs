@@ -3,6 +3,31 @@ use acheflow_extension_api::{ExtensionPanel, PanelWidget};
 use acheflow_media_api::control::ControlAction;
 use dioxus_native::prelude::*;
 
+#[component]
+pub(crate) fn PanelSelect(
+    label: String,
+    value: String,
+    options: Vec<String>,
+    onselect: Callback<String>,
+) -> Element {
+    let mut open = use_signal(|| false);
+    rsx! {div{class:"extension-select field",
+        span{"{label}"}
+        button{class:"extension-select-toggle","aria-label":label.clone(),"aria-haspopup":"listbox","aria-expanded":open().to_string(),
+            onclick:move|_|{let current=open();open.set(!current);},
+            onkeydown:move|event|{match event.key(){Key::Named(NamedKey::Enter)|Key::Character(_) if event.key()==Key::Named(NamedKey::Enter)||event.key()==Key::Character(" ".into())=>{event.prevent_default();let current=open();open.set(!current);},Key::Named(NamedKey::Escape)=>open.set(false),_=>{}}},
+            if value.is_empty(){"Choose a broadcast"}else{"{value}"}span{" ▾"}
+        }
+        if open(){div{class:"extension-select-options",role:"listbox","aria-label":label.clone(),
+            for option in options {button{role:"option","aria-selected":(option==value).to_string(),
+                onclick:{let option=option.clone();move|_|{open.set(false);onselect.call(option.clone());}},
+                onkeydown:{let option=option.clone();move|event|{if event.key()==Key::Named(NamedKey::Enter)||event.key()==Key::Character(" ".into()){event.prevent_default();open.set(false);onselect.call(option.clone());}else if event.key()==Key::Named(NamedKey::Escape){open.set(false);}}},
+                "{option}"
+            }}
+        }}
+    }}
+}
+
 pub fn render(panel: &ExtensionPanel) -> Element {
     rsx! { ExtensionPanelView { panel:panel.clone() } }
 }

@@ -181,7 +181,7 @@ impl VkLive {
                     if code == 200 && data["channel"]["url"].is_string() {
                         self.initialized = true;
                         let offline = data["channel"]["status"] == "offline";
-                        out.push(json!({"type":"channel","channel":{"id":self.channel,"label":format!("VK Video Live / {}",data["channel"]["nick"].as_str().unwrap_or(&self.channel)),"capabilities":[]}}));
+                        out.push(json!({"type":"channel","channel":{"id":self.channel,"label":format!("VK Video Live / {}",data["channel"]["nick"].as_str().unwrap_or(&self.channel)),"capabilities":([guest_sdk::authorization::enabled(&input["config"],"read_chat").then_some("chat.read"),guest_sdk::authorization::enabled(&input["config"],"read_audience").then_some("audience.read")].into_iter().flatten().collect::<Vec<_>>())}}));
                         if guest_sdk::authorization::enabled(&input["config"], "read_audience") {
                             out.push(json!({"type":"audience","sample":{"platform":"vklive","channel_id":self.channel,"stream_id":data["stream"]["id"],"observed_at_ms":now,"concurrent":if offline{json!(0)}else{data["stream"]["counters"]["viewers"].clone()},"offline":offline,"unique":null}}));
                         }

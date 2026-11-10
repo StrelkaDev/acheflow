@@ -1244,3 +1244,52 @@ async fn clicking_an_inactive_scope_tab_moves_focus_before_the_next_arrow_key() 
     press_tab_key(&mut doc, NamedKey::ArrowLeft, Code::ArrowLeft);
     assert!(exists(&doc, "#extensions-tab-client[aria-selected='true']"));
 }
+
+fn live_broadcast_dropdown_app() -> Element {
+    let mut selected = use_signal(String::new);
+    rsx! {crate::extension_panel::PanelSelect{
+        label:"Live broadcast",value:selected(),options:vec!["stream-a".into(),"stream-b".into()],
+        onselect:move |value|selected.set(value)
+    }}
+}
+#[tokio::test]
+async fn live_broadcast_dropdown_supports_keyboard_selection_and_collapses_after_choice() {
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(live_broadcast_dropdown_app),
+        DocumentConfig::default(),
+    );
+    doc.initial_build();
+    settle(&mut doc);
+    assert!(!exists(&doc, "[role='listbox']"));
+    let toggle = doc
+        .inner
+        .borrow()
+        .query_selector("button[aria-expanded='false']")
+        .unwrap()
+        .unwrap();
+    doc.inner.borrow_mut().set_focus_to(toggle);
+    press_tab_key(&mut doc, NamedKey::Enter, Code::Enter);
+    assert!(exists(&doc, "[role='listbox']"));
+    let option = doc
+        .inner
+        .borrow()
+        .query_selector_all("[role='option']")
+        .unwrap()[1];
+    doc.inner.borrow_mut().set_focus_to(option);
+    press_tab_key(&mut doc, NamedKey::Enter, Code::Enter);
+    assert!(!exists(&doc, "[role='listbox']"));
+    let toggle = doc
+        .inner
+        .borrow()
+        .query_selector("button[aria-expanded='false']")
+        .unwrap()
+        .unwrap();
+    assert!(
+        doc.inner
+            .borrow()
+            .get_node(toggle)
+            .unwrap()
+            .text_content()
+            .contains("stream-b")
+    );
+}

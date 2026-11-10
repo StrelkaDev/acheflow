@@ -16,11 +16,25 @@ and account tokens must never be sent to the logic server.
 - Common `send_chat`: queues one instruction per client-owned channel; receipts
   and provider echoes update the normal shared chat history.
 
-This is a library for integrating a native UI or executor application. There is
-currently no completed standalone executor binary. Main-UI account panels now run
-the providers' WASM authorization and local storage, as described in
-[extension authorization](extension-authorization.md); they do not start an executor.
-Enabling a provider on the server alone does not collect or send anything.
+The desktop Studio starts a native runtime for each enabled, locally authorized
+provider. It schedules provider ticks, socket/stream receives, normalized event
+publication and instruction claims independently of the visible page. Account
+removal, disable and workspace/server changes cancel that runtime and unregister
+its channels; failed cleanup expires under the registration TTL. There is no
+standalone executor binary. Enabling a provider on the server alone does not
+collect or send anything.
+
+Studio uses `POST /api/control/executor` at the same trusted-operator boundary as
+`/api/control/commands`, with the same API body limit and configured UI origins.
+Its typed envelope contains `workspace_id`, a `studio-` client identity and an
+`ExecutorRequest`; it accepts no provider credentials or raw platform effects.
+External executors still use the separately authenticated MCP endpoint described
+below. Both adapters use the same workspace, generation, policy and source checks.
+The first discovered channel of an enabled local integration creates its workspace
+capability grant through a separate operator command. Existing narrower grants are
+preserved; registration itself never changes policy. A live revocation is not
+silently reversed by a connection retry. The server workspace must be applied
+before its live chat can connect. See [extension authorization](extension-authorization.md).
 Continuous browser execution, live provider-operation qualification, durable intent
 storage, native poll instructions and generic external MCP tool registration remain
 unfinished. Native macOS local account panels already use the system vault.
@@ -90,8 +104,8 @@ Host identities and IDs owned by server logic cannot be claimed as client provid
 does not rewrite saved policy. Only one executor may own a provider/channel at once.
 Switching an account, workspace or expired session requires a new generation.
 
-Repeat the identical registration before its 30-second TTL expires. Client callers
-own scheduling, local panels/ticks, socket reads and shutdown. `claim` returns typed
+Repeat the identical registration before its 30-second TTL expires. Studio owns scheduling, local panels/ticks, socket reads and shutdown for native
+integrations; separately implemented executors must own the same lifecycle. `claim` returns typed
 instructions once; the local adapter validates workspace, client, generation,
 connection, capabilities and expiry before executing. Report `sent` only on a
 confirmed provider response; interrupted/uncertain writes are `unknown`. Never

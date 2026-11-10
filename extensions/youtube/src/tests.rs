@@ -229,3 +229,181 @@ fn disabling_chat_discards_the_pending_batch_and_closes_its_stream() {
     assert!(guest.stream.queue.is_empty());
     assert!(guest.stream.page.is_empty());
 }
+
+fn auto_input(kind: &str, now: u64) -> Value {
+    json!({"type":kind,"config":{},"secrets":["access_token"],"now_ms":now})
+}
+
+fn active_broadcast(id: &str, chat: &str) -> Value {
+    json!({"id":id,"snippet":{"title":format!("Live {id}"),"liveChatId":chat},"status":{"lifeCycleStatus":"live"}})
+}
+
+fn broadcast_response(items: Vec<Value>, now: u64) -> Value {
+    json!({"type":"http_result","id":"video","status":200,"now_ms":now,"config":{},"payload":{"items":items}})
+}
+
+#[test]
+fn automatic_discovery_keeps_finding_current_broadcasts_after_the_first_selection() {
+    let mut guest = YouTube::default();
+    let start = guest.handle(auto_input("start", 1000));
+    let lookup = start.iter().find(|e| e["type"] == "http").unwrap();
+    assert_eq!(
+        lookup["url"],
+        "https://www.googleapis.com/youtube/v3/liveBroadcasts"
+    );
+    assert_eq!(lookup["query"]["broadcastStatus"], "active");
+    let selected = guest.handle(broadcast_response(
+        vec![active_broadcast("video-a", "chat-a")],
+        1001,
+    ));
+    assert!(
+        selected
+            .iter()
+            .any(|e| e["type"] == "channel" && e["channel"]["id"] == "video-a")
+    );
+    let next = guest.handle(auto_input("tick", guest.next_video));
+    assert!(
+        next.iter()
+            .any(|e| e["url"] == "https://www.googleapis.com/youtube/v3/liveBroadcasts"),
+        "automatic mode must keep looking for new live broadcasts instead of pinning the first video ID"
+    );
+}
+
+#[test]
+fn multiple_active_broadcasts_offer_a_selector_and_switch_to_the_requested_chat() {
+    let mut guest = YouTube::default();
+    guest.handle(auto_input("start", 1000));
+    let effects = guest.handle(broadcast_response(
+        vec![
+            active_broadcast("video-a", "chat-a"),
+            active_broadcast("video-b", "chat-b"),
+        ],
+        1001,
+    ));
+    let selector = effects
+        .iter()
+        .filter(|e| e["type"] == "panel")
+        .filter_map(|e| e["panel"]["widgets"].as_array())
+        .flatten()
+        .find(|w| w["type"] == "select" && w["id"] == "select_broadcast")
+        .expect("multiple live broadcasts must be selectable in the guest panel");
+    let options = selector["options"].as_array().unwrap();
+    for id in ["video-a", "video-b"] {
+        assert!(
+            options
+                .iter()
+                .any(|option| option.as_str().is_some_and(|value| value.contains(id))),
+            "the selector must distinguish each current video ID"
+        );
+    }
+    let switched = guest.handle(json!({"type":"action","action_id":"select_broadcast","value":"video-b","config":{},"secrets":["access_token"],"now_ms":1002}));
+    assert_eq!(guest.video, "video-b");
+    assert_eq!(guest.chat, "chat-b");
+    assert!(
+        switched
+            .iter()
+            .any(|e| e["type"] == "channel" && e["channel"]["id"] == "video-b")
+    );
+    let opened = guest.handle(auto_input("tick", 1003));
+    let open = opened
+        .iter()
+        .find(|e| e["protocol"] == "grpc")
+        .expect("the selected chat must begin receiving messages");
+    let bytes = STANDARD
+        .decode(open["body_base64"].as_str().unwrap())
+        .unwrap();
+    assert!(bytes.windows(6).any(|part| part == b"chat-b"));
+}
+
+#[test]
+fn broadcast_switch_discards_old_batches_and_late_stream_events() {
+    let mut guest = YouTube::default();
+    guest.handle(auto_input("start", 1000));
+    guest.handle(broadcast_response(
+        vec![active_broadcast("video-a", "chat-a")],
+        1001,
+    ));
+    guest.handle(auto_input("tick", 1002));
+    let old = guest.stream.id.clone();
+    guest.handle(json!({"type":"http_stream_open","id":old,"config":{},"now_ms":1002}));
+    let first = guest.handle(data(&guest, &batch(25, "old-page"), true));
+    assert_eq!(first.iter().filter(|e| e["type"] == "chat").count(), 10);
+    assert!(!guest.stream.queue.is_empty());
+    guest.handle(broadcast_response(
+        vec![
+            active_broadcast("video-a", "chat-a"),
+            active_broadcast("video-b", "chat-b"),
+        ],
+        1003,
+    ));
+    let switched = guest.handle(json!({"type":"action","action_id":"select_broadcast","value":"video-b","config":{},"secrets":["access_token"],"now_ms":1004}));
+    assert_eq!(guest.video, "video-b");
+    assert!(
+        switched.iter().all(|e| e["type"] != "chat"),
+        "queued messages from the previous broadcast must not be relabelled with the new channel"
+    );
+    assert!(
+        switched
+            .iter()
+            .any(|e| e["close"] == true && e["id"] == old)
+    );
+    assert!(guest.stream.queue.is_empty());
+    assert!(guest.messages.is_empty());
+    assert!(guest.stream.page.is_empty());
+    guest.handle(auto_input("tick", 1005));
+    let late = guest.handle(json!({"type":"http_stream_data","id":old,"data":STANDARD.encode(batch(1,"late-page")),"end_message":true,"config":{},"now_ms":1006}));
+    assert!(late.iter().all(|e| e["type"] != "chat"));
+}
+
+#[test]
+fn automatic_selection_follows_the_remaining_live_broadcast_when_the_old_one_disappears() {
+    let mut guest = YouTube::default();
+    guest.handle(auto_input("start", 1000));
+    guest.handle(broadcast_response(
+        vec![active_broadcast("video-a", "chat-a")],
+        1001,
+    ));
+    guest.handle(auto_input("tick", 1002));
+    let old = guest.stream.id.clone();
+    guest.handle(json!({"type":"http_stream_open","id":old,"config":{},"now_ms":1002}));
+    let selected = guest.handle(broadcast_response(
+        vec![active_broadcast("video-b", "chat-b")],
+        32000,
+    ));
+    assert_eq!(guest.video, "video-b");
+    assert_eq!(guest.chat, "chat-b");
+    assert!(
+        selected
+            .iter()
+            .any(|e| e["close"] == true && e["id"] == old)
+    );
+    assert!(
+        selected
+            .iter()
+            .any(|e| e["type"] == "channel" && e["channel"]["id"] == "video-b")
+    );
+    let missing = guest.handle(broadcast_response(vec![], 64000));
+    assert!(guest.chat.is_empty());
+    assert!(missing.iter().any(|e| e["state"] == "connecting"));
+    assert!(
+        guest
+            .handle(auto_input("tick", guest.next_video))
+            .iter()
+            .any(|e| e["url"] == "https://www.googleapis.com/youtube/v3/liveBroadcasts")
+    );
+}
+
+#[test]
+fn explicit_video_override_remains_pinned_to_the_requested_video() {
+    let mut guest = setup();
+    let next = guest.handle(input("tick", guest.next_video));
+    let lookup = next
+        .iter()
+        .find(|e| e["id"] == "video" && e["type"] == "http")
+        .unwrap();
+    assert_eq!(
+        lookup["url"],
+        "https://www.googleapis.com/youtube/v3/videos"
+    );
+    assert_eq!(lookup["query"]["id"], "video");
+}

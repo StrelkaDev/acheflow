@@ -5,6 +5,16 @@ use acheflow_extension_api::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Trusted Studio operator HTTP API; external executors use authenticated MCP.
+/// Provider credentials and raw platform payloads are never accepted here.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StudioExecutorRequest {
+    pub workspace_id: String,
+    pub client_id: String,
+    pub operation: acheflow_extension_api::client_execution::ExecutorRequest,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ExtensionStatus {
     pub id: String,

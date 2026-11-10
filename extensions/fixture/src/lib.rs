@@ -19,6 +19,15 @@ impl Fixture {
             ];
         }
         match input["type"].as_str().unwrap_or_default() {
+            "start" if input["config"]["studio_fixture"] == "true" => vec![
+                json!({"type":"channel","channel":{"id":"channel","label":origin,"capabilities":["chat.read"]}}),
+            ],
+            "tick" if input["config"]["studio_fixture"] == "true" => {
+                self.events += 1;
+                vec![
+                    json!({"type":"chat","message":{"platform":origin,"channel_id":"channel","message_id":format!("studio:{}",self.events),"user_id":"viewer","display_name":"Viewer","text":"Live fixture message","roles":[],"occurred_at_ms":now}}),
+                ]
+            }
             "start" if input["config"]["transport_url"].is_string() => {
                 vec![json!({"type":"http","id":"slow","url":input["config"]["transport_url"]})]
             }

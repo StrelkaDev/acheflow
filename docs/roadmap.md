@@ -25,7 +25,7 @@ supported features in user guides.
 
 | Area | Work still needed |
 | --- | --- |
-| Provider execution | Integrate continuous executor scheduling with the studio, reconnect/registration withdrawal and clear sender/capability availability |
+| Provider execution | Qualify native Studio reconnect, receipt reconciliation and live provider availability; continuous browser execution remains unfinished |
 | Provider qualification | Verify configured user-owned applications through consent, renewal, receive/send and actual platform permissions; local OAuth alone does not prove executor behavior |
 | Execution durability | Persist/reconcile intents across crashes without automatically repeating uncertain external writes |
 | Browser execution | Complete the continuous browser/media executor; account setup is distinct from full provider transport support |
@@ -169,13 +169,13 @@ Depends on LOGIC-07.
 
 ### LOGIC-09: Own executor registration in Studio — P2
 
-The bridge library provides registration and heartbeat; Studio needs a continuous
-owner for their lifecycle, distinct from account authorization.
+Native Studio now owns enabled local provider runtimes and their registration
+lifecycle. Further qualification remains distinct from account authorization.
 
 Owner: [executor bridge](../crates/acheflow-client/src/bridge.rs),
 [account lifecycle](../crates/acheflow-ui/src/client_authorization.rs). Depends on LOGIC-04.
 
-- [ ] Tie executor registration, heartbeat and bounded reconnect to the active
+- [x] Tie native executor registration, heartbeat and bounded reconnect to the active
   workspace/server and authorized local account session.
 - [ ] Withdraw authority on account removal, disable, workspace switch and shutdown;
   make advertised capabilities and availability reflect current live authority.
@@ -184,8 +184,9 @@ Owner: [executor bridge](../crates/acheflow-client/src/bridge.rs),
 
 ### LOGIC-10: Run provider events and instructions continuously — P2
 
-Complete the executor scheduling around the registration owner; account setup
-alone must not be reported as a connected executor.
+Native receive, ticks, publication and instruction claims are scheduled by Studio.
+Keep broader transport-failure and receipt-reconciliation qualification open;
+account setup alone must not be reported as a connected executor.
 
 Owner: [provider runtime](../crates/acheflow-client/src/runtime.rs),
 [executor bridge](../crates/acheflow-client/src/bridge.rs). Depends on LOGIC-09 and LOGIC-11.

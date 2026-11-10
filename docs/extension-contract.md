@@ -76,7 +76,8 @@ gRPC status closes the stream with a generic protocol failure. A guest's close
 effect (`http_stream { id, close: true }`), replacement stream or runtime drop
 destroys its response body and aborts its HTTP/2 driver. Runtime receive timestamps
 include elapsed waiting time before provider backoff is calculated. This is a
-native library transport, not a browser gRPC shim or an always-on UI executor.
+native library transport, not a browser gRPC shim. The desktop Studio owns its
+continuous runtime scheduling.
 The wire framing follows the
 [gRPC HTTP/2 protocol](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md).
 
@@ -92,6 +93,12 @@ fields never enter server payloads. Server guests support event
 forwarding only, through private bounded per-instance queues. Forwarding does not
 activate disabled guests or grant provider I/O to server logic. See
 [forwarding addresses and delivery](forwarding.md).
+
+A client guest can emit `channel { reset: true }` to withdraw its current local
+channel before discovery/selection changes. This uses its declared `channel`
+capability. The Studio executor unregisters the previous generation; late stream
+events and pending messages must be discarded by the provider. Registration and
+publication remain subject to the saved workspace policy.
 
 Panels can use generic `row` and `disclosure` widgets to group controls. A button's
 optional `primary` flag defaults to false. Layout stays guest-declared and the host

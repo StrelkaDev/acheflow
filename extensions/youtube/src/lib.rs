@@ -1,5 +1,6 @@
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
+mod broadcasts;
 mod proto;
 mod stream;
 
@@ -7,6 +8,8 @@ mod stream;
 pub struct YouTube {
     authorization: guest_sdk::authorization::Authorization,
     video: String,
+    configured_video: String,
+    broadcasts: Vec<Value>,
     chat: String,
     stream: stream::ChatStream,
     authorized: bool,
@@ -25,12 +28,12 @@ fn http(id: &str, method: &str, path: &str, query: Value, body: Value) -> Value 
 impl YouTube {
     fn discover(&mut self) -> Value {
         self.video_pending = true;
-        if self.video.is_empty() {
+        if self.configured_video.is_empty() {
             http(
                 "video",
                 "GET",
                 "liveBroadcasts",
-                json!({"part":"snippet,status","broadcastStatus":"active","broadcastType":"all"}),
+                json!({"part":"snippet,status","broadcastStatus":"active","broadcastType":"all","maxResults":50}),
                 Value::Null,
             )
         } else {
@@ -38,7 +41,7 @@ impl YouTube {
                 "video",
                 "GET",
                 "videos",
-                json!({"part":"snippet,liveStreamingDetails","id":self.video}),
+                json!({"part":"snippet,liveStreamingDetails","id":self.configured_video}),
                 Value::Null,
             )
         }
@@ -52,7 +55,6 @@ impl YouTube {
         }
         let now = input["now_ms"].as_u64().unwrap_or(0);
         let read_chat = guest_sdk::authorization::enabled(&input["config"], "read_chat");
-        let read_audience = guest_sdk::authorization::enabled(&input["config"], "read_audience");
         let send_chat = guest_sdk::authorization::enabled(&input["config"], "send_chat");
         let mut out = vec![];
         match input["type"].as_str().unwrap_or_default() {
@@ -65,6 +67,11 @@ impl YouTube {
                     .unwrap_or_default()
                     .trim()
                     .into();
+                self.configured_video = self.video.clone();
+                self.chat.clear();
+                self.broadcasts.clear();
+                self.video_pending = false;
+                self.next_video = 0;
                 if !self
                     .video
                     .bytes()
@@ -79,11 +86,22 @@ impl YouTube {
                 self.authorized = input["secrets"]
                     .as_array()
                     .is_some_and(|keys| keys.iter().any(|s| s == "access_token"));
-                out.push(json!({"type":"panel","panel":{"extension_id":"youtube","title":"YouTube","widgets":[{"type":"button","id":"refresh","label":"Find live broadcast"},{"type":"label","text":"Authorize the account for the functions enabled in extension settings."}]}}));
+                out.push(self.broadcast_panel());
                 if self.authorized {
                     out.push(self.discover());
                 } else {
                     out.push(status("needs_authorization", None));
+                }
+            }
+            "action" if input["action_id"] == "select_broadcast" && self.authorized => {
+                if let Some(video) = self
+                    .broadcasts
+                    .iter()
+                    .find(|v| v["id"] == input["value"])
+                    .cloned()
+                {
+                    self.select_broadcast(&video, &input, now, &mut out);
+                    out.push(self.broadcast_panel());
                 }
             }
             "action" if input["action_id"] == "refresh" => {
@@ -112,6 +130,8 @@ impl YouTube {
             }
             "stop" => {
                 out.extend(self.stream.reset());
+                self.video_pending = false;
+                self.chat.clear();
                 self.authorized = false;
                 self.messages.clear();
             }
@@ -149,44 +169,7 @@ impl YouTube {
                     self.video_pending = false;
                     self.next_video = now.saturating_add(retry);
                     if code == 200 {
-                        let video = &value["items"][0];
-                        if video.is_null() {
-                            out.extend(self.stream.reset());
-                            self.chat.clear();
-                            out.push(status(
-                                "connecting",
-                                Some("No active broadcast found. Retrying."),
-                            ));
-                        } else {
-                            self.video = video["id"].as_str().unwrap_or_default().into();
-                            let chat = video["liveStreamingDetails"]["activeLiveChatId"]
-                                .as_str()
-                                .or(video["snippet"]["liveChatId"].as_str())
-                                .unwrap_or_default();
-                            if chat != self.chat {
-                                out.extend(self.stream.reset());
-                                self.messages.clear();
-                                self.seen.clear();
-                                self.chat = chat.into();
-                            }
-                            let details = &video["liveStreamingDetails"];
-                            let concurrent = details["concurrentViewers"]
-                                .as_str()
-                                .and_then(|s| s.parse::<u64>().ok());
-                            let offline = details["actualEndTime"].is_string();
-                            if read_audience {
-                                out.push(json!({"type":"audience","sample":{"platform":"youtube","channel_id":self.video,"stream_id":self.video,"observed_at_ms":now,"concurrent":concurrent,"offline":offline,"unique":null}}));
-                            }
-                            if !self.chat.is_empty() {
-                                out.push(json!({"type":"channel","channel":{"id":self.video,"label":format!("YouTube / {}",video["snippet"]["title"].as_str().unwrap_or(&self.video)),"capabilities":if send_chat {vec!["chat.send"]}else{vec![]},"constraints":{"chat.max_chars":200}}}));
-                                out.push(status("connected", None));
-                            } else {
-                                out.push(status(
-                                    "connecting",
-                                    Some("Live chat is not active. Retrying."),
-                                ));
-                            }
-                        }
+                        self.update_broadcasts(value, &input, now, &mut out);
                     } else if code != 401 {
                         out.push(json!({"type":"failure","message":"YouTube broadcast lookup failed; retrying with backoff."}));
                     }

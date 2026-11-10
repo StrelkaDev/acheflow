@@ -628,3 +628,8 @@ mod browser;
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
 use native::drive;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod execution;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use execution::ClientExecutionPanel;

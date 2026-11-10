@@ -115,7 +115,10 @@ always-on executor or implement a browser media executor. Those remain the separ
 client execution boundary described in [client-executor.md](client-executor.md).
 The card's **Executor connected / Executor not connected** badge reports the
 server's executor connections. **Authorized locally as …** in the account panel
-reports OAuth validation; account authorization alone does not start an executor.
+reports OAuth validation. For enabled integrations, the desktop starts the local
+provider runtime after committed authorization. **Executor connected** reports a
+live server registration, independently of OAuth status. Apply the workspace to its
+server first. Continuous browser execution is not implemented.
 
 Regression coverage exercises the actual provider WASM artifacts, read-only scopes,
 disabled sends, callback-state rejection, staged credentials, workspace exports and

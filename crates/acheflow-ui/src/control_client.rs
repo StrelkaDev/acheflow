@@ -317,7 +317,7 @@ fn timestamp() -> u64 {
         js_sys::Date::now() as u64
     }
 }
-async fn fetch(
+pub(crate) async fn fetch(
     workspace: &Workspace,
     command: Option<ControlRequest>,
 ) -> Result<ControlSnapshot, String> {
@@ -329,13 +329,14 @@ async fn fetch(
     let endpoint = crate::media::server_url(workspace, path)?;
     let http = reqwest::Client::new();
     let request = match command {
-        Some(command) => http.post(endpoint).json(&command),
-        None => http.get(endpoint),
+        Some(command) => http.post(&endpoint).json(&command),
+        None => http.get(&endpoint),
     };
     let response = request
+        .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
-        .map_err(|_| "Could not reach the interaction service".to_owned())?;
+        .map_err(|_| format!("Could not reach the interaction service at {endpoint}. Check the server address and that the server is running."))?;
     if !response.status().is_success() {
         let value: serde_json::Value = response.json().await.unwrap_or_default();
         return Err(value["error"]["message"]

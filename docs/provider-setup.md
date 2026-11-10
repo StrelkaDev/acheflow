@@ -55,6 +55,17 @@ do not create a connected executor or make unfinished poll instructions availabl
 
 ## YouTube
 
+In the desktop client, enable the integration and apply the workspace to its
+server. Leave **Video ID override (optional)** empty to discover active broadcasts
+for the authorized account. A single broadcast is selected automatically; if
+several are active, choose one in **Live broadcast**. The panel displays the
+selected title and copyable video ID. Discovery repeats every 30 seconds and
+follows a remaining active broadcast when the selected one ends. The bounded
+list contains up to 50 active broadcasts. Set the override only to pin a specific
+video, including a broadcast outside your account. Switching closes the old chat
+stream and discards its pending batch before reading the new chat.
+
+
 Select your own Cloud project, enable
 [YouTube Data API v3](https://console.cloud.google.com/apis/library/youtube.googleapis.com),
 and configure its OAuth consent settings. Create clients through

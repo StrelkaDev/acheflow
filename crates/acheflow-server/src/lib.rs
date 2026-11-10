@@ -119,6 +119,10 @@ async fn serve(
     let control_routes = Router::new()
         .route("/api/control/state", get(control::snapshot))
         .route(
+            "/api/control/executor",
+            axum::routing::post(client_bridge::studio),
+        )
+        .route(
             "/api/control/commands",
             axum::routing::post(control::command),
         )

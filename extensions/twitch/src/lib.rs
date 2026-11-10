@@ -214,7 +214,7 @@ impl Twitch {
                     out.push(json!({"type":"storage","value":{"expires":self.expires}}));
                     let was_authed = self.authed;
                     self.authed = true;
-                    out.push(json!({"type":"channel","channel":{"id":self.user,"label":format!("Twitch / {}",self.login),"capabilities":([send_chat.then_some("chat.send"),manage_polls.then_some("poll.create")].into_iter().flatten().collect::<Vec<_>>()),"constraints":{"chat.max_chars":500,"poll.max_options":5,"poll.min_duration_seconds":15,"poll.max_duration_seconds":1800,"poll.max_question_chars":45,"poll.max_option_chars":25}}}));
+                    out.push(json!({"type":"channel","channel":{"id":self.user,"label":format!("Twitch / {}",self.login),"capabilities":([read_chat.then_some("chat.read"),read_audience.then_some("audience.read"),send_chat.then_some("chat.send"),manage_polls.then_some("poll.create")].into_iter().flatten().collect::<Vec<_>>()),"constraints":{"chat.max_chars":500,"poll.max_options":5,"poll.min_duration_seconds":15,"poll.max_duration_seconds":1800,"poll.max_question_chars":45,"poll.max_option_chars":25}}}));
                     out.push(self.panel());
                     if !was_authed && read_chat {
                         self.next_socket = 0;

@@ -613,3 +613,152 @@ fn saved_local_secret_remains_available_when_an_empty_replacement_is_submitted()
     });
     fixture.settle();
 }
+
+#[tokio::test]
+async fn native_live_loop_publishes_real_guest_events_and_unregisters_when_cancelled() {
+    use super::super::execution::{ExecutionSignals, run};
+    use acheflow_client::runtime::{Identity, ProviderRuntime};
+    use acheflow_extension_api::client_execution::*;
+    use acheflow_media_api::control::{ControlSnapshot, StudioExecutorRequest};
+    use axum::{
+        Json,
+        extract::State,
+        routing::{get, post},
+    };
+    use std::sync::{Arc, Mutex};
+    #[derive(Clone)]
+    struct Server {
+        workspace: String,
+        provider: String,
+        events: Arc<Mutex<Vec<ExecutorRequest>>>,
+    }
+    async fn snapshot(State(state): State<Server>) -> Json<ControlSnapshot> {
+        Json(ControlSnapshot {
+            workspace_id: Some(state.workspace),
+            client_capabilities: vec![CapabilityGrant {
+                provider: state.provider,
+                account_id: "bot".into(),
+                channel_id: "channel".into(),
+                capabilities: std::collections::BTreeSet::from([Capability::ChatRead]),
+            }],
+            ..Default::default()
+        })
+    }
+    async fn execute(
+        State(state): State<Server>,
+        Json(request): Json<StudioExecutorRequest>,
+    ) -> Json<Value> {
+        assert_eq!(request.workspace_id, state.workspace);
+        let value = match &request.operation {
+            ExecutorRequest::Register { registration } => json!(ExecutorStatus {
+                client_id: request.client_id,
+                generation: registration.generation,
+                expires_at_ms: now() + 30_000,
+                connections: registration.connections.clone()
+            }),
+            ExecutorRequest::Claim { .. } => json!([]),
+            _ => json!({"ok":true}),
+        };
+        state.events.lock().unwrap().push(request.operation);
+        Json(value)
+    }
+    for provider in ["alpha", "beta"] {
+        let mut fixture = Fixture::new(provider);
+        let signals = fixture.signals();
+        let server_state = Server {
+            workspace: signals.identity.peek().0.clone(),
+            provider: provider.into(),
+            events: Default::default(),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let app = axum::Router::new()
+            .route("/api/control/state", get(snapshot))
+            .route("/api/control/executor", post(execute))
+            .with_state(server_state.clone());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        fixture.scope(|| {
+            let mut client = signals.client;
+            client.project.write().server_url = endpoint;
+        });
+        fixture.settle();
+        let owner = signals.identity.peek().clone();
+        let manifest=serde_json::from_value(json!({"id":provider,"name":provider,"api_version":2,"module":"fixture.wasm","execution_side":"client","capabilities":["channel","chat"],"services":[],"subscriptions":[]})).unwrap();
+        let runtime = ProviderRuntime::new(
+            manifest,
+            include_bytes!("../../../acheflow-server/tests/fixtures/domain.wasm"),
+            Identity {
+                workspace_id: owner.0.clone(),
+                client_id: format!("studio-{provider}"),
+                generation: 1,
+                connection: Connection {
+                    id: "pending".into(),
+                    provider: provider.into(),
+                    account_id: "bot".into(),
+                    channel_id: "pending".into(),
+                    capabilities: Default::default(),
+                },
+            },
+            BTreeMap::from([("studio_fixture".into(), "true".into())]),
+        )
+        .unwrap();
+        let task = fixture.scope(|| {
+            let context = ExecutionSignals {
+                client: signals.client,
+                sessions: signals.sessions,
+                panel: signals.panel,
+                state: Signal::new(String::new()),
+                actions: Signal::new(VecDeque::new()),
+                permissions: Signal::new(Default::default()),
+            };
+            let provider = provider.to_owned();
+            spawn(async move {
+                let mut runtime = runtime;
+                run(&mut runtime, &owner, &provider, 0, context)
+                    .await
+                    .unwrap();
+            })
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            fixture.settle();
+            if server_state.events.lock().unwrap().iter().any(|e| {
+                matches!(
+                    e,
+                    ExecutorRequest::Publish {
+                        event: ClientEvent::Chat { .. },
+                        ..
+                    }
+                )
+            }) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the native loop must publish the guest's chat"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        fixture.scope(|| task.cancel());
+        fixture.settle();
+        loop {
+            if server_state
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| matches!(e, ExecutorRequest::Unregister { .. }))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "cancellation must unregister the channel"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        server.abort();
+    }
+}
