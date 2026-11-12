@@ -13,6 +13,15 @@ permissions before committing them; a rejected attempt leaves the previous accou
 intact. Credential values are captured/redacted before guest delivery and never
 become Workspace fields, server commands, snapshots or MCP events.
 
+For APIs without scope introspection, a manifest may explicitly set validation
+`scope_path` to `null` and use a user-only identity endpoint with `account_path`.
+The SDK requires a nonempty account in its successful response; it does not infer
+granted scopes. Requested OAuth scopes remain in the consent flow, and the
+provider enforces permissions on each operation. Other manifests retain their
+declared scope checks.
+Account paths should use stable user IDs rather than display names. Positive
+integer IDs are normalized to decimal strings before client registration.
+
 ## Setup
 
 Enable an installed extension and enter its fields under **Application credentials**.
@@ -80,7 +89,12 @@ credentials or automatic application defaults.
 
 Twitch requests chat-read, chat-send and poll-management scopes independently.
 YouTube requests `youtube.readonly` for reading and `youtube.force-ssl` when chat
-sending is enabled. VK sending/polls are not implemented and are not offered.
+sending is enabled. VK Video Live sending requests `chat:message:send` and
+requires an active stream; reconnect an older read-only account after enabling
+**Send chat**. For an existing workspace restricted to reading, open
+**Extensions → Server → Saved permissions** and choose **Allow sending** for
+the account. This changes only that account/channel’s workspace chat permission;
+platform authorization is still required. Native VK polls remain unavailable.
 Turning off a function also disables the corresponding guest operation. Enabling
 new functions validates the existing token against their requirements and requests
 reconnection when permissions are missing. Older broader platform consent is not

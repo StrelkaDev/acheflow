@@ -29,8 +29,11 @@ limits](client-executor.md) describe the bridge. Qualify actual provider operati
 with the configured applications/accounts before production use.
 
 Chat is part of Live / Studio and moves to the shared sidebar during streaming.
-Select All channels or one registered destination; available choices are supplied
-by live authorized client connections or enabled logic extensions. Outgoing messages merge into one history entry with a
+Use **Send all** below the message field, or select one or more destination icons.
+Read-only channels remain visible with disabled send controls. Hover or focus an
+icon for its channel, access and provider details, including the selected live
+broadcast. Delivery icons show per-target outcomes in their tooltips. Channels
+come from live authorized client connections or enabled logic extensions. Outgoing messages merge into one history entry with a
 result for each target. Receipts suppress duplicate echoes. Timeouts/connection
 loss report unknown outcomes and never automatically resend an uncertain message.
 Drafts persist when chat moves; narrow layouts place chat below the current page.

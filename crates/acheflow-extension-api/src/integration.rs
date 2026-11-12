@@ -44,6 +44,8 @@ pub enum ExecutionSide {
 pub struct GuestManifest {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_presentation: Option<ChatPresentation>,
     pub api_version: u32,
     pub module: String,
     #[serde(default)]
@@ -65,8 +67,35 @@ pub struct GuestManifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forwarding: Vec<crate::forwarding::ForwardAction>,
 }
+/// Bounded, inert presentation metadata; SVG markup and external assets are forbidden.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatPresentation {
+    pub icon_path: String,
+    #[serde(default)]
+    pub help: String,
+}
+impl ChatPresentation {
+    fn validate(&self) -> Result<(), String> {
+        if self.icon_path.is_empty()
+            || self.icon_path.len() > 4096
+            || !self
+                .icon_path
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b"MmLlHhVvCcSsQqTtAaZz.,-+ ".contains(&b))
+            || self.help.len() > 1024
+            || self.help.chars().any(char::is_control)
+        {
+            return Err("invalid chat presentation".into());
+        }
+        Ok(())
+    }
+}
 impl GuestManifest {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(chat) = &self.chat_presentation {
+            chat.validate()?;
+        }
         if self.api_version != crate::API_VERSION {
             return Err("unsupported extension API version".into());
         }
@@ -327,4 +356,29 @@ pub struct Envelope {
 
 fn two() -> u8 {
     2
+}
+
+#[cfg(test)]
+mod chat_presentation_tests {
+    use super::ChatPresentation;
+    #[test]
+    fn accepts_inert_paths_and_rejects_markup_urls_and_oversized_help() {
+        let mut presentation = ChatPresentation {
+            icon_path: "M2 3h20v14H2Z".into(),
+            help: "Selected live broadcast".into(),
+        };
+        assert!(presentation.validate().is_ok());
+        for invalid in [
+            "<svg onload='alert(1)'>",
+            "https://example.org/icon.svg",
+            "M0 0;script",
+            "",
+        ] {
+            presentation.icon_path = invalid.into();
+            assert!(presentation.validate().is_err());
+        }
+        presentation.icon_path = "M0 0Z".into();
+        presentation.help = "x".repeat(1025);
+        assert!(presentation.validate().is_err());
+    }
 }

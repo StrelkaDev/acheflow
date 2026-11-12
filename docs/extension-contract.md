@@ -51,8 +51,9 @@ it. The native runtime supports one owned streaming connection alongside its
 WebSocket. An open effect contains `type: "http_stream"`, a bounded `id`,
 `protocol: "grpc"`, a manifest-granted HTTPS `url`, optional secret-handle `headers`
 and `body_base64` containing the provider's protobuf request (up to 64 KiB).
-The host owns HTTP/2/TLS framing, certificate validation, a ten-second connection
-deadline and cancellation. It follows no redirects.
+The host owns HTTP/2/TLS framing, certificate validation, a thirty-second opening
+deadline and cancellation. Streaming services can defer initial response headers
+until the first batch. It follows no redirects.
 HTTP/2 uses fixed 64-KiB receive windows and 16-KiB frame/header limits. Guests cannot override Host,
 framing/connection headers, Content-Type, TE or reserved `grpc-*` headers. Query
 parameters and credential-capture mappings are not supported on this effect;
@@ -157,6 +158,11 @@ channel and timestamp. Stop cancels I/O and rejects late instance effects. It
 removes live channels and panels; saved configuration and historical data remain.
 Subscribers receive only their declared command/event types. No arbitrary
 provider-specific commands are introduced into the host API.
+
+Manifests may declare optional `chat_presentation` metadata: `icon_path` is a
+bounded SVG path in a 24×24 view box (no markup, scripts or URLs), and `help`
+is plain tooltip text. The shared UI renders this metadata with channel labels
+and capabilities; unknown extensions receive a generic chat icon.
 
 Channels declare capabilities. An empty target list means all available capable
 channels; an explicit unsupported/unavailable target fails visibly. Chat fanout

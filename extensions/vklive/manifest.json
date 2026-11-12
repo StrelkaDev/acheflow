@@ -19,13 +19,16 @@
     "secret_begin",
     "secret_commit",
     "secret_discard",
-    "forward_wait"
+    "forward_wait",
+    "delivery"
   ],
   "services": [
     "https://apidev.live.vkvideo.ru",
     "https://auth.live.vkvideo.ru"
   ],
-  "subscriptions": [],
+  "subscriptions": [
+    "chat.send"
+  ],
   "settings": [
     {
       "id": "client_id",
@@ -50,6 +53,12 @@
       "label": "Read audience",
       "toggle": true,
       "max_length": 5
+    },
+    {
+      "id": "send_chat",
+      "label": "Send chat",
+      "toggle": true,
+      "max_length": 5
     }
   ],
   "secret_fields": {
@@ -64,7 +73,7 @@
   "authentication": {
     "native_callback": "oauth/callback",
     "authorize_url": "https://auth.live.vkvideo.ru/app/oauth2/authorize",
-    "help": "Register an application in the VK Video Live developer console (sign-in may use VK ID). DevAPI issues a separate token. Public chat and audience reading do not require privileged scopes. Sending and native polls are not implemented.",
+    "help": "Register an application in the VK Video Live developer console (sign-in may use VK ID). DevAPI issues a separate token. Public chat and audience reading do not require privileged scopes. Sending requires a user token with chat:message:send; native polls are unavailable.",
     "features": [
       {
         "id": "read_chat",
@@ -75,13 +84,25 @@
         "id": "read_audience",
         "label": "Read audience",
         "default_enabled": true
+      },
+      {
+        "id": "send_chat",
+        "label": "Send chat",
+        "default_enabled": true
       }
     ],
-    "permissions": [],
+    "permissions": [
+      {
+        "scope": "chat:message:send",
+        "any": [
+          "send_chat"
+        ]
+      }
+    ],
     "scope_separator": ",",
     "validation": {
       "request": {
-        "url": "https://apidev.live.vkvideo.ru/v1/token",
+        "url": "https://apidev.live.vkvideo.ru/v1/current_user",
         "headers": {
           "Authorization": {
             "secret": "access_token",
@@ -89,8 +110,8 @@
           }
         }
       },
-      "scope_path": "/data/scopes",
-      "account_path": "/data/user/nick"
+      "scope_path": null,
+      "account_path": "/data/user/id"
     }
   },
   "forwarding": [
@@ -111,14 +132,14 @@
       }
     ],
     "native": {
-      "instructions": "Create a DevAPI OAuth application in the VK Video Live developer portal with the implicit response_type=token flow enabled. Add the exact OAuth redirect URI below and copy the application Client ID into Application Client ID above Connect. The portal may require VK ID sign-in; VK ID tokens cannot replace DevAPI tokens. This flow needs no application secret. Chat and audience reading request no privileged scopes; sending and polls are not supported.",
+      "instructions": "Create a DevAPI OAuth application in the VK Video Live developer portal with the implicit response_type=token flow enabled. Add the exact OAuth redirect URI below and copy the application Client ID into Application Client ID above Connect. The portal may require VK ID sign-in; VK ID tokens cannot replace DevAPI tokens. This flow needs no application secret. Chat and audience reading request no privileged scopes; enable Send chat to request chat:message:send. Native polls are unavailable.",
       "address": {
         "source": "callback_uri",
         "label": "OAuth redirect URI"
       }
     },
     "browser": {
-      "instructions": "Create a DevAPI OAuth application with the implicit response_type=token flow enabled. Register the exact redirect URI below, including its path, and enter the public Client ID above Connect. Allow popups. No application secret is used; VK ID sign-in and DevAPI access tokens are distinct. Chat and audience reading request no privileged scopes. Sending and polls are not supported.",
+      "instructions": "Create a DevAPI OAuth application with the implicit response_type=token flow enabled. Register the exact redirect URI below, including its path, and enter the public Client ID above Connect. Allow popups. No application secret is used; VK ID sign-in and DevAPI access tokens are distinct. Chat and audience reading request no privileged scopes. Enable Send chat to request chat:message:send. Native polls are unavailable.",
       "address": {
         "source": "callback_uri",
         "label": "OAuth redirect URI"
@@ -127,5 +148,9 @@
     "settings": [
       "client_id"
     ]
+  },
+  "chat_presentation": {
+    "icon_path": "M3 3h18v18H3Zm5 4v10l9-5Z",
+    "help": "Live stream chat. Sending requires an active stream and chat:message:send permission; reconnect after enabling Send chat."
   }
 }

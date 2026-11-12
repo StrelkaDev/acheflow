@@ -79,3 +79,37 @@ async fn real_guests_receive_only_owned_streams_and_stop_discards_late_messages(
             .all(|e| e["type"] != "chat")
     );
 }
+
+#[tokio::test]
+async fn socket_wait_can_be_cancelled_without_losing_the_next_notification() {
+    use tokio_tungstenite::tungstenite::Message;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let sender = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        socket.send(Message::Text(json!({"metadata":{"message_type":"notification","subscription_type":"channel.chat.message"},"payload":{"event":{"broadcaster_user_id":"b","message_id":"t1","chatter_user_id":"user","chatter_user_name":"User","message":{"text":"After idle wakeup"},"badges":[]}}}).to_string().into())).await.unwrap();
+    });
+    let mut twitch = runtime("twitch", "b");
+    twitch.socket = Some(
+        tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap()
+            .0,
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), twitch.receive_event())
+            .await
+            .is_err()
+    );
+    let event = twitch.receive_event().await.unwrap().unwrap();
+    // The event is owned before processing, so an idle deadline cannot drop guest effects.
+    tokio::time::sleep(std::time::Duration::from_millis(110)).await;
+    let effects = twitch.turn(event, 1000).await.unwrap();
+    assert_eq!(
+        effects.iter().find(|e| e["type"] == "chat").unwrap()["message"]["text"],
+        "After idle wakeup"
+    );
+    sender.await.unwrap();
+}

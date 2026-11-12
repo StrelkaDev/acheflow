@@ -179,5 +179,9 @@
     "settings": [
       "client_id"
     ]
+  },
+  "chat_presentation": {
+    "icon_path": "M4 2 2 6v14h5v3l4-3h4l7-7V2Zm16 10-4 4h-5l-3 3v-3H5V4h15ZM9 6h2v6H9Zm6 0h2v6h-2Z",
+    "help": "Live channel chat via EventSub. Sending uses the connected account."
   }
 }

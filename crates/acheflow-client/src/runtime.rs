@@ -230,14 +230,18 @@ impl ProviderRuntime {
             .await
             .map_err(|_| "socket timed out".to_owned())?
     }
-    /// Caller selects this future against its heartbeat, shutdown and workspace changes.
+    /// Waits only for transport input. Safe to select against an idle wakeup.
+    /// Process the returned event with `turn` outside that select: guest effects
+    /// may perform HTTP and must not be cancelled by the idle timer.
+    pub async fn receive_event(&mut self) -> Result<Option<Value>, String> {
+        tokio::select! {
+            input = Self::receive_socket(&mut self.socket) => input,
+            input = crate::stream::receive(&mut self.stream) => Ok(Some(input)),
+        }
+    }
     pub async fn receive(&mut self, now: u64) -> Result<Vec<Value>, String> {
         let waiting_since = std::time::Instant::now();
-        let input = tokio::select! {
-            input = Self::receive_socket(&mut self.socket) => input?,
-            input = crate::stream::receive(&mut self.stream) => Some(input),
-        };
-        match input {
+        match self.receive_event().await? {
             Some(input) => {
                 self.turn(
                     input,

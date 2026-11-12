@@ -138,7 +138,7 @@ fn prepare(
         }
     }
     let request = request
-        .header("content-type", "application/grpc+proto")
+        .header("content-type", "application/grpc")
         .header("te", "trailers")
         .header("grpc-accept-encoding", "identity")
         .body(http_body_util::Full::new(Bytes::from(body)))
@@ -209,7 +209,8 @@ impl Stream {
         secrets: &Secrets,
     ) -> Result<(Option<Self>, Value), String> {
         let Prepared { id, url, request } = prepare(effect, manifest, secrets)?;
-        let (response, driver) = tokio::time::timeout(Duration::from_secs(10), async {
+        // Streaming endpoints may defer response headers until the first batch.
+        let (response, driver) = tokio::time::timeout(Duration::from_secs(30), async {
             let (mut sender, driver) = connect(&url).await?;
             let response = sender
                 .send_request(request)

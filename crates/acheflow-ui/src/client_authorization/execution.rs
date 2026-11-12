@@ -331,10 +331,13 @@ pub(super) async fn run(
             output = runtime.turn(action, current).await?;
             continue;
         }
-        output = tokio::select! {
-            result=runtime.receive(current)=>result?,
-            _=tokio::time::sleep(std::time::Duration::from_millis(100))=>vec![],
+        let event = tokio::select! {
+            result=runtime.receive_event()=>result?,
+            _=tokio::time::sleep(std::time::Duration::from_millis(100))=>None,
         };
+        if let Some(event) = event {
+            output = runtime.turn(event, now()).await?;
+        }
     }
 }
 

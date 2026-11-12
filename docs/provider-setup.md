@@ -106,8 +106,9 @@ https://app.acheflow.com/fwd/vklive/oauth/callback
 
 Browser clients use their own displayed callback. No application secret is used by
 this flow. The channel setting is the public channel slug without its URL. The
-guest requests no privileged scopes for its chat/audience read operations. It does
-not offer outbound chat, native polls or automatic token refresh. Reconnect after expiry.
+guest requests no privileged scopes for its chat/audience read operations.
+**Send chat** requests `chat:message:send` and requires a user token and an active
+stream. Native polls and automatic token refresh are unavailable. Reconnect after expiry.
 
 ## Callback installation and failures
 

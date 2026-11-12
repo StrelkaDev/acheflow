@@ -27,6 +27,25 @@ fn trailers(code: &str) -> Frame<Bytes> {
     Frame::trailers(headers)
 }
 #[test]
+fn request_uses_baseline_grpc_media_type_for_endpoint_interoperability() {
+    let manifest: GuestManifest = serde_json::from_value(json!({
+        "id":"fixture", "name":"Fixture", "api_version":2,
+        "module":"fixture.wasm", "execution_side":"client",
+        "capabilities":["http_stream"], "services":["https://provider.example"]
+    }))
+    .unwrap();
+    let effect = json!({
+        "id":"stream", "protocol":"grpc",
+        "url":"https://provider.example/service/Read",
+        "body_base64":STANDARD.encode(b"request"), "headers":{}
+    });
+    let prepared = prepare(&effect, &manifest, &Secrets::new()).unwrap();
+    assert_eq!(
+        prepared.request.headers()["content-type"],
+        "application/grpc"
+    );
+}
+#[test]
 fn grpc_content_type_accepts_parameters_but_rejects_other_protocols() {
     for content_type in [
         "application/grpc",

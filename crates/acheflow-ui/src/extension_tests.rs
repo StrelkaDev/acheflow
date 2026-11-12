@@ -591,7 +591,10 @@ async fn application_setup_renders_guest_links_addresses_and_local_failures_in_e
             &format!("{card} .local-extension-action.primary[disabled]")
         ));
         assert!(
-            !exists(&doc, &format!("{card} [role='status']")),
+            !exists(
+                &doc,
+                &format!("{card} .client-authorization [role='status']")
+            ),
             "missing input cannot open a browser even via the keyboard"
         );
         assert!(client.project.read().extensions.is_empty());
@@ -1292,4 +1295,39 @@ async fn live_broadcast_dropdown_supports_keyboard_selection_and_collapses_after
             .text_content()
             .contains("stream-b")
     );
+}
+
+#[tokio::test]
+async fn saved_read_only_permissions_offer_an_explicit_send_grant_for_capable_installations() {
+    use acheflow_extension_api::client_execution::{Capability, CapabilityGrant};
+    let harness = Rc::new(Harness::default());
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(mixed_app).with_root_context(harness.clone()),
+        DocumentConfig::default(),
+    );
+    doc.initial_build();
+    settle(&mut doc);
+    let mut client = harness.client.get().unwrap();
+    {
+        let mut state = client.state.write();
+        let state = state.as_mut().unwrap();
+        state.workspace_id = Some(client.project.peek().id.clone());
+        state.client_capabilities = vec![CapabilityGrant {
+            provider: "vklive".into(),
+            account_id: "account".into(),
+            channel_id: "channel".into(),
+            capabilities: [Capability::ChatRead].into(),
+        }];
+    }
+    settle(&mut doc);
+    select_scope(&mut doc, "server");
+    assert!(exists(
+        &doc,
+        ".allow-chat-send[aria-label='Allow sending to vklive / channel']"
+    ));
+    client.state.write().as_mut().unwrap().client_capabilities[0]
+        .capabilities
+        .insert(Capability::ChatSend);
+    settle(&mut doc);
+    assert!(!exists(&doc, ".allow-chat-send"));
 }

@@ -228,3 +228,111 @@ fn vklive_preserves_history_pages_within_the_fixed_fuel_budget() {
     }
     assert_eq!(received, 200);
 }
+
+#[test]
+fn vklive_validates_documented_user_identity_without_invented_scope_fields() {
+    for (status, payload, allowed) in [
+        (
+            200,
+            json!({"data":{"user":{"id":123,"nick":"fixture-user"}}}),
+            true,
+        ),
+        (200, json!({"data":{"type":"app","expired_at":1234}}), false),
+        (401, json!({}), false),
+    ] {
+        let mut guest = load("vklive");
+        let effects = guest.call(json!({"type":"local_http","id":"auth:validate","status":status,"config":{"send_chat":"true"},"payload":payload})).unwrap();
+        assert_eq!(
+            effects.iter().any(|e| e["type"] == "secret_commit"),
+            allowed
+        );
+        if allowed {
+            assert!(
+                effects
+                    .iter()
+                    .any(|e| e["type"] == "storage" && e["value"]["account"] == "123")
+            );
+        }
+    }
+}
+
+#[test]
+fn vklive_sends_with_stream_and_permission_and_reports_delivery_without_retrying() {
+    let mut guest = load("vklive");
+    start(&mut guest, "vklive");
+    guest.call(json!({"type":"http_result","id":"send-permission","status":200,"payload":{"data":{"user":{"id":123,"nick":"fixture-user"}}}})).unwrap();
+    guest.call(json!({"type":"http_result","id":"channel","status":200,"payload":{"data":{"channel":{"url":"streamer","status":"online"},"stream":{"id":"live-stream"}}}})).unwrap();
+    let effects = guest.call(json!({"type":"command","name":"chat.send","channel_id":"streamer","request_id":"request","text":"Hello"})).unwrap();
+    let http = effects
+        .iter()
+        .find(|e| e["type"] == "http")
+        .expect("send request");
+    assert_eq!(
+        http["url"],
+        "https://apidev.live.vkvideo.ru/v1/chat/message/send"
+    );
+    assert_eq!(http["method"], "POST");
+    assert_eq!(
+        http["query"],
+        json!({"channel_url":"streamer","stream_id":"live-stream"})
+    );
+    assert_eq!(
+        http["body"],
+        json!({"parts":[{"text":{"content":"Hello"}}]})
+    );
+    let receipt = guest
+        .call(json!({"type":"http_result","id":http["id"],"status":200,"payload":{}}))
+        .unwrap();
+    assert!(
+        receipt
+            .iter()
+            .any(|e| e["type"] == "delivery" && e["sent"] == true && e["request_id"] == "request")
+    );
+    let effects=guest.call(json!({"type":"command","name":"chat.send","channel_id":"other","request_id":"wrong","text":"Hello"})).unwrap();
+    assert!(effects.iter().all(|e| e["type"] != "http"));
+    assert!(
+        effects
+            .iter()
+            .any(|e| e["type"] == "delivery" && e["sent"] == false)
+    );
+}
+
+#[test]
+fn vklive_denies_read_only_offline_and_stopped_instances_and_does_not_retry_unknown_sends() {
+    let mut guest = load("vklive");
+    start(&mut guest, "vklive");
+    let channel = |status| json!({"type":"http_result","id":"channel","status":200,"payload":{"data":{"channel":{"url":"streamer","status":status},"stream":{"id":"live"}}}});
+    guest.call(channel("online")).unwrap();
+    let command = json!({"type":"command","name":"chat.send","channel_id":"streamer","request_id":"attempt","text":"Hello"});
+    let effects = guest.call(command.clone()).unwrap();
+    assert!(effects.iter().all(|e| e["type"] != "http"));
+    guest.call(json!({"type":"http_result","id":"send-permission","status":200,"payload":{"data":{"user":{"id":123,"nick":"fixture-user"}}}})).unwrap();
+    guest.call(channel("offline")).unwrap();
+    assert!(
+        guest
+            .call(command.clone())
+            .unwrap()
+            .iter()
+            .all(|e| e["type"] != "http")
+    );
+    guest.call(channel("online")).unwrap();
+    let effects = guest.call(command.clone()).unwrap();
+    let id = effects.iter().find(|e| e["type"] == "http").unwrap()["id"].clone();
+    let receipt = guest
+        .call(json!({"type":"http_result","id":id,"status":0}))
+        .unwrap();
+    assert!(
+        receipt
+            .iter()
+            .any(|e| e["type"] == "delivery" && e["sent"].is_null())
+    );
+    assert!(receipt.iter().all(|e| e["type"] != "http"));
+    guest.call(json!({"type":"stop"})).unwrap();
+    assert!(guest.call(command).unwrap().is_empty());
+    assert!(
+        guest
+            .call(json!({"type":"http_result","id":id,"status":200}))
+            .unwrap()
+            .is_empty()
+    );
+}

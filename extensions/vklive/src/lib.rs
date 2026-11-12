@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 #[derive(serde::Deserialize)]
 pub struct WireInput {
@@ -28,6 +28,10 @@ pub struct VkLive {
     authorization: guest_sdk::authorization::Authorization,
     channel: String,
     authorized: bool,
+    stopped: bool,
+    send_allowed: bool,
+    stream: String,
+    pending_sends: BTreeMap<String, String>,
     channel_pending: bool,
     chat_pending: bool,
     next_channel: u64,
@@ -45,6 +49,9 @@ fn status(state: &str, error: Option<&str>) -> Value {
 impl VkLive {
     pub fn handle_wire(&mut self, input: WireInput) -> Vec<Value> {
         let mut rest = input.rest;
+        if self.stopped && rest.get("type").is_none_or(|kind| kind != "start") {
+            return vec![];
+        }
         if let Some(mut payload) = input.payload {
             if let Some(mut data) = payload.data {
                 if rest.get("id").is_some_and(|id| id == "chat")
@@ -103,7 +110,49 @@ impl VkLive {
         }
         json!({"type":"http","id":id,"url":format!("https://apidev.live.vkvideo.ru/v1/{path}"),"headers":{"Authorization":{"secret":"access_token","prefix":"Bearer "}},"query":query})
     }
+    fn send_chat(&mut self, input: &Value) -> Vec<Value> {
+        let request = input["request_id"].as_str().unwrap_or_default();
+        if !self.authorized
+            || !self.send_allowed
+            || self.stream.is_empty()
+            || input["channel_id"] != self.channel
+            || !guest_sdk::authorization::enabled(&input["config"], "send_chat")
+        {
+            return vec![
+                json!({"type":"delivery","request_id":request,"channel_id":input["channel_id"],"sent":false,"error":"Sending requires an active stream and chat:message:send permission. Reconnect the account with Send chat enabled."}),
+            ];
+        }
+        let id = format!("send:{request}");
+        self.pending_sends.insert(id.clone(), request.into());
+        vec![
+            json!({"type":"http","id":id,"method":"POST","url":"https://apidev.live.vkvideo.ru/v1/chat/message/send","headers":{"Authorization":{"secret":"access_token","prefix":"Bearer "}},"query":{"channel_url":self.channel,"stream_id":self.stream},"body":{"parts":[{"text":{"content":input["text"]}}]}}),
+        ]
+    }
+    fn send_receipt(&self, input: &Value, request: &str) -> Value {
+        let code = input["status"].as_u64().unwrap_or(0);
+        let sent = code == 200 && input["payload"].get("error").is_none();
+        let error = match input["payload"]["error"].as_str() {
+            Some("message_too_long") => "The message is too long",
+            Some("same_message") => "VK Video Live rejected a duplicate message",
+            Some("send_too_fast") => "Sending too fast; wait before sending again",
+            _ if code == 0 => "Delivery outcome is unknown",
+            _ if code == 401 => "Reconnect the account to renew authorization",
+            _ if code == 403 => "Sending is forbidden; check chat permissions and restrictions",
+            _ => "VK Video Live rejected the message",
+        };
+        json!({"type":"delivery","request_id":request,"channel_id":self.channel,"sent":if code==0 {Value::Null}else{json!(sent)},"error":if sent {Value::Null}else{json!(error)}})
+    }
     pub fn handle(&mut self, input: Value) -> Vec<Value> {
+        if input["type"] == "stop" {
+            *self = Self::default();
+            self.stopped = true;
+            return vec![];
+        }
+        if input["type"] == "start" {
+            *self = Self::default();
+        } else if self.stopped {
+            return vec![];
+        }
         if let Some(effects) = self
             .authorization
             .handle(&input, include_str!("../manifest.json"))
@@ -134,8 +183,11 @@ impl VkLive {
                 self.authorized = input["secrets"]
                     .as_array()
                     .is_some_and(|keys| keys.iter().any(|key| key == "access_token"));
-                out.push(json!({"type":"panel","panel":{"extension_id":"vklive","title":"VK Video Live","widgets":[{"type":"label","text":"Receives chat and audience. Sending and native polls are unavailable in this version."},{"type":"button","id":"refresh","label":"Reconnect"}]}}));
+                out.push(json!({"type":"panel","panel":{"extension_id":"vklive","title":"VK Video Live","widgets":[{"type":"label","text":"Receives chat and audience. Sending requires chat:message:send permission and an active stream. Native polls are unavailable."},{"type":"button","id":"refresh","label":"Reconnect"}]}}));
                 if self.authorized {
+                    if guest_sdk::authorization::enabled(&input["config"], "send_chat") {
+                        out.push(json!({"type":"http","id":"send-permission","url":"https://apidev.live.vkvideo.ru/v1/current_user","headers":{"Authorization":{"secret":"access_token","prefix":"Bearer "}}}));
+                    }
                     self.channel_pending = true;
                     out.push(self.http("channel", "channel"));
                 } else {
@@ -165,6 +217,10 @@ impl VkLive {
                     out.push(self.http("chat", "chat/messages"));
                 }
             }
+            "command" if input["name"] == "chat.send" => {
+                return self.send_chat(&input);
+            }
+
             "http_result" => {
                 let id = input["id"].as_str().unwrap_or_default();
                 let code = input["status"].as_u64().unwrap_or(0);
@@ -175,13 +231,23 @@ impl VkLive {
                     .unwrap_or(30)
                     .clamp(1, 3600)
                     * 1000;
-                if id == "channel" {
+                if let Some(request) = self.pending_sends.remove(id) {
+                    out.push(self.send_receipt(&input, &request));
+                } else if id == "send-permission" {
+                    self.send_allowed =
+                        code == 200 && data["user"]["id"].as_u64().is_some_and(|id| id > 0);
+                } else if id == "channel" {
                     self.channel_pending = false;
                     self.next_channel = now.saturating_add(if code == 200 { 30000 } else { retry });
                     if code == 200 && data["channel"]["url"].is_string() {
                         self.initialized = true;
                         let offline = data["channel"]["status"] == "offline";
-                        out.push(json!({"type":"channel","channel":{"id":self.channel,"label":format!("VK Video Live / {}",data["channel"]["nick"].as_str().unwrap_or(&self.channel)),"capabilities":([guest_sdk::authorization::enabled(&input["config"],"read_chat").then_some("chat.read"),guest_sdk::authorization::enabled(&input["config"],"read_audience").then_some("audience.read")].into_iter().flatten().collect::<Vec<_>>())}}));
+                        self.stream = if offline {
+                            String::new()
+                        } else {
+                            data["stream"]["id"].as_str().unwrap_or_default().into()
+                        };
+                        out.push(json!({"type":"channel","channel":{"id":self.channel,"label":format!("VK Video Live / {}",data["channel"]["nick"].as_str().unwrap_or(&self.channel)),"capabilities":([guest_sdk::authorization::enabled(&input["config"],"read_chat").then_some("chat.read"),guest_sdk::authorization::enabled(&input["config"],"read_audience").then_some("audience.read"),(self.send_allowed && !self.stream.is_empty() && guest_sdk::authorization::enabled(&input["config"],"send_chat")).then_some("chat.send")].into_iter().flatten().collect::<Vec<_>>())}}));
                         if guest_sdk::authorization::enabled(&input["config"], "read_audience") {
                             out.push(json!({"type":"audience","sample":{"platform":"vklive","channel_id":self.channel,"stream_id":data["stream"]["id"],"observed_at_ms":now,"concurrent":if offline{json!(0)}else{data["stream"]["counters"]["viewers"].clone()},"offline":offline,"unique":null}}));
                         }

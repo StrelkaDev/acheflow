@@ -90,13 +90,13 @@ fn date(ms: u64) -> String {
 #[derive(Clone, Copy)]
 struct ChatDraft {
     text: Signal<String>,
-    channel: Signal<String>,
+    targets: Signal<Vec<String>>,
 }
 
 pub fn use_chat_draft(project: Signal<crate::project::Workspace>) {
     let mut text = use_signal(String::new);
-    let mut channel = use_signal(String::new);
-    use_context_provider(|| ChatDraft { text, channel });
+    let mut targets = use_signal(Vec::new);
+    use_context_provider(|| ChatDraft { text, targets });
     let identity = use_memo(move || {
         let workspace = project.read();
         (workspace.id.clone(), workspace.server_url.clone())
@@ -104,16 +104,50 @@ pub fn use_chat_draft(project: Signal<crate::project::Workspace>) {
     use_effect(move || {
         let _ = identity();
         text.set(String::new());
-        channel.set(String::new());
+        targets.set(Vec::new());
     });
+}
+
+#[component]
+fn ChatIcon(path: String) -> Element {
+    rsx! {svg{class:"chat-icon",view_box:"0 0 24 24","aria-hidden":"true","focusable":"false",path{d:path,fill:"currentColor",fill_rule:"evenodd"}}}
+}
+fn chat_brand(catalog: &ClientCatalog, id: &str) -> (String, String) {
+    let installed = catalog.installed.get(id);
+    let path = installed
+        .and_then(|i| i.manifest.chat_presentation.as_ref())
+        .map(|p| p.icon_path.clone())
+        .unwrap_or_else(|| "M2 3h20v14H9l-5 4v-4H2Zm2 2v10h2v2l3-2h11V5Z".into());
+    let name = installed
+        .map(|i| i.manifest.name.clone())
+        .unwrap_or_else(|| id.into());
+    (path, name)
+}
+fn chat_channel_help(
+    catalog: &ClientCatalog,
+    channel: &acheflow_extension_api::integration::Channel,
+) -> String {
+    let access = if channel.capabilities.iter().any(|c| c == "chat.send") {
+        "Receive and send"
+    } else {
+        "Read only"
+    };
+    let help = catalog
+        .installed
+        .get(&channel.extension_id)
+        .and_then(|i| i.manifest.chat_presentation.as_ref())
+        .map(|p| p.help.as_str())
+        .unwrap_or_default();
+    format!("{} · {} · {access}. {help}", channel.label, channel.id)
 }
 
 #[component]
 pub fn ChatPanel() -> Element {
     let client = use_context::<ControlClient>();
+    let catalog = use_context::<Rc<ClientCatalog>>();
     let ChatDraft {
         mut text,
-        mut channel,
+        mut targets,
     } = use_context::<ChatDraft>();
     let state = client
         .state
@@ -129,27 +163,87 @@ pub fn ChatPanel() -> Element {
                 .iter()
                 .any(|s| s == "chat.read" || s == "chat.send")
         })
-        .map(|c| c.key())
+        .cloned()
         .collect::<Vec<_>>();
-    let target = if channels.contains(&channel()) {
-        channel()
-    } else {
-        String::new()
-    };
-    let send_target = target.clone();
-    let can_send = state.channels.iter().any(|c| {
-        (target.is_empty() || c.key() == target) && c.capabilities.iter().any(|s| s == "chat.send")
+    let selected = targets();
+    // Keep explicit selections when a channel disconnects. Never silently fan out
+    // a draft intended for that channel to every remaining provider.
+    let can_send = channels.iter().any(|c| {
+        (selected.is_empty() || selected.contains(&c.key()))
+            && c.capabilities.iter().any(|s| s == "chat.send")
     });
     rsx! {
-            section{class:"panel chat-panel",div{class:"panel-heading",h2{"Chat"}crate::live::Choice{label:"Channel",value:target.clone(),choices:std::iter::once("All channels".to_owned()).chain(channels.iter().map(|key|state.channels.iter().find(|c|c.key()==*key).map(|c|c.label.clone()).unwrap_or_else(||key.clone()))).collect::<Vec<_>>(),values:Some(std::iter::once(String::new()).chain(channels.iter().cloned()).collect::<Vec<_>>()),change:move |id|channel.set(id)}if channels.is_empty(){span{class:"form-help","No connected channel"}}}
-
-                Notice{}
-                div{class:"chat-history",role:"log","aria-label":"Chat messages",
-                    if state.chat.entries.is_empty(){p{class:"form-help","Messages will appear when a connected channel receives chat."}}
-                    for entry in state.chat.entries.clone() {div{key:"{entry.cursor}",class:"chat-message",span{class:"chat-origin","{entry.message.platform}"}strong{"{entry.message.display_name}"}span{if entry.deleted{"Message deleted"}else{"{entry.message.text}"}}for delivery in entry.delivery{small{class:"form-help","{delivery.channel}: {delivery.state}"}if let Some(error)=delivery.error{small{class:"field-error","{error}"}}}}}
+        section{class:"panel chat-panel",
+            div{class:"panel-heading",h2{"Chat"}if channels.is_empty(){span{class:"form-help","No connected channel"}}}
+            Notice{}
+            div{class:"chat-history",role:"log","aria-label":"Chat messages",
+                if state.chat.entries.is_empty(){p{class:"form-help","Messages will appear when a connected channel receives chat."}}
+                for entry in state.chat.entries.clone() {
+                    {
+                        let (icon, name) = chat_brand(&catalog, &entry.message.platform);
+                        let help = channels.iter().find(|c|c.extension_id==entry.message.platform && c.id==entry.message.channel_id)
+                            .map(|c|chat_channel_help(&catalog,c)).unwrap_or_else(||format!("{name} · {}",entry.message.channel_id));
+                        rsx!{div{key:"{entry.cursor}",class:"chat-message",
+                            span{class:"chat-origin chat-tooltip",tabindex:"0","aria-label":help.clone(),title:help.clone(),ChatIcon{path:icon}span{class:"chat-tooltip-text",role:"tooltip","{help}"}}
+                            strong{"{entry.message.display_name}"}
+                            span{class:"chat-body",if entry.deleted{"Message deleted"}else{"{entry.message.text}"}}
+                            for delivery in entry.delivery {
+                                {
+                                    let provider = delivery.channel.split(':').next().unwrap_or_default();
+                                    let (icon, name) = chat_brand(&catalog, provider);
+                                    let help = format!("{name} · {}: {}{}", delivery.channel, delivery.state, delivery.error.as_ref().map(|e|format!(" · {e}")).unwrap_or_default());
+                                    rsx!{span{class:"chat-delivery chat-tooltip",tabindex:"0",title:help.clone(),"aria-label":help.clone(),ChatIcon{path:icon}span{class:"chat-delivery-state","{delivery_symbol(&delivery.state)}"}span{class:"chat-tooltip-text",role:"tooltip","{help}"}}}
+                                }
+                            }
+                        }}
+                    }
                 }
-                div{class:"chat-compose",input{"aria-label":"Message",placeholder:if can_send{"Write a message…"}else{"This channel supports reading only"},disabled:!can_send,maxlength:8192,value:"{text}",oninput:move|e|text.set(e.value())}button{class:"primary",disabled:(client.busy)() || !can_send || text().trim().is_empty(),onclick:move |_|{client.command(ControlAction::SendChat{targets:if send_target.is_empty(){vec![]}else{vec![send_target.clone()]},text:text()});text.set(String::new());},"Send"}}
             }
+            div{class:"chat-compose",
+                div{class:"chat-compose-input",input{"aria-label":"Message",placeholder:if can_send{"Write a message…"}else{"No selected channel can send"},disabled:!can_send,maxlength:8192,value:"{text}",oninput:move|e|text.set(e.value())}
+                    button{class:"primary",disabled:(client.busy)() || !can_send || text().trim().is_empty(),onclick:move |_|{client.command(ControlAction::SendChat{targets:targets(),text:text()});text.set(String::new());},"Send"}
+                }
+                div{class:"chat-targets",role:"group","aria-label":"Send message to",
+                    button{class:if selected.is_empty(){"chat-target selected"}else{"chat-target"},"aria-pressed":selected.is_empty().to_string(),title:"Send to all available channels that support sending",onclick:move |_|targets.set(Vec::new()),onkeydown:move |event|{if chat_activation(&event){event.prevent_default();targets.set(Vec::new());}},"Send all"}
+                    for channel in channels {
+                        {
+                            let key = channel.key();
+                            let keyboard_key = key.clone();
+                            let active = selected.contains(&key);
+                            let sendable = channel.capabilities.iter().any(|c|c=="chat.send");
+                            let help = chat_channel_help(&catalog, &channel);
+                            let (icon, _) = chat_brand(&catalog, &channel.extension_id);
+                            rsx!{span{class:"chat-tooltip",tabindex:if sendable{"-1"}else{"0"},
+                                button{class:if active{"chat-target selected"}else{"chat-target"},disabled:!sendable,"aria-label":help.clone(),"aria-pressed":active.to_string(),title:help.clone(),onclick:move |_|{
+                                    toggle_chat_target(targets, &key);
+                                },onkeydown:move |event|{if sendable && chat_activation(&event){event.prevent_default();toggle_chat_target(targets,&keyboard_key);}},ChatIcon{path:icon}if active{span{class:"chat-target-check","✓"}}}
+                                span{class:"chat-tooltip-text",role:"tooltip","{help}"}
+                            }}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+fn chat_activation(event: &KeyboardEvent) -> bool {
+    event.key() == Key::Named(NamedKey::Enter) || event.key() == Key::Character(" ".into())
+}
+fn toggle_chat_target(mut targets: Signal<Vec<String>>, key: &str) {
+    let mut next = targets();
+    if next.iter().any(|id| id == key) {
+        next.retain(|id| id != key);
+    } else {
+        next.push(key.into());
+    }
+    targets.set(next);
+}
+fn delivery_symbol(state: &str) -> &'static str {
+    match state {
+        "sent" => "✓",
+        "failed" => "!",
+        "pending" | "queued" => "…",
+        _ => "?",
     }
 }
 
@@ -511,7 +605,9 @@ fn capability_names<'a>(
 }
 #[component]
 fn WorkspaceCapabilities() -> Element {
+    use acheflow_extension_api::client_execution::Capability;
     let client = use_context::<ControlClient>();
+    let catalog = use_context::<Rc<ClientCatalog>>();
     let state = client.state.read();
     let current = state
         .as_ref()
@@ -522,7 +618,18 @@ fn WorkspaceCapabilities() -> Element {
             if let Some(state)=current {
                 h3{"Saved permissions"}
                 if state.client_capabilities.is_empty(){p{class:"form-help","No client capabilities are authorized."}}
-                for grant in &state.client_capabilities {div{class:"audience-row",strong{"{grant.provider} / {grant.channel_id}"}p{"Account: {grant.account_id}"}p{class:"form-help","{capability_names(&grant.capabilities)}"}}}
+                for (index, grant) in state.client_capabilities.iter().enumerate() {
+                    div{class:"audience-row",strong{"{grant.provider} / {grant.channel_id}"}p{"Account: {grant.account_id}"}p{class:"form-help","{capability_names(&grant.capabilities)}"}
+                        if !grant.capabilities.contains(&Capability::ChatSend) && catalog.installed.get(&grant.provider).is_some_and(|i|i.manifest.subscriptions.iter().any(|s|s=="chat.send")) {
+                            {
+                                let mut grants=state.client_capabilities.clone();
+                                grants[index].capabilities.insert(Capability::ChatSend);
+                                let keyboard_grants=grants.clone();
+                                rsx!{button{class:"allow-chat-send",disabled:(client.busy)(),"aria-label":format!("Allow sending to {} / {}",grant.provider,grant.channel_id),title:"Allow this account to send chat in this workspace. Platform authorization is still required.",onclick:move |_|client.command(ControlAction::SetClientCapabilities{grants:grants.clone()}),onkeydown:move |event|{if !(client.busy)() && chat_activation(&event){event.prevent_default();client.command(ControlAction::SetClientCapabilities{grants:keyboard_grants.clone()});}},"Allow sending"}}
+                            }
+                        }
+                    }
+                }
                 h3{"Connected executors"}
                 if state.client_executors.is_empty(){p{class:"form-help","No executor is connected to this workspace."}}
                 for executor in &state.client_executors {for connection in &executor.connections {div{class:"audience-row",strong{"{executor.client_id} · {connection.provider} / {connection.channel_id}"}p{class:"form-help","{capability_names(&connection.capabilities)}"}}}}

@@ -57,6 +57,14 @@ fn encode(value: &str) -> String {
         })
         .collect()
 }
+fn account(payload: &Value, validation: &Value) -> Option<String> {
+    let value = payload.pointer(validation["account_path"].as_str()?)?;
+    value
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .or_else(|| value.as_u64().filter(|id| *id > 0).map(|id| id.to_string()))
+}
 fn query(url: &str, fields: Vec<(&str, String)>) -> String {
     format!(
         "{url}?{}",
@@ -435,9 +443,16 @@ impl Authorization {
             let payload = &input["payload"];
             let validation = &auth["validation"];
             let scope_path = validation["scope_path"].as_str().unwrap_or("/scope");
+            // Some user-only endpoints confirm identity but do not expose scopes.
+            // An explicit null opts into this contract; an account is mandatory.
+            let granted = if validation.get("scope_path") == Some(&Value::Null) {
+                account(payload, validation).is_some()
+            } else {
+                self.granted(manifest, input, payload, scope_path)
+            };
             let client_path = validation["client_path"].as_str();
             let client = input["config"]["client_id"].as_str().unwrap_or_default();
-            if !self.granted(manifest, input, payload, scope_path)
+            if !granted
                 || client_path.is_some_and(|path| {
                     !client.is_empty()
                         && payload.pointer(path).and_then(Value::as_str) != Some(client)
@@ -462,12 +477,7 @@ impl Authorization {
                 self.pending = false;
                 self.error.clear();
                 output.push(json!({"type":"secret_commit","keep":["access_token","refresh_token","client_secret"]}));
-                self.account = validation["account_path"]
-                    .as_str()
-                    .and_then(|p| payload.pointer(p))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .into();
+                self.account = account(payload, validation).unwrap_or_default();
                 if let Some(seconds) = lifetime {
                     self.expires = now.saturating_add(seconds.min(31_536_000) * 1000);
                 }
@@ -645,6 +655,83 @@ mod tests {
         .unwrap();
         let output=auth.handle(&json!({"type":"local_browser","payload":{"state":"attacker","token_type":"bearer","expires_in":3600}}),manifest).unwrap();
         assert!(output.iter().all(|e| e["type"] != "http"));
+        assert!(!auth.authorized);
+    }
+}
+
+#[cfg(test)]
+mod identity_validation_tests {
+    use super::*;
+
+    fn identity_validation() -> Value {
+        json!({"authentication":{
+            "permissions":[{"scope":"chat:message:send"}],
+            "validation":{"scope_path":null,"account_path":"/data/user/nick"}
+        }})
+    }
+
+    #[test]
+    fn numeric_account_ids_are_canonical_and_do_not_use_display_names() {
+        let mut manifest = identity_validation();
+        manifest["authentication"]["validation"]["account_path"] = json!("/data/user/id");
+        let mut auth = Authorization::default();
+        auth.local_http(&manifest,&json!({"id":"auth:validate","status":200,"config":{},"payload":{"data":{"user":{"id":123,"nick":"Display Name"}}}}),1000,&mut vec![]);
+        assert!(auth.authorized);
+        assert_eq!(auth.account, "123");
+        for id in [json!(0), json!(-1), Value::Null, json!({})] {
+            assert!(
+                account(
+                    &json!({"data":{"user":{"id":id}}}),
+                    &manifest["authentication"]["validation"]
+                )
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn user_identity_endpoint_can_validate_without_scope_introspection() {
+        let mut auth = Authorization::default();
+        let mut out = vec![];
+        auth.local_http(
+            &identity_validation(),
+            &json!({
+                "id":"auth:validate","status":200,"config":{},
+                "payload":{"data":{"user":{"nick":"fixture-user"}}}
+            }),
+            1000,
+            &mut out,
+        );
+        assert!(auth.authorized);
+        assert!(out.iter().any(|e| e["type"] == "secret_commit"));
+    }
+
+    #[test]
+    fn identity_validation_rejects_missing_account_and_http_errors() {
+        for (status, payload) in [
+            (200, json!({"data":{"type":"app"}})),
+            (200, json!({"data":{"user":{"nick":""}}})),
+            (401, json!({"data":{"user":{"nick":"fixture-user"}}})),
+        ] {
+            let mut auth = Authorization::default();
+            let mut out = vec![];
+            auth.local_http(
+                &identity_validation(),
+                &json!({"id":"auth:validate","status":status,"config":{},"payload":payload}),
+                1000,
+                &mut out,
+            );
+            assert!(!auth.authorized);
+            assert!(out.iter().all(|e| e["type"] != "secret_commit"));
+        }
+    }
+
+    #[test]
+    fn declared_scope_introspection_still_rejects_missing_scopes() {
+        let mut manifest = identity_validation();
+        manifest["authentication"]["validation"]["scope_path"] = json!("/scopes");
+        let mut auth = Authorization::default();
+        auth.local_http(&manifest,&json!({"id":"auth:validate","status":200,"config":{},"payload":{"data":{"user":{"nick":"fixture-user"}}}}),1000,&mut vec![]);
         assert!(!auth.authorized);
     }
 }

@@ -22,10 +22,13 @@ vault and browser tokens last only for the session. No automatic refresh is
 claimed for this flow. Reconnect after expiry. See
 [local authorization](../../docs/extension-authorization.md).
 
-Channels advertise no outbound capabilities. The official send endpoint returns
-an empty receipt, which cannot reliably link an outgoing host message to its
-provider echo. Sending requires resolving that contract limitation first. Native
-polls and automatic RTMP configuration are not exposed.
+Sending requires **Send chat**, a user token and an active stream. Authorization
+requests `chat:message:send`. The user-only `current_user` endpoint validates the
+account; `token` exposes only type and expiry, not scopes or user identity.
+VK enforces send permissions when a message is submitted; rejection is shown as a
+delivery error. The empty successful receipt confirms delivery without a provider
+message ID, so matching the later chat echo is not guaranteed. Native polls and
+automatic RTMP configuration are not exposed.
 
 Sources: [API entry point](https://dev.live.vkvideo.ru/docs/index),
 [authorization](https://dev.live.vkvideo.ru/docs/main/authorization),
