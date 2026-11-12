@@ -124,7 +124,11 @@ pub fn ChatPanel() -> Element {
     let channels = state
         .channels
         .iter()
-        .filter(|c| c.capabilities.iter().any(|s| s == "chat.send"))
+        .filter(|c| {
+            c.capabilities
+                .iter()
+                .any(|s| s == "chat.read" || s == "chat.send")
+        })
         .map(|c| c.key())
         .collect::<Vec<_>>();
     let target = if channels.contains(&channel()) {
@@ -133,6 +137,9 @@ pub fn ChatPanel() -> Element {
         String::new()
     };
     let send_target = target.clone();
+    let can_send = state.channels.iter().any(|c| {
+        (target.is_empty() || c.key() == target) && c.capabilities.iter().any(|s| s == "chat.send")
+    });
     rsx! {
             section{class:"panel chat-panel",div{class:"panel-heading",h2{"Chat"}crate::live::Choice{label:"Channel",value:target.clone(),choices:std::iter::once("All channels".to_owned()).chain(channels.iter().map(|key|state.channels.iter().find(|c|c.key()==*key).map(|c|c.label.clone()).unwrap_or_else(||key.clone()))).collect::<Vec<_>>(),values:Some(std::iter::once(String::new()).chain(channels.iter().cloned()).collect::<Vec<_>>()),change:move |id|channel.set(id)}if channels.is_empty(){span{class:"form-help","No connected channel"}}}
 
@@ -141,7 +148,7 @@ pub fn ChatPanel() -> Element {
                     if state.chat.entries.is_empty(){p{class:"form-help","Messages will appear when a connected channel receives chat."}}
                     for entry in state.chat.entries.clone() {div{key:"{entry.cursor}",class:"chat-message",span{class:"chat-origin","{entry.message.platform}"}strong{"{entry.message.display_name}"}span{if entry.deleted{"Message deleted"}else{"{entry.message.text}"}}for delivery in entry.delivery{small{class:"form-help","{delivery.channel}: {delivery.state}"}if let Some(error)=delivery.error{small{class:"field-error","{error}"}}}}}
                 }
-                div{class:"chat-compose",input{"aria-label":"Message",placeholder:"Write a message…",maxlength:8192,value:"{text}",oninput:move|e|text.set(e.value())}button{class:"primary",disabled:(client.busy)() || channels.is_empty() || text().trim().is_empty(),onclick:move |_|{client.command(ControlAction::SendChat{targets:if send_target.is_empty(){vec![]}else{vec![send_target.clone()]},text:text()});text.set(String::new());},"Send"}}
+                div{class:"chat-compose",input{"aria-label":"Message",placeholder:if can_send{"Write a message…"}else{"This channel supports reading only"},disabled:!can_send,maxlength:8192,value:"{text}",oninput:move|e|text.set(e.value())}button{class:"primary",disabled:(client.busy)() || !can_send || text().trim().is_empty(),onclick:move |_|{client.command(ControlAction::SendChat{targets:if send_target.is_empty(){vec![]}else{vec![send_target.clone()]},text:text()});text.set(String::new());},"Send"}}
             }
     }
 }

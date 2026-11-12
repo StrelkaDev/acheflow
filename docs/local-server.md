@@ -8,11 +8,37 @@ The production desktop and server share the `acheflow` executable.
 ## Desktop settings
 
 Settings / Server exposes Start, Stop, Restart, Use local server, actual process/API
-state, ports, network access, version, PID, recent diagnostic output and errors.
+state, ports, network access, version, PID and errors.
 Stop remains available during startup. A superseded launch cannot overwrite a later stop or
 the connection of a workspace switched while startup was pending. Starting a
 local server automatically connects a matching local/default workspace after
 readiness; a remote target remains configured until Use local server is chosen.
+
+## Settings / Logs
+
+The separate **Logs** tab in Settings switches between **Client** and **Server**.
+It updates once per second while open, with Pause/Resume and case-insensitive
+search. Client history includes connection changes, media commands and native
+extension runtime status/errors, including chat transport failures. It belongs
+to the current client session and remains available across workspace switches.
+
+Server history comes from `GET /api/server/logs` on the selected workspace server,
+including remote and independently started servers. It contains startup records,
+API operation results, failed API requests and output encoder lifecycle/errors.
+Successful status polling and log reads are omitted. The endpoint uses the same
+operator access boundary and trusted browser origins as the existing server APIs;
+keep it within that boundary. Older or unreachable servers show an explicit error.
+The **Local process output** disclosure retains the owned server's stdout/stderr
+as a separate fallback when startup fails before the HTTP API is ready.
+
+Each structured history retains at most 500 records and 128 KiB of event text;
+individual messages are capped at 2048 bytes, and consecutive identical events
+show a repeat count. URLs and credential-field values are redacted. Request
+bodies, authorization headers, OAuth callbacks and chat message text are not
+captured. Histories are in memory and reset on process restart; no log files
+are created. Timestamps are shown in UTC. Server responses disable HTTP caching.
+
+## Desktop preferences
 
 The workspace catalog stores global HTTP/RTMP ports, `allow_network`,
 `start_with_client` and `keep_running_on_exit` preferences. All three boolean
@@ -109,7 +135,8 @@ stopping the owned child and reports `DetachFailed`; an unready child is stopped
 Explicit Stop/Restart always stop the owned process regardless of exit preference.
 Detached children are reaped while the client runtime lives and deliberately
 survive its shutdown. Server diagnostics tolerate a closed stderr pipe without
-panicking; output after detachment is discarded, without an unbounded log file.
+panicking. Pipe output after detachment is discarded; the bounded HTTP log
+remains available while the server runs, without an unbounded log file.
 
 Dropping the sole lifecycle handle asks its worker to apply the same policy.
 An unexpected parent crash before the detach handshake closes the pipe and stops

@@ -168,7 +168,9 @@ fn response_status<B>(id: &str, response: &hyper::Response<B>) -> Result<Option<
             response
                 .headers()
                 .get("content-type")
-                .and_then(|s| s.to_str().ok()),
+                .and_then(|s| s.to_str().ok())
+                .and_then(|s| s.split(';').next())
+                .map(str::trim),
             Some("application/grpc" | "application/grpc+proto")
         )
     {
@@ -184,6 +186,20 @@ fn response_status<B>(id: &str, response: &hyper::Response<B>) -> Result<Option<
         return Ok(Some(closed(id, code)));
     }
     Ok(None)
+}
+
+/// Only local, fixed categories may reach the guest; never TLS errors or metadata.
+pub(crate) fn open_failure(id: &Value, error: &str) -> Value {
+    let category = match error {
+        "stream connection failed" => "network",
+        "stream TLS initialization failed" | "stream TLS failed" | "stream ALPN failed" => "tls",
+        "stream requires HTTP/2" | "stream HTTP/2 initialization failed" => "http2",
+        "stream request interrupted" => "request",
+        "stream connection timed out" => "timeout",
+        "invalid streaming response protocol" => "protocol",
+        _ => "invalid_request",
+    };
+    json!({"type":"http_stream_closed","id":id,"http_status":0,"grpc_status":14,"transport_error":category})
 }
 
 impl Stream {

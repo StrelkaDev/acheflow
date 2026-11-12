@@ -54,5 +54,6 @@ impl Desktop {
 /// A detached server may outlive the reader of its diagnostic pipe. Unlike
 /// eprintln!, failed writes must not panic and kill the running server.
 pub(crate) fn log(message: std::fmt::Arguments<'_>) {
+    crate::diagnostics::record("info", "server", &message.to_string());
     let _ = writeln!(std::io::stderr().lock(), "{message}");
 }

@@ -446,6 +446,15 @@ button.selected { background:var(--accent-surface); color:var(--accent-text); bo
 .server-preferences label { display:flex; flex-direction:row; align-items:center; gap:10px; }
 .server-preferences input { width:18px; height:18px; margin:0; padding:0; flex:0 0 18px; }
 .server-logs { max-height:180px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; padding:12px; background:#10151d; border:1px solid #252c38; border-radius:8px; font-size:12px; }
+.settings-tabs { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 18px; }
+.settings-tabs button, .logs-toolbar button { border:1px solid #303846; border-radius:6px; background:#161c25; color:#b7c0ce; padding:9px 16px; cursor:pointer; }
+.settings-tabs button.selected, .logs-toolbar button.selected { border-color:#e54c00; color:#fff; background:#452413; }
+.settings-tabs button:focus-visible, .logs-toolbar button:focus-visible, .diagnostic-log:focus-visible { outline:2px solid #e54c00; outline-offset:3px; }
+.logs-toolbar { display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-bottom:12px; }
+.logs-toolbar .field { flex:1; min-width:180px; }
+.logs-toolbar button { margin-bottom:2px; }
+.diagnostic-log { min-height:260px; max-height:55vh; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; padding:16px; background:#10151d; border:1px solid #303846; border-radius:8px; font-size:12px; line-height:1.6; user-select:text; }
+.startup-logs { margin-top:18px; }
 @media (max-width:740px) { .server-connection { align-items:stretch; flex-direction:column; } .server-section-heading { align-items:flex-start; flex-direction:column; } }
 
 .extension-select { min-width:0; position:relative; }

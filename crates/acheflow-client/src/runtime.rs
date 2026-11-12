@@ -167,8 +167,9 @@ impl ProviderRuntime {
             return Ok(None);
         }
         self.stream = None;
-        let (stream,event)=crate::stream::Stream::open(effect,&self.manifest,&self.secrets).await
-            .unwrap_or_else(|_|(None,json!({"type":"http_stream_closed","id":effect["id"],"http_status":0,"grpc_status":14})));
+        let (stream, event) = crate::stream::Stream::open(effect, &self.manifest, &self.secrets)
+            .await
+            .unwrap_or_else(|error| (None, crate::stream::open_failure(&effect["id"], &error)));
         self.stream = stream;
         Ok(Some(event))
     }

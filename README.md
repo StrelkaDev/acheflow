@@ -52,17 +52,19 @@ cargo run -p acheflow --release --locked
 A working GPU backend is required for composition. If Cargo is missing from PATH,
 load the rustup environment with `source "$HOME/.cargo/env"`.
 
-To build and launch a complete macOS release app, install Trunk and run the shared
-packaging script from the repository root:
+To build and launch a complete macOS release app with `acheflow://` link
+registration, install Trunk and run from the repository root:
 
 ```sh
 cargo install trunk --version 0.22.1 --locked
-python3 native/macos/package.py --output target/acheflow-macos
-open target/acheflow-macos/Acheflow.app
+python3 native/macos/build-app.py --output target/acheflow-app
+open target/acheflow-app/Acheflow.app
 ```
 
 The script builds the release executable, extensions and browser assets, then
-packages `Acheflow.app` with its icon and runtime libraries. It also creates a ZIP
+packages `Acheflow.app` with its icon and runtime libraries and registers that
+app location with LaunchServices. For a distribution ZIP, use
+`python3 native/macos/package.py --output target/acheflow-macos`; it creates a ZIP
 and SHA-256 checksum. Choose a new `--output` path for each build; existing outputs
 are rejected. Packages are ad-hoc signed and not notarized. See
 [desktop installation](docs/desktop-installation.md#build-a-distribution-maintainers)

@@ -7,6 +7,6 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 [dependencies]
 guest-sdk.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 serde = { version = "1", features = ["derive"] }
 base64 = "0.22"

@@ -16,6 +16,12 @@ desktop starts the same executable as its managed local server when needed.
    to disabled. An existing independent or detached server remains external;
    Stop/Restart control only this client's child.
 
+Use **Settings / Logs** for client connection/extension history and the selected
+server's runtime log. Both update while the tab is open and support pause/search.
+Local child-process output is also available there when its API cannot start.
+See [local server diagnostics](local-server.md#settings--logs) for retention and
+the server API boundary.
+
 Rust, Python, Xcode and Homebrew are build tools, and are not needed to run the
 installed apps or to start/connect to the local server. The package includes its
 non-system OpenSSL libraries, guest WASM/manifests/browser authorization modules,
@@ -82,8 +88,12 @@ The main app declares the single
 `acheflow://` scheme. URI authorities `client` and `server` choose their recipient;
 HTTPS routes use `/fwd/*` and `/server/fwd/*` on `app.acheflow.com`. OAuth remains
 client-only. The same executable receives macOS URL events and selects its mode
-before creating the UI. Open the installed app for LaunchServices discovery, then
-verify scheme registration. Packaging does not change the user's default handlers.
+before creating the UI. `build-app.py` registers the finished app with
+LaunchServices; the distribution packager does so only with `--register-links`.
+Register the app at its final location again after moving it, or open the installed
+app for LaunchServices discovery. Registration does not replace an existing user
+choice of default handler. HTTPS universal links require the signed association
+described below; scheme registration alone enables only `acheflow://` activation.
 
 Old `acheflow-client://`, `acheflow-server://` and separate forwarding domains are
 rejected. Replace the hosted fallback assets together with the installed handler
@@ -96,6 +106,31 @@ external rollout; local package verification does not establish them.
 From the source checkout on macOS with Rust/WASM target, Trunk and Xcode tools:
 
 ```sh
+python3 native/macos/build-app.py --output target/acheflow-app
+open target/acheflow-app/Acheflow.app
+```
+
+This creates a complete ad-hoc-signed local app and registers its `acheflow://`
+scheme at the resulting path. Use `--no-register-links` to leave LaunchServices
+untouched. To create and register the app directly in Applications, use:
+
+```sh
+python3 native/macos/build-app.py --output /Applications/Acheflow.app
+open /Applications/Acheflow.app
+```
+
+A path ending in `.app` is the final bundle path; other outputs are directories
+containing `Acheflow.app`. Both builders accept this form. An existing app is not
+overwritten: close it and move it aside before rebuilding. Applications must be
+writable by the user running the build.
+
+Both builders find Cargo and Trunk in `$CARGO_HOME/bin` (by default
+`~/.cargo/bin`) as well as PATH. `--profile debug` selects debug builds for both
+the native executable and the browser assets.
+
+For a ZIP suitable for copying to another machine:
+
+```sh
 python3 native/macos/package.py --output target/acheflow-macos
 open target/acheflow-macos/Acheflow.app
 ```
@@ -105,6 +140,8 @@ exact versions, creates one app, relocates non-system dynamic libraries,
 copies available runtime license notices, computes the minimum OS requirement,
 ad-hoc signs inside-out and verifies signatures. It creates a ZIP and SHA-256
 sidecar beside the new output directory. It refuses an existing output/archive.
+Use `--register-links` to register this local app too. Alternatively,
+`package.py --app-only` creates only the app without ZIP/inventory files.
 The script uses a file allowlist for extension artifacts and never copies the
 checkout, source configuration or user home directory into an app.
 

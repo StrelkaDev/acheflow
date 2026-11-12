@@ -131,6 +131,7 @@ pub async fn start(
     let mut stdin = child.stdin.take().ok_or("Missing encoder stdin")?;
     let stdout = child.stdout.take().ok_or("Missing encoder progress pipe")?;
     let stderr = child.stderr.take().ok_or("Missing encoder stderr")?;
+    crate::diagnostics::record("info", "output", "Output encoder started");
     Ok(tokio::spawn(async move {
         let video_cancel = cancel.clone();
         let video_status = status.clone();
@@ -187,13 +188,14 @@ pub async fn start(
                     let line = line
                         .replace(&url, "[RTMP destination]")
                         .replace(&output.key, "[key]");
+                    crate::diagnostics::record("error", "output", &line);
                     error_status.lock().unwrap().error = Some(line.chars().take(400).collect());
                 }
             }
         });
         tokio::select! {
             _=cancel.cancelled()=>{let _=child.kill().await;let _=child.wait().await;let mut state=status.lock().unwrap();if state.state!=OutputState::Failed{state.state=OutputState::Stopped;}}
-            result=child.wait()=>{let mut state=status.lock().unwrap();state.state=OutputState::Failed;if state.error.is_none(){state.error=Some(format!("FFmpeg output exited: {result:?}"));}}
+            result=child.wait()=>{crate::diagnostics::record("error","output",&format!("Output encoder exited: {result:?}"));let mut state=status.lock().unwrap();state.state=OutputState::Failed;if state.error.is_none(){state.error=Some(format!("FFmpeg output exited: {result:?}"));}}
         }
         cancel.cancel();
         writer.abort();
@@ -208,6 +210,7 @@ pub async fn start(
         status.bitrate_kbps = 0.;
         if status.state != OutputState::Failed {
             status.state = OutputState::Stopped;
+            crate::diagnostics::record("info", "output", "Output encoder stopped");
         }
     }))
 }
@@ -356,6 +359,7 @@ fn stream_encoder_options(
     Ok(options)
 }
 fn fail(status: &Mutex<OutputStatus>, error: String) {
+    crate::diagnostics::record("error", "output", &error);
     let mut status = status.lock().unwrap();
     status.state = OutputState::Failed;
     status.error = Some(error);

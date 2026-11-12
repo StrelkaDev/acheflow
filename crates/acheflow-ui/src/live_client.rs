@@ -50,6 +50,7 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
         client.busy.set(false);
         *client.generation.write() += 1;
         async move {
+            let mut failures = 0u8;
             loop {
                 if !*client.busy.peek() {
                     let generation = *client.generation.peek();
@@ -62,18 +63,27 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
                     {
                         match response {
                             Ok(status) => {
+                                failures = 0;
                                 client.traffic.write().record(&status, &workspace);
                                 client.status.set(Some(status));
-                                client.connection.set(None);
+                                if client.connection.peek().is_some() {
+                                    client.connection.set(None);
+                                }
                             }
                             Err(error) => {
+                                failures = failures.saturating_add(1);
                                 client.status.set(None);
-                                client.connection.set(Some(error));
+                                if client.connection.peek().as_ref() != Some(&error) {
+                                    client.connection.set(Some(error));
+                                }
                             }
                         }
                     }
                 }
-                pause().await;
+                let active = client.status.peek().as_ref().is_some_and(|s| {
+                    s.workspace_id.as_deref() == Some(owner.0.as_str()) && !s.formats.is_empty()
+                });
+                crate::scene_preview::pause(polling_delay(active, failures, 500)).await;
             }
         }
     });
@@ -99,6 +109,17 @@ impl LiveClient {
         if (self.busy)() {
             return;
         }
+        crate::diagnostics::record(
+            "info",
+            "media",
+            match action {
+                Action::Apply => "Applying workspace",
+                Action::Start => "Starting stream",
+                Action::RestartOutput(..) => "Restarting output",
+                Action::Stop => "Stopping stream",
+                Action::Deactivate | Action::DeactivateActive => "Deactivating workspace",
+            },
+        );
         let workspace = self.project.peek().clone();
         let applies_workspace = matches!(&action, Action::Apply | Action::Start);
         let target = workspace.clone();
@@ -288,16 +309,28 @@ async fn request(
         .await
         .map_err(|e| format!("Invalid live status: {e}"))
 }
-async fn pause() {
-    #[cfg(target_arch = "wasm32")]
-    gloo_timers::future::TimeoutFuture::new(500).await;
-    #[cfg(not(target_arch = "wasm32"))]
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+pub(crate) fn polling_delay(active: bool, failures: u8, active_ms: u32) -> u32 {
+    if failures > 0 {
+        (1000u32 << failures.min(5)).min(30_000)
+    } else if active {
+        active_ms
+    } else {
+        5000
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polling_is_slow_when_idle_and_backs_off_when_unreachable() {
+        assert_eq!(polling_delay(true, 0, 500), 500);
+        assert_eq!(polling_delay(false, 0, 500), 5000);
+        assert_eq!(polling_delay(true, 0, 1000), 1000);
+        assert!(polling_delay(false, 2, 500) > polling_delay(false, 1, 500));
+        assert_eq!(polling_delay(true, 200, 1000), 30_000);
+    }
 
     #[test]
     fn ingest_uses_selected_server_host_and_discovered_listener_port_and_tls() {

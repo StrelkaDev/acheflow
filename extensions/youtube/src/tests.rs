@@ -22,6 +22,141 @@ fn opening_waits_for_transport_confirmation_before_reading() {
 fn input(kind: &str, now: u64) -> Value {
     json!({"type":kind,"config":{"video_id":"video"},"secrets":["access_token"],"now_ms":now})
 }
+
+#[test]
+fn unavailable_grpc_falls_back_to_rest_and_obeys_the_server_poll_interval() {
+    let mut guest = setup();
+    guest.handle(
+        json!({"type":"http_stream_closed","id":guest.stream.id,"http_status":404,"now_ms":2000}),
+    );
+    let effects = guest.handle(input("tick", 2001));
+    let poll = effects
+        .iter()
+        .find(|e| {
+            e["method"] == "GET"
+                && e["url"] == "https://www.googleapis.com/youtube/v3/liveChat/messages"
+        })
+        .expect("unavailable gRPC must not disable receiving chat");
+    assert_eq!(poll["query"]["liveChatId"], "chat");
+    let effects = guest.handle(json!({"type":"http_result","id":poll["id"],"status":200,"now_ms":2002,"payload":{"pollingIntervalMillis":12000,"nextPageToken":"next-rest","items":[{"id":"remote-message","snippet":{"displayMessage":"From YouTube"},"authorDetails":{"channelId":"user","displayName":"User"}}]}}));
+    assert!(
+        effects
+            .iter()
+            .any(|e| e["type"] == "chat" && e["message"]["text"] == "From YouTube")
+    );
+    assert!(
+        guest
+            .handle(input("tick", 14001))
+            .iter()
+            .all(|e| e["url"] != "https://www.googleapis.com/youtube/v3/liveChat/messages")
+    );
+    let effects = guest.handle(input("tick", 14002));
+    assert!(
+        effects
+            .iter()
+            .any(|e| e["method"] == "GET" && e["query"]["pageToken"] == "next-rest")
+    );
+    assert!(effects.iter().all(|e| e["protocol"] != "grpc"));
+}
+
+#[test]
+fn offline_discovery_slows_down_and_manual_refresh_is_immediate() {
+    let mut guest = YouTube::default();
+    guest.handle(auto_input("start", 1000));
+    guest.handle(broadcast_response(vec![], 1001));
+    assert!(guest.next_video >= 61001);
+    assert!(
+        guest
+            .handle(auto_input("tick", 31001))
+            .iter()
+            .all(|e| e["id"] != "video")
+    );
+    let next = guest.next_video;
+    guest.handle(auto_input("tick", next));
+    guest.handle(broadcast_response(vec![], next + 1));
+    assert!(guest.next_video >= next + 120001);
+    let effects = guest.handle(
+        json!({"type":"action","action_id":"refresh","secrets":["access_token"],"now_ms":next+2}),
+    );
+    assert!(effects.iter().any(|e| e["id"] == "video"));
+}
+
+#[test]
+fn rest_recovery_discards_old_broadcast_responses_and_honors_rate_limit_backoff() {
+    let mut guest = setup();
+    guest.handle(
+        json!({"type":"http_stream_closed","id":guest.stream.id,"http_status":404,"now_ms":2000}),
+    );
+    let effects = guest.handle(input("tick", 2001));
+    let id = effects
+        .iter()
+        .find(|e| {
+            e["id"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("chat-poll:"))
+        })
+        .unwrap()["id"]
+        .clone();
+    guest.handle(
+        json!({"type":"http_result","id":id,"status":429,"retry_after":"120","now_ms":2002}),
+    );
+    assert!(
+        guest
+            .handle(input("tick", 122001))
+            .iter()
+            .all(|e| e["url"] != "https://www.googleapis.com/youtube/v3/liveChat/messages")
+    );
+    let effects = guest.handle(input("tick", 122002));
+    let id = effects
+        .iter()
+        .find(|e| {
+            e["id"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("chat-poll:"))
+        })
+        .unwrap()["id"]
+        .clone();
+    guest.handle(json!({"type":"http_result","id":"video","status":200,"now_ms":122003,"payload":{"items":[{"id":"other-video","liveStreamingDetails":{"activeLiveChatId":"other-chat"}}]}}));
+    let effects = guest.handle(json!({"type":"http_result","id":id,"status":401,"now_ms":122004}));
+    assert!(
+        guest.authorized,
+        "late requests cannot expire a new broadcast session"
+    );
+    assert!(effects.iter().all(|e| e["state"] != "failed"));
+}
+
+#[test]
+fn broadcast_refresh_does_not_hide_a_failed_chat_stream() {
+    let mut guest = setup();
+    guest.handle(json!({"type":"http_stream_closed","id":guest.stream.id,"grpc_status":7,"http_status":200,"now_ms":2000}));
+    let effects = guest.handle(json!({"type":"http_result","id":"video","status":200,"now_ms":31000,"payload":{"items":[{"id":"video","snippet":{"title":"Live"},"liveStreamingDetails":{"activeLiveChatId":"chat"}}]}}));
+    assert!(guest.stream.blocked);
+    assert!(
+        effects
+            .iter()
+            .all(|effect| effect["type"] != "status" || effect["state"] != "connected")
+    );
+}
+
+#[test]
+fn stream_transport_errors_are_visible_without_echoing_untrusted_details() {
+    for (transport, expected) in [
+        ("tls", "TLS negotiation"),
+        ("private-token-marker", "stream closed"),
+    ] {
+        let mut guest = setup();
+        let effects = guest.handle(json!({"type":"http_stream_closed","id":guest.stream.id,"grpc_status":14,"http_status":0,"transport_error":transport,"now_ms":2000}));
+        let error = effects
+            .iter()
+            .find(|e| e["state"] == "reconnecting")
+            .unwrap()["error"]
+            .as_str()
+            .unwrap();
+        assert!(error.contains("HTTP 0, gRPC 14"));
+        assert!(error.contains(expected));
+        assert!(!error.contains("private-token-marker"));
+    }
+}
 fn setup() -> YouTube {
     let mut guest = YouTube::default();
     assert!(

@@ -37,10 +37,11 @@ fn app() -> Element {
     });
     let catalog = use_signal(crate::workspaces::Catalog::default);
     let storage_status = use_signal(|| "Saved locally".into());
+    let effects = use_signal(|| false);
     harness.state.set(Some(state));
     harness.project.set(Some(project));
     harness.catalog.set(Some(catalog));
-    rsx! {style {{include_str!("../dashboard.css")}}div {class:"content",ServerSettings {project,catalog,storage_status}}}
+    rsx! {style {{include_str!("../dashboard.css")}}div {class:"content",crate::dashboard::GeneralSettings {effects,project,catalog,storage_status}}}
 }
 fn settle(doc: &mut DioxusDocument) {
     for _ in 0..40 {
@@ -82,6 +83,82 @@ fn focus(doc: &mut DioxusDocument, selector: &str) {
         .unwrap()
         .unwrap();
     doc.inner.borrow_mut().set_focus_to(id);
+}
+
+#[tokio::test]
+async fn settings_logs_open_with_keyboard_and_switch_between_client_and_server() {
+    crate::diagnostics::record("error", "fixture", "Fixture log line: HTTP/2 unavailable");
+    let harness = Rc::new(Harness::default());
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(app).with_root_context(harness.clone()),
+        DocumentConfig {
+            font_ctx: Some(dioxus_native::build_single_font_ctx(include_bytes!(
+                "../../assets/DejaVuSans.woff2"
+            ))),
+            ..Default::default()
+        },
+    );
+    doc.initial_build();
+    doc.inner.borrow_mut().set_viewport(Viewport {
+        window_size: (1000, 1000),
+        ..Default::default()
+    });
+    settle(&mut doc);
+    focus(&mut doc, "#settings-logs");
+    press(&mut doc, Key::Named(NamedKey::Enter), Code::Enter);
+    for _ in 0..5 {
+        tokio::task::yield_now().await;
+        settle(&mut doc);
+    }
+    assert!(exists(&doc, "#settings-logs[aria-pressed='true']"));
+    assert!(exists(
+        &doc,
+        "#diagnostic-log[aria-label='Client log entries']"
+    ));
+    let text = doc
+        .inner
+        .borrow()
+        .query_selector("#diagnostic-log")
+        .unwrap()
+        .unwrap();
+    assert!(
+        doc.inner
+            .borrow()
+            .get_node(text)
+            .unwrap()
+            .text_content()
+            .contains("Fixture log line")
+    );
+    if let Ok(path) = std::env::var("ACHEFLOW_LOGS_PREVIEW") {
+        std::fs::write(path, doc.inner.borrow().root_element().outer_html()).unwrap();
+    }
+    focus(&mut doc, "#logs-pause");
+    press(&mut doc, Key::Character(" ".into()), Code::Space);
+    assert!(exists(&doc, "#logs-pause[aria-pressed='true']"));
+    click(&mut doc, "#logs-server");
+    assert!(exists(
+        &doc,
+        "#diagnostic-log[aria-label='Server log entries']"
+    ));
+    assert!(exists(&doc, ".startup-logs"));
+    let text = doc
+        .inner
+        .borrow()
+        .query_selector("#diagnostic-log")
+        .unwrap()
+        .unwrap();
+    assert!(
+        !doc.inner
+            .borrow()
+            .get_node(text)
+            .unwrap()
+            .text_content()
+            .contains("Fixture log line")
+    );
+    click(&mut doc, "#settings-general");
+    assert!(exists(&doc, "#settings-general[aria-pressed='true']"));
+    assert!(!exists(&doc, "#diagnostic-log"));
+    assert!(exists(&doc, "#local-server-start"));
 }
 fn click(doc: &mut DioxusDocument, selector: &str) {
     let point = {

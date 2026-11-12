@@ -234,7 +234,6 @@ fn LocalControls(
     let mut http = use_signal(|| preferences.http_port.to_string());
     let mut rtmp = use_signal(|| preferences.rtmp_port.to_string());
     let mut ports_error = use_signal(String::new);
-    let mut show_logs = use_signal(|| false);
     let label = if external.is_some() && !owned {
         "Running externally"
     } else {
@@ -304,9 +303,23 @@ fn LocalControls(
             }
             if let Some(error)=process.error && (state.error)().is_empty() {p {class:"error",role:"alert","{error}"}}
             if process.forced_stop {p {class:"form-help","The last process needed forced termination."}}
-            ActionButton {expanded:Some(show_logs()),onclick:move|_|show_logs.set(!show_logs()),if show_logs(){"Hide recent logs"}else{"Show recent logs"}}
-            if show_logs() {pre {class:"server-logs",tabindex:"0","aria-label":"Recent local server logs",if (state.logs)().is_empty(){"No output from this client’s server yet."}else{"{(state.logs)().join(\"\")}"}}}
         }
+    }
+}
+
+#[component]
+pub(crate) fn StartupLogs() -> Element {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let state = use_context::<ServerState>();
+        rsx! {details {class:"startup-logs",summary {"Local process output"}
+            p {class:"form-help","Output captured from the local server started by this client. It may differ from the selected server."}
+            pre {class:"server-logs",tabindex:"0","aria-label":"Recent local server logs",if (state.logs)().is_empty(){"No output from this client’s server yet."}else{"{(state.logs)().join(\"\")}"}}
+        }}
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        VNode::empty()
     }
 }
 

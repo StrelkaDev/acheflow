@@ -6,11 +6,41 @@ import sys
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
+import package
 from package import copy_extensions, verify_version
 
 
 class PackageTests(unittest.TestCase):
+    def test_app_output_path_is_not_nested_inside_another_app(self):
+        self.assertEqual(package.app_path(Path('/Applications/Acheflow.app')),
+                         Path('/Applications/Acheflow.app'))
+        self.assertEqual(package.app_path(Path('/tmp/distribution')),
+                         Path('/tmp/distribution/Acheflow.app'))
+
+    def test_rust_tools_are_found_without_cargo_on_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            tool = home / "bin/trunk"
+            tool.parent.mkdir()
+            tool.write_text("#!/bin/sh\n")
+            tool.chmod(0o755)
+            with patch.dict("os.environ", {"CARGO_HOME": str(home), "PATH": "/usr/bin:/bin"}):
+                self.assertEqual(package.rust_tool("trunk"), str(tool))
+                environment = package.build_environment()
+                self.assertEqual(environment["PATH"].split(":")[0], str(home / "bin"))
+
+    def test_registration_uses_the_final_absolute_app_path(self):
+        with tempfile.TemporaryDirectory(prefix="app with spaces ") as temporary:
+            app = Path(temporary) / "Acheflow.app"
+            with patch("package.subprocess.run") as run:
+                package.register_links(app)
+                command = run.call_args.args[0]
+                self.assertEqual(command[-2:], ["-f", str(app.resolve())])
+                self.assertEqual(Path(command[0]).name, "lsregister")
+                self.assertTrue(run.call_args.kwargs["check"])
+
     def test_bundle_registers_links_on_its_only_executable(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

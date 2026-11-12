@@ -71,7 +71,12 @@ ticks without an unbounded queue or one oversized WASM call.
 
 `http_stream_closed` carries only the stream ID, HTTP status, numeric gRPC status
 and optional bounded `retry_after_ms`; provider diagnostic strings/trailer details
-are suppressed. A missing/truncated/compressed/oversized frame or missing final
+are suppressed. Failed opens may include a fixed `transport_error` category:
+`network`, `tls`, `http2`, `request`, `timeout`, `protocol` or `invalid_request`.
+These identify local failure stages without exposing raw errors or credentials.
+The native host accepts protobuf gRPC content types with optional media-type
+parameters, while rejecting gRPC-Web and non-protobuf subtypes.
+A missing/truncated/compressed/oversized frame or missing final
 gRPC status closes the stream with a generic protocol failure. A guest's close
 effect (`http_stream { id, close: true }`), replacement stream or runtime drop
 destroys its response body and aborts its HTTP/2 driver. Runtime receive timestamps

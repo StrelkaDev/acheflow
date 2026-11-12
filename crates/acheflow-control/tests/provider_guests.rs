@@ -20,6 +20,50 @@ fn load(id: &str) -> Guest {
 fn start(guest: &mut Guest, id: &str) -> Vec<Value> {
     guest.call(json!({"type":"start","config":if id=="youtube" {json!({"video_id":"video"})}else{json!({"channel":"streamer"})},"secrets":["access_token"],"now_ms":1000})).unwrap()
 }
+
+#[test]
+fn youtube_rest_recovery_receives_a_full_page_in_real_wasm_and_rejects_late_results() {
+    let mut guest = load("youtube");
+    start(&mut guest, "youtube");
+    guest.call(json!({"type":"http_result","id":"video","status":200,"now_ms":1000,"payload":{"items":[{"id":"video","liveStreamingDetails":{"activeLiveChatId":"chat"}}]}})).unwrap();
+    let effects = guest.call(json!({"type":"tick","now_ms":1001})).unwrap();
+    let id = effects.iter().find(|e| e["protocol"] == "grpc").unwrap()["id"].clone();
+    guest
+        .call(json!({"type":"http_stream_closed","id":id,"http_status":404,"now_ms":1002}))
+        .unwrap();
+    let effects = guest.call(json!({"type":"tick","now_ms":1003})).unwrap();
+    let poll = effects
+        .iter()
+        .find(|e| {
+            e["method"] == "GET"
+                && e["url"] == "https://www.googleapis.com/youtube/v3/liveChat/messages"
+        })
+        .unwrap();
+    let result = json!({"type":"http_result","id":poll["id"],"status":200,"now_ms":1004,"payload":{"pollingIntervalMillis":120000,"nextPageToken":"next","items":(0..200).map(|i|json!({"id":format!("rest-{i}"),"snippet":{"displayMessage":"x".repeat(160)},"authorDetails":{"channelId":"user","displayName":"User"}})).collect::<Vec<_>>()}});
+    let mut received = guest
+        .call(result.clone())
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "chat")
+        .count();
+    for now in 1005..1024 {
+        received += guest
+            .call(json!({"type":"tick","now_ms":now}))
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "chat")
+            .count();
+    }
+    assert_eq!(received, 200);
+    guest.call(json!({"type":"stop"})).unwrap();
+    assert!(
+        guest
+            .call(result)
+            .unwrap()
+            .iter()
+            .all(|e| e["type"] != "chat")
+    );
+}
 #[test]
 fn independently_compiled_providers_use_opaque_credentials_and_declare_only_supported_channels() {
     for id in ["youtube", "vklive"] {
@@ -38,15 +82,23 @@ fn independently_compiled_providers_use_opaque_credentials_and_declare_only_supp
         };
         let effects = guest.call(response).unwrap();
         let channel: acheflow_extension_api::integration::Channel = serde_json::from_value(
-            effects.iter().find(|e| e["type"] == "channel").unwrap()["channel"].clone(),
+            effects
+                .iter()
+                .find(|e| e["type"] == "channel" && e["channel"].is_object())
+                .unwrap()["channel"]
+                .clone(),
         )
         .unwrap();
         assert_eq!(
             channel.capabilities,
             if id == "youtube" {
-                vec!["chat.send".to_string()]
+                vec![
+                    "chat.read".to_string(),
+                    "chat.send".to_string(),
+                    "audience.read".to_string(),
+                ]
             } else {
-                vec![]
+                vec!["chat.read".to_string(), "audience.read".to_string()]
             }
         );
         let sample: acheflow_extension_api::audience::AudienceSample = serde_json::from_value(

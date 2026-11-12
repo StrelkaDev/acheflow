@@ -26,6 +26,19 @@ kept separate from the shared visual tree.
 
 ## Rendering and input invariants
 
+**Live / Chat** provides the standalone merged chat when the media stream is
+stopped. Starting media docks the chat beside the workspace; stopping returns it
+to the Chat tab. Platform connections continue independently of media rendering.
+Read-only channels remain selectable, with the message composer disabled when
+the selected channel cannot send.
+
+Media status polls every five seconds while idle and every 500 ms while running.
+Interaction/chat status polls every second when a channel is registered, including
+while media is stopped, and every five seconds otherwise. Unreachable services
+back off up to 30 seconds. Connection logs record state transitions, rather than
+every successful status poll. Provider-specific discovery/retry policy stays in
+the extension.
+
 Both `blitz-dom/custom-widget` and `blitz-paint/custom-widget` are needed for GPU
 widgets. A document accepting a widget does not prove that its paint path is enabled.
 Dynamically mounted widgets need first-paint GPU initialization. `CustomWidgetAttr`

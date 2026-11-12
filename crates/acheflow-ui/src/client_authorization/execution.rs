@@ -44,6 +44,7 @@ pub(crate) fn ClientExecutionPanel(id: String) -> Element {
             error.set(String::new());
             actions.write().clear();
             async move {
+                let mut failures = 0u8;
                 loop {
                     let prepared = (|| {
                         let sessions = sessions.peek();
@@ -99,14 +100,33 @@ pub(crate) fn ClientExecutionPanel(id: String) -> Element {
                             generation.set(runtime.identity().generation);
                             panel.set(None);
                             if let Err(reason) = result {
+                                failures = failures.saturating_add(1);
+                                crate::diagnostics::record(
+                                    "error",
+                                    &format!("extension:{id}"),
+                                    &reason,
+                                );
                                 error.set(reason);
                                 state.set("Live events disconnected".into());
+                            } else {
+                                failures = 0;
                             }
                         }
-                        Ok(None) => state.set("Waiting for local authorization".into()),
-                        Err(reason) => error.set(reason),
+                        Ok(None) => {
+                            failures = 0;
+                            state.set("Waiting for local authorization".into());
+                        }
+                        Err(reason) => {
+                            failures = failures.saturating_add(1);
+                            error.set(reason);
+                        }
                     }
-                    crate::scene_preview::pause(2000).await;
+                    crate::scene_preview::pause(if failures == 0 {
+                        2000
+                    } else {
+                        crate::live_client::polling_delay(false, failures, 2000)
+                    })
+                    .await;
                 }
             }
         }
@@ -206,6 +226,21 @@ pub(super) async fn run(
                         .map_err(|_| "Invalid local provider panel")?,
                 )),
                 Some("status") => {
+                    let value = effect["state"].as_str().unwrap_or("unknown");
+                    let message = effect["error"].as_str().unwrap_or(value);
+                    if state.peek().as_str() != message {
+                        crate::diagnostics::record(
+                            if matches!(value, "failed" | "needs_authorization") {
+                                "error"
+                            } else if value == "reconnecting" {
+                                "warn"
+                            } else {
+                                "info"
+                            },
+                            &format!("extension:{id}"),
+                            message,
+                        );
+                    }
                     if let Some(error) = effect["error"].as_str() {
                         state.set(error.into());
                     } else if let Some(value) = effect["state"].as_str() {
@@ -213,6 +248,13 @@ pub(super) async fn run(
                     }
                 }
                 Some("failure") => {
+                    crate::diagnostics::record(
+                        "error",
+                        &format!("extension:{id}"),
+                        effect["message"]
+                            .as_str()
+                            .unwrap_or("Provider request failed"),
+                    );
                     state.set(
                         effect["message"]
                             .as_str()

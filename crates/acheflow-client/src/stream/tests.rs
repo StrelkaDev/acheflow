@@ -27,6 +27,54 @@ fn trailers(code: &str) -> Frame<Bytes> {
     Frame::trailers(headers)
 }
 #[test]
+fn grpc_content_type_accepts_parameters_but_rejects_other_protocols() {
+    for content_type in [
+        "application/grpc",
+        "application/grpc+proto",
+        "application/grpc; charset=utf-8",
+        "application/grpc+proto; charset=utf-8",
+    ] {
+        let response = hyper::Response::builder()
+            .version(hyper::Version::HTTP_2)
+            .header("content-type", content_type)
+            .body(())
+            .unwrap();
+        assert!(
+            response_status("stream", &response).unwrap().is_none(),
+            "{content_type}"
+        );
+    }
+    for content_type in [
+        "application/grpc-web+proto",
+        "application/grpc+json",
+        "text/html",
+    ] {
+        let response = hyper::Response::builder()
+            .version(hyper::Version::HTTP_2)
+            .header("content-type", content_type)
+            .body(())
+            .unwrap();
+        assert!(response_status("stream", &response).is_err());
+    }
+}
+
+#[test]
+fn open_failure_reports_only_fixed_transport_categories() {
+    for (error, category) in [
+        ("stream connection failed", "network"),
+        ("stream TLS failed", "tls"),
+        ("stream requires HTTP/2", "http2"),
+        ("stream connection timed out", "timeout"),
+        ("invalid streaming response protocol", "protocol"),
+        ("private-token-marker", "invalid_request"),
+    ] {
+        let event = open_failure(&json!("stream"), error);
+        assert_eq!(event["transport_error"], category);
+        assert_eq!(event["grpc_status"], 14);
+        assert!(!event.to_string().contains("private-token-marker"));
+    }
+}
+#[test]
 fn status_metadata_is_bounded_redacted_and_streaming_is_client_only() {
     let mut response = hyper::Response::builder()
         .version(hyper::Version::HTTP_2)

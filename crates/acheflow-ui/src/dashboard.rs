@@ -30,7 +30,8 @@ pub fn dashboard() -> Element {
     });
     let workspace_open = use_signal(|| false);
     let live = use_live_client(project);
-    let _control = crate::control_client::use_control_client(project);
+    let control = crate::control_client::use_control_client(project);
+    crate::diagnostics::observe(live, control);
     crate::interaction::use_chat_draft(project);
     #[cfg(not(target_arch = "wasm32"))]
     let activation_notice = crate::native_activation::provide(project, page);
@@ -102,14 +103,20 @@ fn native_activation_notice(#[cfg(not(target_arch = "wasm32"))] value: Signal<St
     }
 }
 #[component]
-fn GeneralSettings(
+pub(crate) fn GeneralSettings(
     mut effects: Signal<bool>,
     project: Signal<crate::project::Workspace>,
     catalog: Signal<crate::workspaces::Catalog>,
     storage_status: Signal<String>,
 ) -> Element {
+    let mut section = use_signal(|| "General");
     rsx! {
         div {class:"page-heading",div {h1 {"Settings"}p {"Server connection, desktop behavior and appearance."}}}
+        nav {class:"settings-tabs","aria-label":"Settings sections",
+            crate::diagnostics::TabButton {id:"settings-general",selected:section()=="General",label:"General",onclick:move |_|section.set("General")}
+            crate::diagnostics::TabButton {id:"settings-logs",selected:section()=="Logs",label:"Logs",onclick:move |_|section.set("Logs")}
+        }
+        div {style:if section()=="General"{""}else{"display:none"},
         crate::server_settings::ServerSettings {project,catalog,storage_status}
         section {class:"panel",
             div {class:"panel-heading",h2 {"Appearance"}}
@@ -122,6 +129,8 @@ fn GeneralSettings(
             div {class:"panel-heading",h2 {"About Acheflow"}}
             div {class:"padded",p {"Version {APP_VERSION}"}}
         }
+        }
+        if section()=="Logs" {crate::diagnostics::LogsPanel {project}}
     }
 }
 #[component]

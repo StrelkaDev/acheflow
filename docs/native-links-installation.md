@@ -10,6 +10,20 @@ for complete packages.
 
 ## macOS development bundle
 
+For a complete local app with bundled runtime libraries, extensions and web
+assets, plus LaunchServices registration:
+
+```sh
+python3 native/macos/build-app.py --output target/acheflow-app
+```
+
+The app remains at `target/acheflow-app/Acheflow.app`; moving it requires
+LaunchServices discovery at the new location. Add `--no-register-links` for a
+build without registration. This enables the custom scheme; signed HTTPS
+association still requires the Apple setup below.
+
+For a minimal unsigned bundle around an already built development binary:
+
 ```sh
 cargo build -p acheflow --bin acheflow --locked
 python3 native/macos/build-dev-app.py \
@@ -43,7 +57,8 @@ default to `com.acheflow.development`; generated association metadata must match
 the actual installed main bundle identity.
 
 Open the installed app for LaunchServices discovery and verify scheme registration
-on the target macOS. Build scripts do not change the user's default handlers.
+on the target macOS. The minimal builder does not register its output; the full
+local app builder does. Neither changes an existing user choice of default handler.
 Temporary development bundles, ad-hoc signatures and local IPC tests do not
 establish installed signed HTTPS association.
 
@@ -96,6 +111,13 @@ For Cloudflare Pages Direct Upload, upload the host root including `_headers`,
 `/forward` and `/server-forward`, avoiding Pages' `.html` redirects. Deploy both
 routes and the shared assets together with the matching installed scheme handler.
 Generated local files do not establish live fallback or AASA support.
+
+The published `/_acheflow-links/page.mjs` must generate
+`acheflow://client/fwd/...` and `acheflow://server/fwd/...`. Older deployed files
+that generate `acheflow-client://` or `acheflow-server://` cause browser activation
+errors even when the current app is installed and registered. Update the HTML and
+all three assets together. Replacing or registering the macOS app cannot update
+these Cloudflare-hosted files.
 
 Serve AASA over valid public HTTPS without redirects or authentication and check
 Apple CDN propagation. Do not enable analytics or callback-bearing access/debug

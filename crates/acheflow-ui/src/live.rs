@@ -11,13 +11,14 @@ use dioxus_native::prelude::*;
 
 #[component]
 pub fn Live(project: Signal<Workspace>, visible: bool) -> Element {
+    let client = use_context::<LiveClient>();
     let mut tab = use_signal(|| "Studio");
     rsx! {div {class:"live-root",
-        nav {class:"subnav",for name in ["Analytics","Sources","Scenes","Mixer","Studio","Interactive","Settings"] {
+        nav {class:"subnav",for name in ["Analytics","Sources","Scenes","Mixer","Studio","Chat","Interactive","Settings"] {
             button {class:if tab()==name {"selected"}else{""},onclick:move |_|tab.set(name),"{name}"}
         }}
         LiveNotice {}
-        div {class:"live-pages",for name in ["Analytics","Sources","Scenes","Mixer","Studio","Interactive","Settings"] {
+        div {class:"live-pages",for name in ["Analytics","Sources","Scenes","Mixer","Studio","Chat","Interactive","Settings"] {
             div {key:"{name}",class:if visible && tab()==name {"tab-scroll active"}else{"tab-scroll"},"aria-hidden":if visible && tab()==name {"false"}else{"true"},
                 div {class:"live-content",
                     if name=="Analytics" {Analytics {}}
@@ -25,12 +26,24 @@ pub fn Live(project: Signal<Workspace>, visible: bool) -> Element {
                     if name=="Scenes" {Scenes {project,visible:visible && tab()==name}}
                     if name=="Mixer" {crate::audio_mixer::AudioMixer {project}}
                     if name=="Studio" {Studio {project,visible:visible && tab()==name}}
+                    if name=="Chat" {
+                        StandaloneChat {running:client.running()}
+                    }
                     if name=="Interactive" {crate::interaction::InteractivePage {}}
                     if name=="Settings" {Settings {project}}
                 }
             }
         }}
     }}
+}
+
+#[component]
+pub(crate) fn StandaloneChat(running: bool) -> Element {
+    if running {
+        rsx! {p{class:"form-help chat-docked-notice","Chat is docked beside the workspace while live."}}
+    } else {
+        rsx! {crate::interaction::ChatPanel {}}
+    }
 }
 #[component]
 fn Analytics() -> Element {
@@ -272,7 +285,6 @@ fn Studio(mut project: Signal<Workspace>, visible: bool) -> Element {
                 crate::studio_mixer::StudioMixer {project,orientation:o}
             }
         }}
-        if !client.running(){crate::interaction::ChatPanel {}}
     }
 }
 #[component]

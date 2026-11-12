@@ -33,6 +33,7 @@ pub fn use_control_client(project: Signal<Workspace>) -> ControlClient {
         client.error.set(None);
         client.extension_errors.write().clear();
         async move {
+            let mut failures = 0u8;
             loop {
                 if !*client.busy.peek() {
                     let workspace = project.peek().clone();
@@ -42,12 +43,25 @@ pub fn use_control_client(project: Signal<Workspace>) -> ControlClient {
                     }
                     match result {
                         Ok(state) => {
+                            failures = 0;
                             client.accept(state);
                         }
-                        Err(error) => client.error.set(Some(error)),
+                        Err(error) => {
+                            failures = failures.saturating_add(1);
+                            if client.error.peek().as_ref() != Some(&error) {
+                                client.error.set(Some(error));
+                            }
+                        }
                     }
                 }
-                crate::scene_preview::pause(1000).await;
+                // Platform chats can remain active while the media stream is stopped.
+                let active = client.state.peek().as_ref().is_some_and(|s| {
+                    s.workspace_id.as_deref() == Some(owner.0.as_str()) && !s.channels.is_empty()
+                });
+                crate::scene_preview::pause(crate::live_client::polling_delay(
+                    active, failures, 1000,
+                ))
+                .await;
             }
         }
     });

@@ -8,8 +8,8 @@ tree. [The roadmap](roadmap.md) separates unfinished work from available behavio
 
 - [Getting started](getting-started.md): prerequisites, desktop/server/browser launch
   modes, custom ports, remote connections and the first broadcast.
-- [Desktop installation](desktop-installation.md): macOS packages, data locations,
-  FFmpeg and packaging.
+- [Desktop installation](desktop-installation.md): macOS apps, link registration,
+  packages, data locations and FFmpeg.
 - [Live production](live-pipeline.md): source setup, scene editing, CSS/WGSL,
   output profiles, status and media APIs.
 - [Audio](audio-capabilities.md): independent tracks, scene buses, mixer controls,

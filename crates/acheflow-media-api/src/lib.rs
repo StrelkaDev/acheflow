@@ -1,6 +1,7 @@
 pub mod appearance;
 pub mod audio;
 pub mod control;
+pub mod diagnostics;
 pub mod layer;
 pub mod live;
 pub mod server;

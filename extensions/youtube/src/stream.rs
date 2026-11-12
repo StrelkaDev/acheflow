@@ -105,6 +105,26 @@ impl YouTube {
                 self.stream.waiting = false;
                 self.stream.bytes.clear();
                 let code = input["grpc_status"].as_u64().unwrap_or(14);
+                let http = input["http_status"].as_u64().unwrap_or(0);
+                let transport = match input["transport_error"].as_str() {
+                    Some("network") => "network connection",
+                    Some("tls") => "TLS negotiation",
+                    Some("http2") => "HTTP/2 negotiation",
+                    Some("timeout") => "connection timeout",
+                    Some("protocol") => "response protocol",
+                    Some("request" | "invalid_request") => "stream request",
+                    _ => "stream closed",
+                };
+                let details = format!("HTTP {http}, gRPC {code}; {transport}");
+                if matches!(http, 404 | 405 | 501) || code == 12 {
+                    self.stream.blocked = true;
+                    self.poll.enabled = true;
+                    out.push(status(
+                        "reconnecting",
+                        Some("YouTube streaming service unavailable; switching to REST chat."),
+                    ));
+                    return;
+                }
                 if code == 16 || input["http_status"] == 401 {
                     self.authorized = false;
                     out.push(status(
@@ -115,7 +135,7 @@ impl YouTube {
                     || matches!(input["http_status"].as_u64(), Some(400 | 403 | 404))
                 {
                     self.stream.blocked = true;
-                    out.push(status("failed", Some("YouTube streaming chat is unavailable or access was rejected. Check the broadcast and permissions.")));
+                    out.push(status("failed", Some(&format!("YouTube streaming chat is unavailable or access was rejected ({details}). Check the broadcast and permissions; then find live broadcasts again."))));
                 } else {
                     let delay = (1000u64 << self.stream.failures.min(6))
                         .min(60_000)
@@ -124,7 +144,9 @@ impl YouTube {
                     self.stream.next = now.saturating_add(delay);
                     out.push(status(
                         "reconnecting",
-                        Some("YouTube chat stream interrupted; resuming after backoff."),
+                        Some(&format!(
+                            "YouTube chat stream interrupted ({details}); resuming after backoff."
+                        )),
                     ));
                 }
             }

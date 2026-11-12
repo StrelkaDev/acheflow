@@ -14,6 +14,7 @@ mod client_bridge;
 mod compositor;
 mod control;
 mod desktop;
+mod diagnostics;
 mod extension_forwarding;
 #[cfg(test)]
 mod extension_forwarding_tests;
@@ -148,6 +149,7 @@ async fn serve(
         .route("/api/live/source/{id}", get(live::source_preview))
         .with_state(runtime.clone());
     let app = Router::new()
+        .route("/api/server/logs", get(diagnostics::get))
         .route("/healthz", get(|| async { "ok\n" }))
         .route(
             "/api/server/info",
@@ -179,7 +181,8 @@ async fn serve(
         .merge(workspace_routes)
         .layer(cors)
         .merge(settings_routes)
-        .fallback_service(ServeDir::new(web_root).append_index_html_on_directories(true));
+        .fallback_service(ServeDir::new(web_root).append_index_html_on_directories(true))
+        .layer(axum::middleware::from_fn(diagnostics::requests));
     let rtmp_runtime = runtime.clone();
     let rtmp_task = tokio::spawn(async move {
         if let Err(error) = rtmp::serve(rtmp_listener, rtmp_runtime, rtmp_tls).await {

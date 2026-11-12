@@ -168,6 +168,7 @@ dependencies = [
  "tokio",
  "tokio-openssl",
  "tokio-util",
+ "tower",
  "tower-http",
  "url",
 ]

@@ -23,6 +23,7 @@ impl YouTube {
     }
 
     fn clear_broadcast(&mut self, out: &mut Vec<Value>) {
+        self.poll.reset();
         out.extend(self.stream.reset());
         self.chat.clear();
         self.video.clear();
@@ -86,7 +87,8 @@ impl YouTube {
             .or(video["snippet"]["liveChatId"].as_str())
             .unwrap_or_default();
         let offline = video["liveStreamingDetails"]["actualEndTime"].is_string();
-        if id != self.video || chat != self.chat || offline {
+        let changed = id != self.video || chat != self.chat || offline;
+        if changed {
             self.clear_broadcast(out);
             self.video = id.into();
             if !offline {
@@ -110,7 +112,14 @@ impl YouTube {
             .flatten()
             .collect();
             out.push(json!({"type":"channel","channel":{"id":self.video,"label":format!("YouTube / {}",video["snippet"]["title"].as_str().unwrap_or(&self.video)),"capabilities":capabilities,"constraints":{"chat.max_chars":200}}}));
-            out.push(status("connected", None));
+            if !enabled("read_chat") {
+                out.push(status("connected", None));
+            } else if changed {
+                out.push(status(
+                    "connecting",
+                    Some("Connecting to YouTube live chat…"),
+                ));
+            }
         } else {
             out.push(json!({"type":"channel","reset":true}));
             out.push(status(

@@ -3,11 +3,14 @@ mod client_authorization;
 mod code_editor;
 mod control_client;
 mod dashboard;
+mod diagnostics;
 pub mod extension_panel;
 #[cfg(test)]
 mod extension_tests;
 mod fps;
 mod interaction;
+#[cfg(test)]
+mod interaction_tests;
 mod layer_editor;
 mod live;
 mod live_client;
