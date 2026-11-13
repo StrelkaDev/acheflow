@@ -33,7 +33,12 @@ covers application/server launch and the first broadcast.
    mode. Settings cards expand/collapse and support removal. CBR uses matching
    min/target/max rates plus encoder-specific CBR switches (including x264 HRD
    and VideoToolbox constant bitrate); VBR retains a capped variable rate. Legacy
-   JSON without `bitrate_mode` defaults to VBR. Studio can restart one destination
+   JSON without `bitrate_mode` defaults to VBR. The bitrate setting controls video;
+   outgoing traffic also includes AAC audio (128 kbps target) and FLV container bytes.
+   Each output has a **Keyframe interval (seconds)** setting (1–20, default 2).
+   The encoder receives a GOP limit and periodic keyframe requests on the media
+   timeline. Older JSON without `keyframe_interval_secs` uses 2 seconds. Changing
+   this interval requires Stop/Start. Studio can restart one destination
    independently with **Restart output**.
 5. Apply scene/source/mixer/route edits while running. Drag release applies live
    placement; audio-only changes keep the video encoder running. Changing an

@@ -91,8 +91,7 @@ pub async fn start(
             output.bitrate_mode,
             output.bitrate_kbps,
         ))
-        .arg("-g")
-        .arg((fps * 2).to_string());
+        .args(keyframe_options(fps, output.keyframe_interval_secs));
     command.args(stream_encoder_options(
         &encoder,
         &output.resolution,
@@ -248,6 +247,18 @@ async fn report_progress(
     }
 }
 
+// A GOP size is only an encoder limit. Also request keyframes on the media
+// timeline so scene decisions do not move the periodic keyframes.
+// https://ffmpeg.org/ffmpeg.html#Advanced-Video-options
+fn keyframe_options(fps: u32, seconds: u32) -> [String; 4] {
+    [
+        "-g".into(),
+        (fps * seconds).to_string(),
+        "-force_key_frames:v".into(),
+        format!("expr:gte(t,n_forced*{seconds})"),
+    ]
+}
+
 // Encoder-specific switches select actual rate control rather than only a ceiling.
 fn rate_control(encoder: &str, mode: BitrateMode, kbps: u32) -> Vec<String> {
     if mode == BitrateMode::Cbr && encoder.ends_with("_videotoolbox") {
@@ -368,6 +379,129 @@ fn fail(status: &Mutex<OutputStatus>, error: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[cfg(target_os = "macos")]
+    #[ignore = "requires FFmpeg, ffprobe and actual VideoToolbox hardware; run explicitly"]
+    async fn configured_keyframe_intervals_produce_periodic_keyframes() {
+        for encoder in ["libx264", "h264_videotoolbox", "hevc_videotoolbox"] {
+            for (fps, seconds) in [(24, 1), (30, 2), (60, 3)] {
+                let encoded = tokio::process::Command::new(crate::ffmpeg::executable())
+                    .args([
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-nostdin",
+                        "-f",
+                        "lavfi",
+                        "-i",
+                    ])
+                    .arg(format!("testsrc2=s=320x180:r={fps}"))
+                    .args([
+                        "-t",
+                        &(seconds * 3).to_string(),
+                        "-c:v",
+                        encoder,
+                        "-pix_fmt",
+                        "yuv420p",
+                    ])
+                    .args(rate_control(encoder, BitrateMode::Cbr, 500))
+                    .args(
+                        stream_encoder_options(
+                            encoder,
+                            &Resolution {
+                                width: 320,
+                                height: 180,
+                            },
+                            fps,
+                            500,
+                        )
+                        .unwrap(),
+                    )
+                    .args(keyframe_options(fps, seconds))
+                    .args([
+                        "-movflags",
+                        "frag_keyframe+empty_moov",
+                        "-f",
+                        "mp4",
+                        "pipe:1",
+                    ])
+                    .kill_on_drop(true)
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(
+                    encoded.status.success(),
+                    "{encoder}: {}",
+                    String::from_utf8_lossy(&encoded.stderr)
+                );
+                let mut probe = tokio::process::Command::new("ffprobe")
+                    .args([
+                        "-v",
+                        "error",
+                        "-select_streams",
+                        "v:0",
+                        "-skip_frame",
+                        "nokey",
+                        "-show_frames",
+                        "-show_entries",
+                        "frame=best_effort_timestamp_time",
+                        "-of",
+                        "json",
+                        "pipe:0",
+                    ])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .kill_on_drop(true)
+                    .spawn()
+                    .unwrap();
+                probe
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(&encoded.stdout)
+                    .await
+                    .unwrap();
+                let decoded = probe.wait_with_output().await.unwrap();
+                assert!(
+                    decoded.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&decoded.stderr)
+                );
+                let json: serde_json::Value = serde_json::from_slice(&decoded.stdout).unwrap();
+                let times: Vec<f64> = json["frames"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|frame| {
+                        frame["best_effort_timestamp_time"]
+                            .as_str()
+                            .unwrap()
+                            .parse()
+                            .unwrap()
+                    })
+                    .collect();
+                let first = times[0];
+                for n in 0..3 {
+                    let expected = first + f64::from(n * seconds);
+                    assert!(
+                        times
+                            .iter()
+                            .any(|t| (t - expected).abs() < 1. / f64::from(fps)),
+                        "{encoder} {fps} FPS / {seconds}s: missing keyframe at {expected}; {times:?}"
+                    );
+                }
+                assert!(
+                    times
+                        .windows(2)
+                        .all(|pair| pair[1] - pair[0] <= f64::from(seconds) + 1. / f64::from(fps))
+                );
+                println!("{encoder} {fps} FPS / {seconds}s: keyframes {times:?}");
+            }
+        }
+    }
+
     #[test]
     fn videotoolbox_cbr_does_not_override_constant_rate_with_data_rate_limits() {
         for encoder in ["h264_videotoolbox", "hevc_videotoolbox"] {

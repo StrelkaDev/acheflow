@@ -170,7 +170,7 @@ fn StreamSettings(
             NumberField {label:"Base height",value:stream.base.height,change:move |v:u32|{if (16..=7680).contains(&v) && v.is_multiple_of(2){let mut r=project.read().stream(orientation).base.clone();r.height=v;project.write().resize_base(orientation,r);}}}
             FrameRateInput {value:stream.fps,change:move |v|project.write().stream_mut(orientation).fps=v}
         }
-        div {class:"panel-heading",h2 {"Restream outputs"}button {class:"primary",onclick:move |_|{let size=project.read().stream(orientation).base.clone();project.write().stream_mut(orientation).outputs.push(Output{name:"New destination".into(),url:String::new(),key:String::new(),resolution:size,quality:"Standard".into(),codec:"h264".into(),encoder:None,bitrate_kbps:4500, bitrate_mode: Default::default(),enabled:true,audio:Default::default()});expanded.set(Some(project.peek().stream(orientation).outputs.len()-1));},"+ Output"}}
+        div {class:"panel-heading",h2 {"Restream outputs"}button {class:"primary",onclick:move |_|{let size=project.read().stream(orientation).base.clone();project.write().stream_mut(orientation).outputs.push(Output{name:"New destination".into(),url:String::new(),key:String::new(),resolution:size,quality:"Standard".into(),codec:"h264".into(),encoder:None,bitrate_kbps:4500, bitrate_mode: Default::default(),keyframe_interval_secs:2,enabled:true,audio:Default::default()});expanded.set(Some(project.peek().stream(orientation).outputs.len()-1));},"+ Output"}}
         for (index,out) in stream.outputs.iter().enumerate() {
             div {key:"{index}",class:"output-config",
                 div {class:"panel-heading destination-heading",
@@ -190,10 +190,11 @@ fn StreamSettings(
                     Choice {label:"Quality",value:out.quality.clone(),choices:["Low","Standard","High","Custom"].into_iter().map(String::from).collect(),change:move |q:String|{let mut p=project.write();let out=&mut p.stream_mut(orientation).outputs[index];out.bitrate_kbps=match q.as_str(){"Low"=>2500,"High"=>8000,"Standard"=>4500,_=>out.bitrate_kbps};out.quality=q;}}
                     Choice {label:"Bitrate mode",value:out.bitrate_mode.label(),choices:vec!["CBR".into(),"VBR".into()],change:move |v:String|project.write().stream_mut(orientation).outputs[index].bitrate_mode=if v=="CBR"{BitrateMode::Cbr}else{BitrateMode::Vbr}}
                     NumberField {label:"Video bitrate / limit (kbps)",value:out.bitrate_kbps,min:100,max:100000,change:move |v|{let mut p=project.write();let out=&mut p.stream_mut(orientation).outputs[index];out.bitrate_kbps=v;out.quality="Custom".into();}}
+                    NumberField {label:"Keyframe interval (seconds)",value:out.keyframe_interval_secs,min:1,max:20,change:move |v|project.write().stream_mut(orientation).outputs[index].keyframe_interval_secs=v}
                     EncoderPicker {project,orientation,index,capabilities:capabilities.clone()}
                     Choice {label:"Output",value:if out.enabled {"Enabled"}else{"Disabled"},choices:vec!["Enabled".into(),"Disabled".into()],change:move |v:String|project.write().stream_mut(orientation).outputs[index].enabled=v=="Enabled"}
                 }
-                p {class:"form-help padded","CBR keeps a fixed video rate. VBR varies with image complexity up to the configured limit. Audio uses the scene mixer."}
+                p {class:"form-help padded","CBR keeps a fixed video rate. VBR varies with image complexity up to the configured limit. The bitrate setting applies to video; traffic includes audio and FLV overhead. Audio uses the scene mixer. Keyframe interval changes require Stop/Start."}
                 }
             }
         }

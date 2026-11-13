@@ -75,10 +75,16 @@ pub struct Output {
     pub bitrate_kbps: u32,
     #[serde(default)]
     pub bitrate_mode: BitrateMode,
+    #[serde(default = "default_keyframe_interval_secs")]
+    pub keyframe_interval_secs: u32,
     pub enabled: bool,
     #[serde(default)]
     pub audio: crate::audio::OutputAudio,
 }
+fn default_keyframe_interval_secs() -> u32 {
+    2
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Stream {
@@ -539,8 +545,9 @@ impl Workspace {
                         .is_some_and(|name| !crate::valid_encoder_name(name))
                     || !["Low", "Standard", "High", "Custom"].contains(&out.quality.as_str())
                     || !(100..=100000).contains(&out.bitrate_kbps)
+                    || !(1..=20).contains(&out.keyframe_interval_secs)
                 {
-                    return Err("Each output needs a name, rtmp:// URL, key, valid resolution, RTMP video codec/encoder and bitrate (100–100000 kbps)".into());
+                    return Err("Each output needs a name, rtmp:// URL, key, valid resolution, RTMP video codec/encoder bitrate (100–100000 kbps) and keyframe interval (1–20 seconds)".into());
                 }
             }
         }
@@ -870,6 +877,7 @@ mod tests {
             encoder: None,
             bitrate_kbps: 4500,
             bitrate_mode: Default::default(),
+            keyframe_interval_secs: 2,
             enabled: true,
             audio: Default::default(),
         });
@@ -944,6 +952,7 @@ mod tests {
             encoder: None,
             bitrate_kbps: 6000,
             bitrate_mode: Default::default(),
+            keyframe_interval_secs: 2,
             enabled: true,
             audio: Default::default(),
         });
@@ -1010,6 +1019,7 @@ mod tests {
             encoder: Some("hevc_videotoolbox".into()),
             bitrate_kbps: 4500,
             bitrate_mode: Default::default(),
+            keyframe_interval_secs: 2,
             enabled: true,
             audio: Default::default(),
         });
@@ -1026,7 +1036,27 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("bitrate_mode");
+        legacy["horizontal"]["outputs"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("keyframe_interval_secs");
         let restored = Workspace::from_json(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&restored).unwrap()["horizontal"]["outputs"][0]["keyframe_interval_secs"],
+            2
+        );
+        let mut configured = serde_json::to_value(&restored).unwrap();
+        configured["horizontal"]["outputs"][0]["keyframe_interval_secs"] = 3.into();
+        let changed = Workspace::from_json(&serde_json::to_vec(&configured).unwrap()).unwrap();
+        assert!(!changed.same_output_profile(&restored, Orientation::Horizontal));
+        assert_eq!(
+            Workspace::from_json(changed.json().unwrap().as_bytes()).unwrap(),
+            changed
+        );
+        for invalid in [0, 21] {
+            configured["horizontal"]["outputs"][0]["keyframe_interval_secs"] = invalid.into();
+            assert!(Workspace::from_json(&serde_json::to_vec(&configured).unwrap()).is_err());
+        }
         assert_eq!(
             restored.horizontal.outputs[0].bitrate_mode,
             BitrateMode::Vbr

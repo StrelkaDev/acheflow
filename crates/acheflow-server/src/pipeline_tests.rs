@@ -339,6 +339,7 @@ async fn output_pipeline(encoder: &str) {
         encoder: Some(encoder.into()),
         bitrate_kbps: 500,
         bitrate_mode: acheflow_media_api::workspace::BitrateMode::Cbr,
+        keyframe_interval_secs: 2,
         enabled: true,
         audio: Default::default(),
     });
