@@ -25,6 +25,7 @@ pub type RuntimeState = Arc<Runtime>;
 pub type ApiResult = Result<Json<LiveStatus>, (StatusCode, Json<ApiError>)>;
 
 pub struct Runtime {
+    pub visual_services: RwLock<Option<Arc<Mutex<crate::control::Services>>>>,
     pub control_revision: std::sync::atomic::AtomicU64,
     pub workspace: RwLock<Option<Workspace>>,
     pub inputs: Mutex<HashMap<u32, Arc<Input>>>,
@@ -39,6 +40,7 @@ pub struct Runtime {
 impl Runtime {
     pub fn new(capabilities: crate::ffmpeg::CapabilityState, rtmp_address: String) -> Arc<Self> {
         Arc::new(Self {
+            visual_services: RwLock::new(None),
             control_revision: std::sync::atomic::AtomicU64::new(0),
             workspace: RwLock::new(None),
             inputs: Mutex::new(HashMap::new()),
@@ -151,16 +153,18 @@ impl Runtime {
             inputs.clear();
         }
         inputs.retain(|id, input| {
-            let keep = workspace
-                .sources
-                .iter()
-                .any(|s| s.id == *id && s.key == input.config.key && s.url == input.config.url);
+            let keep = workspace.sources.iter().any(|s| {
+                s.kind.is_rtmp()
+                    && s.id == *id
+                    && s.key == input.config.key
+                    && s.url == input.config.url
+            });
             if !keep {
                 input.disconnect();
             }
             keep
         });
-        for source in &workspace.sources {
+        for source in workspace.sources.iter().filter(|s| s.kind.is_rtmp()) {
             inputs
                 .entry(source.id)
                 .or_insert_with(|| Arc::new(Input::new(source.clone())));
@@ -227,7 +231,7 @@ fn validate(workspace: &Workspace) -> Result<(), String> {
         return Err("At most 8 sources and 32 layers per scene are supported".into());
     }
     let mut endpoints = std::collections::HashSet::new();
-    for source in &workspace.sources {
+    for source in workspace.sources.iter().filter(|s| s.kind.is_rtmp()) {
         let url = url::Url::parse(&source.url).map_err(|_| "Invalid source RTMP URL")?;
         let app = url.path().trim_matches('/');
         if !matches!(url.scheme(), "rtmp" | "rtmps")

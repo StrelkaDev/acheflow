@@ -4,7 +4,8 @@
   "api_version": 2,
   "module": "sample.wasm",
   "capabilities": [
-    "panel"
+    "panel",
+    "source"
   ],
   "services": [],
   "subscriptions": [],
@@ -14,6 +15,13 @@
     {
       "id": "increment",
       "mode": "event"
+    }
+  ],
+  "source_types": [
+    {
+      "id": "actions",
+      "name": "Action counter",
+      "settings": []
     }
   ]
 }

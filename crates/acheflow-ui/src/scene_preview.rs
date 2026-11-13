@@ -14,6 +14,8 @@ use std::{
 use web_time::Instant;
 
 struct Snapshot {
+    visual_epoch_ms: u64,
+    live_clock: bool,
     owner: String,
     server: String,
     frame: Option<SceneFrame>,
@@ -37,9 +39,13 @@ pub fn ScenePreview(
     #[props(default)] editor: Option<Signal<crate::spatial_view::EditorView>>,
 ) -> Element {
     let client = use_context::<LiveClient>();
+    let control = use_context::<crate::control_client::ControlClient>();
+    let visual_epoch_ms = use_hook(visual_now_ms);
     let start = use_hook(Instant::now);
     let shared: Shared = use_hook(|| {
         Arc::new(Mutex::new(Snapshot {
+            visual_epoch_ms,
+            live_clock: false,
             owner: String::new(),
             server: String::new(),
             frame: None,
@@ -70,22 +76,32 @@ pub fn ScenePreview(
             return;
         };
         let status = client.status.read();
-        let time = status
+        let live_time = status
             .as_ref()
             .filter(|s| s.workspace_id.as_deref() == Some(workspace.id.as_str()))
             .and_then(|s| s.formats.iter().find(|f| f.orientation == orientation))
-            .map(|f| f.time_seconds)
-            .unwrap_or_else(|| start.elapsed().as_secs_f64());
+            .map(|f| f.time_seconds);
+        let time = live_time.unwrap_or_else(|| start.elapsed().as_secs_f64());
         let mut state = config_shared.lock().unwrap();
         if state.owner != workspace.id || state.server != workspace.server_url {
             state.frame = None;
+            state.live_clock = !live_time.is_some();
             state.owner = workspace.id.clone();
             state.server = workspace.server_url.clone();
             state.boxes.clear();
             state.patterns.clear();
         }
+        if state.live_clock != live_time.is_some() {
+            state.visual_epoch_ms = if live_time.is_some() {
+                visual_now_ms().saturating_sub((time * 1000.) as u64)
+            } else {
+                visual_epoch_ms
+            };
+            state.live_clock = live_time.is_some();
+        }
+        let frame_epoch_ms = state.visual_epoch_ms;
         if placeholders {
-            for source in &workspace.sources {
+            for source in workspace.sources.iter().filter(|s| s.kind.is_rtmp()) {
                 if state
                     .patterns
                     .get(&source.id)
@@ -96,9 +112,12 @@ pub fn ScenePreview(
                         .insert(source.id, SourceFrame::test_pattern(&source.resolution));
                 }
             }
-            state
-                .patterns
-                .retain(|id, _| workspace.sources.iter().any(|s| s.id == *id));
+            state.patterns.retain(|id, _| {
+                workspace
+                    .sources
+                    .iter()
+                    .any(|s| s.kind.is_rtmp() && s.id == *id)
+            });
         }
         let mut inputs = state
             .frame
@@ -116,6 +135,23 @@ pub fn ScenePreview(
         }
         state.editor = editor.map(|view| view.read().clone());
         state.frame = Some(SceneFrame {
+            source_documents: {
+                let snapshot = control.state.read();
+                let snapshot = snapshot
+                    .as_ref()
+                    .filter(|s| s.workspace_id.as_deref() == Some(workspace.id.as_str()));
+                acheflow_media_api::visual::source_documents(
+                    &workspace.sources,
+                    snapshot
+                        .map(|s| s.chat.entries.as_slice())
+                        .unwrap_or_default(),
+                    snapshot
+                        .map(|s| s.source_frames.as_slice())
+                        .unwrap_or_default(),
+                    frame_epoch_ms.saturating_add((time * 1000.) as u64),
+                )
+            },
+            epoch_ms: frame_epoch_ms,
             scene: contents,
             size: workspace.stream(orientation).base.clone(),
             inputs,
@@ -146,27 +182,37 @@ pub fn ScenePreview(
                 };
                 if let Some((owner, server, ids)) = request {
                     let workspace = project.peek().clone();
-                    let downloaded = futures_util::future::join_all(ids.into_iter().map(|id| {
-                        let client = client.clone();
-                        let owner = owner.clone();
-                        let workspace = workspace.clone();
-                        async move {
-                            let url = crate::media::server_url(
-                                &workspace,
-                                &format!("/api/live/source/{id}?workspace={owner}"),
-                            )
-                            .ok()?;
-                            let (image, size) =
-                                crate::video_preview::download_snapshot(&client, &url).await?;
-                            Some((
-                                id,
-                                SourceFrame {
-                                    image: Arc::new(image),
-                                    size,
-                                },
-                            ))
-                        }
-                    }))
+                    let downloaded = futures_util::future::join_all(
+                        ids.into_iter()
+                            .filter(|id| {
+                                workspace
+                                    .sources
+                                    .iter()
+                                    .any(|s| s.id == *id && s.kind.is_rtmp())
+                            })
+                            .map(|id| {
+                                let client = client.clone();
+                                let owner = owner.clone();
+                                let workspace = workspace.clone();
+                                async move {
+                                    let url = crate::media::server_url(
+                                        &workspace,
+                                        &format!("/api/live/source/{id}?workspace={owner}"),
+                                    )
+                                    .ok()?;
+                                    let (image, size) =
+                                        crate::video_preview::download_snapshot(&client, &url)
+                                            .await?;
+                                    Some((
+                                        id,
+                                        SourceFrame {
+                                            image: Arc::new(image),
+                                            size,
+                                        },
+                                    ))
+                                }
+                            }),
+                    )
                     .await;
                     let mut state = shared.lock().unwrap();
                     if state.owner == owner && state.server == server {
@@ -388,5 +434,19 @@ impl Widget for SceneWidget {
             ),
         );
         scaled
+    }
+}
+
+fn visual_now_ms() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() as u64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
     }
 }

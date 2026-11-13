@@ -35,6 +35,8 @@ mod rtmp;
 mod settings;
 mod tls;
 mod traffic;
+#[cfg(test)]
+mod visual_source_tests;
 mod workspace_extensions;
 
 pub use tokio_util::sync::CancellationToken as Shutdown;

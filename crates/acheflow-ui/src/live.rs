@@ -101,7 +101,8 @@ pub fn Sources(mut project: Signal<Workspace>) -> Element {
         None
     };
     rsx! {
-        div {class:"page-heading",div {h1 {"Sources"}p {"Incoming RTMP publishers connect with their source token."}}button {class:"primary",disabled:client.status.read().is_none(),onclick:move |_|client.add_source(),"+ RTMP source"}}
+        div {class:"page-heading",div {h1 {"Sources"}p {"Video inputs, chat overlays and extension visual sources."}}button {class:"primary",disabled:client.status.read().is_none(),onclick:move |_|client.add_source(),"+ RTMP source"}}
+        crate::visual_sources::VisualSources{project}
         div {class:"source-actions row",
             button {disabled:(client.busy)(),onclick:move |_|client.command(Action::Apply),"Apply sources / listen"}
             button {disabled:(client.busy)() || !client.owns(),onclick:move |_|client.command(Action::Deactivate),"Deactivate sources"}
@@ -109,7 +110,7 @@ pub fn Sources(mut project: Signal<Workspace>) -> Element {
         }
         p {class:"form-help source-help","Use the ingest URL as the server and the connection token as the RTMP stream key in OBS/FFmpeg. Apply changes after editing sources."}
         if project.read().sources.is_empty(){div {class:"panel empty-state",h3 {"No expected sources"}p {"Add a source, then apply it to authorize its token on the server."}}}
-        for source in project.read().sources.clone() {
+        for source in project.read().sources.iter().filter(|s|s.kind.is_rtmp()).cloned().collect::<Vec<_>>() {
             section {key:"{source.id}",class:"panel",
                 div {class:"panel-heading",h2 {"{source.name}"}
                     span {class:"badge",if state.as_ref().and_then(|s|s.sources.iter().find(|i|i.id==source.id)).is_some_and(|s|s.connected){"Connected"}else{"Waiting for token"}}
@@ -309,17 +310,22 @@ fn SceneInputStatus(project: Signal<Workspace>, orientation: Orientation) -> Ele
                 .find(|s| s.id == id)
                 .map(|s| s.name.clone())
                 .unwrap_or_else(|| "Missing source".into());
-            let connected = status
-                .as_ref()
-                .and_then(|s| s.sources.iter().find(|s| s.id == id))
-                .is_some_and(|s| s.connected && s.frames > 0);
-            (name, connected)
+            let visual = workspace
+                .sources
+                .iter()
+                .any(|s| s.id == id && !s.kind.is_rtmp());
+            let connected = visual
+                || status
+                    .as_ref()
+                    .and_then(|s| s.sources.iter().find(|s| s.id == id))
+                    .is_some_and(|s| s.connected && s.frames > 0);
+            (name, connected, visual)
         })
         .collect();
     rsx! {div {class:"scene-input-status",
         if inputs.is_empty() {span {"No sources in the selected scene"}}
-        for (name,connected) in inputs {span {class:if connected {"input-connected"}else{"input-waiting"},
-            if connected {"{name}: receiving"}else{"{name}: waiting for RTMP · no video"}
+        for (name,connected,visual) in inputs {span {class:if connected {"input-connected"}else{"input-waiting"},
+            if visual {"{name}: overlay"}else if connected {"{name}: receiving"}else{"{name}: waiting for RTMP · no video"}
         }}
     }}
 }

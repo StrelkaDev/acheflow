@@ -44,6 +44,34 @@ credentials use the client's system vault; browser credentials remain session-lo
 See [local authorization](extension-authorization.md) and the remaining executor
 boundary in [client-executor.md](client-executor.md).
 
+### Visual source documents
+
+Server logic manifests may declare `source_types` with a local `id`, display
+`name` and public `settings`, and request the `source` capability. Source instances
+are workspace sources with `kind.type: "extension"`, an `extension_id`, `type_id`
+and public settings. Each guest turn includes only that extension's `sources`.
+Adding a source type requires no provider changes in server or UI code. The sample
+extension's Action counter is a working example.
+
+An enabled live guest publishes `{"type":"source","frame":{...}}`. The frame
+contains `source_id`, `type_id` and `document` (`css`, `nodes`). The host supplies
+the extension identity and rejects undeclared types, another extension's source,
+inactive instances and late updates from replaced instances. Disabling the guest
+withdraws its documents. Workspace changes discard the previous source state.
+
+Nodes support only `div`, `span`, `strong` and `p`, bounded text, CSS classes and
+children. Text is escaped. No scripts, raw HTML, attributes or external assets
+are accepted. Documents are limited to 512 nodes, eight nesting levels and 192 KiB
+of text; source CSS uses the same resource-free validator as layer CSS. Optional
+`animation_at_ms`, `exit_at_ms` and `remove_at_ms` define absolute phase times;
+the shared renderer applies `.entering`/`.leaving` and removes expired nodes using
+the scene clock. Updates preserve existing animation timing.
+
+The built-in Chat source consumes normalized merged chat through this same visual
+document renderer; provider guests continue publishing domain chat events. It has
+no transport credentials or provider-specific scene code. See
+[live production](live-pipeline.md) for source editing.
+
 ### Native streaming transport
 
 Client manifests may declare the `http_stream` capability; server manifests reject

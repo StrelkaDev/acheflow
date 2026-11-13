@@ -9,6 +9,10 @@ impl Fixture {
     pub fn handle(&mut self, input: Value) -> Vec<Value> {
         let origin = input["extension_id"].as_str().unwrap_or("fixture");
         let now = input["now_ms"].as_u64().unwrap_or(0);
+        if input["config"]["visual_source_fixture"] == "true" {
+            return input["sources"].as_array().into_iter().flatten().map(|source|json!({"type":"source","frame":{"source_id":source["id"],"type_id":source["kind"]["type_id"],"document":{"css":".fixture {color:white;background:blue;}","nodes":[{"tag":"div","classes":"fixture","text":origin}]}}})).collect();
+        }
+
         if input["config"]["loop"] == "true"
             && (input["type"] == "start"
                 || (input["type"] == "event" && input["name"] == "chat.message"))

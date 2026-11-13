@@ -27,7 +27,11 @@ requests `chat:message:send`. The user-only `current_user` endpoint validates th
 account; `token` exposes only type and expiry, not scopes or user identity.
 VK enforces send permissions when a message is submitted; rejection is shown as a
 delivery error. The empty successful receipt confirms delivery without a provider
-message ID, so matching the later chat echo is not guaranteed. Native polls and
+message ID. The guest suppresses one matching echo from the authorized account,
+with identical text and a timestamp after the send, within thirty seconds of a
+confirmed delivery on the same stream. Other authors, unmatched messages and
+failed/unknown sends are not filtered. This bounded match cannot distinguish an
+identical message sent manually from the same account during that window. Native polls and
 automatic RTMP configuration are not exposed.
 
 Sources: [API entry point](https://dev.live.vkvideo.ru/docs/index),

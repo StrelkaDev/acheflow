@@ -1,5 +1,6 @@
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
+mod echo;
 
 #[derive(serde::Deserialize)]
 pub struct WireInput {
@@ -31,7 +32,8 @@ pub struct VkLive {
     stopped: bool,
     send_allowed: bool,
     stream: String,
-    pending_sends: BTreeMap<String, String>,
+    pending_sends: BTreeMap<String, echo::Outgoing>,
+    echoes: echo::Echoes,
     channel_pending: bool,
     chat_pending: bool,
     next_channel: u64,
@@ -116,6 +118,7 @@ impl VkLive {
             || !self.send_allowed
             || self.stream.is_empty()
             || input["channel_id"] != self.channel
+            || self.pending_sends.len() >= 128
             || !guest_sdk::authorization::enabled(&input["config"], "send_chat")
         {
             return vec![
@@ -123,7 +126,15 @@ impl VkLive {
             ];
         }
         let id = format!("send:{request}");
-        self.pending_sends.insert(id.clone(), request.into());
+        self.pending_sends.insert(
+            id.clone(),
+            echo::Outgoing {
+                request: request.into(),
+                text: input["text"].as_str().unwrap_or_default().into(),
+                stream: self.stream.clone(),
+                started: input["now_ms"].as_u64().unwrap_or(0),
+            },
+        );
         vec![
             json!({"type":"http","id":id,"method":"POST","url":"https://apidev.live.vkvideo.ru/v1/chat/message/send","headers":{"Authorization":{"secret":"access_token","prefix":"Bearer "}},"query":{"channel_url":self.channel,"stream_id":self.stream},"body":{"parts":[{"text":{"content":input["text"]}}]}}),
         ]
@@ -231,11 +242,20 @@ impl VkLive {
                     .unwrap_or(30)
                     .clamp(1, 3600)
                     * 1000;
-                if let Some(request) = self.pending_sends.remove(id) {
-                    out.push(self.send_receipt(&input, &request));
+                if let Some(send) = self.pending_sends.remove(id) {
+                    let receipt = self.send_receipt(&input, &send.request);
+                    if receipt["sent"] == true {
+                        self.echoes.confirm(send, now);
+                    }
+                    out.push(receipt);
                 } else if id == "send-permission" {
                     self.send_allowed =
                         code == 200 && data["user"]["id"].as_u64().is_some_and(|id| id > 0);
+                    self.echoes.set_user(if self.send_allowed {
+                        data["user"]["id"].as_u64().unwrap_or(0)
+                    } else {
+                        0
+                    });
                 } else if id == "channel" {
                     self.channel_pending = false;
                     self.next_channel = now.saturating_add(if code == 200 { 30000 } else { retry });
@@ -338,6 +358,18 @@ impl VkLive {
                 continue;
             }
             let author = &message["author"];
+            if self.echoes.suppress(
+                author["id"].as_u64().unwrap_or(0),
+                &text,
+                message["created_at"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .saturating_mul(1000),
+                &self.stream,
+                now,
+            ) {
+                continue;
+            }
             let roles: Vec<&str> = [("is_owner", "broadcaster"), ("is_moderator", "moderator")]
                 .into_iter()
                 .filter_map(|(key, role)| (author[key] == true).then_some(role))
@@ -352,6 +384,39 @@ guest_sdk::export!(VkLive, WireInput, handle_wire);
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn sending_guest() -> VkLive {
+        let mut guest = VkLive::default();
+        guest.handle(json!({"type":"start","config":{"channel":"streamer"},"secrets":["access_token"],"now_ms":1000}));
+        guest.handle(json!({"type":"http_result","id":"send-permission","status":200,"payload":{"data":{"user":{"id":42,"nick":"Fixture"}}}}));
+        guest.handle(json!({"type":"http_result","id":"channel","status":200,"payload":{"data":{"channel":{"url":"streamer","status":"online"},"stream":{"id":"live"}}}}));
+        guest
+    }
+    fn echoed(id: u64, author: u64, created: u64) -> Value {
+        json!({"id":id,"author":{"id":author,"nick":"Fixture"},"created_at":created,"parts":[{"text":{"content":"Hello"}}]})
+    }
+    #[test]
+    fn confirmed_sends_suppress_one_own_echo_but_preserve_other_chat() {
+        let mut guest = sending_guest();
+        guest.handle(json!({"type":"command","name":"chat.send","channel_id":"streamer","request_id":"request","text":"Hello","now_ms":10000}));
+        guest.handle(json!({"type":"http_result","id":"send:request","status":200,"payload":{},"now_ms":10050}));
+        let effects=guest.handle(json!({"type":"http_result","id":"chat","status":200,"now_ms":11000,"payload":{"data":{"chat_messages":[echoed(1,42,10),echoed(2,43,10),echoed(3,42,11)]}}}));
+        let ids = effects
+            .iter()
+            .filter(|e| e["type"] == "chat")
+            .map(|e| e["message"]["message_id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["2", "3"]);
+    }
+    #[test]
+    fn unsuccessful_and_expired_sends_do_not_hide_own_messages() {
+        for (code, received) in [(403, 11000), (0, 11000), (200, 50000)] {
+            let mut guest = sending_guest();
+            guest.handle(json!({"type":"command","name":"chat.send","channel_id":"streamer","request_id":"request","text":"Hello","now_ms":10000}));
+            guest.handle(json!({"type":"http_result","id":"send:request","status":code,"payload":{},"now_ms":10050}));
+            let effects=guest.handle(json!({"type":"http_result","id":"chat","status":200,"now_ms":received,"payload":{"data":{"chat_messages":[echoed(1,42,10)]}}}));
+            assert!(effects.iter().any(|e| e["type"] == "chat"));
+        }
+    }
     #[test]
     fn official_channel_and_chat_shapes_become_domain_events_without_duplicates() {
         let mut guest = VkLive::default();

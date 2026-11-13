@@ -32,6 +32,7 @@ fn app() -> Element {
         p
     });
     crate::live_client::use_live_client(project);
+    crate::control_client::use_control_client(project);
     let view = use_signal(|| EditorView::new(1080.));
     let preview = use_signal(|| false);
     state.project.set(Some(project));

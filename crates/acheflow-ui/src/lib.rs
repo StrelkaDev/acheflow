@@ -37,6 +37,7 @@ mod spatial_viewport_tests;
 mod studio_mixer;
 mod traffic;
 mod video_preview;
+mod visual_sources;
 mod workspaces;
 
 /// The same component tree, stylesheet, font and shader are used on both targets.

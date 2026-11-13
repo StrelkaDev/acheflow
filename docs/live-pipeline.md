@@ -55,6 +55,33 @@ uses the shared GPU scene renderer with bounded per-layer textures. It bypasses 
 resource registrations are automatically released by Blitz when the node drops.
 Inactive tabs do not mount preview widgets or fetch snapshots.
 
+## Chat and extension visual sources
+
+In **Live / Sources**, choose **+ Chat source**, then add that source as a layer
+in a scene. It displays the merged chat supplied by enabled provider extensions.
+The source settings select channels, a message limit, display lifetime and entry/
+exit durations. The defaults are twenty messages, fifteen seconds of display,
+250 ms for entry and 300 ms for exit. Layer geometry controls placement and size.
+Apply source/scene changes to update the server's output.
+
+The source CSS editor styles `.chat`, `.chat-message`, `.chat-author`, `.chat-body`
+and `.chat-platform`; role classes include `.broadcaster` and `.moderator`.
+`.entering` and `.leaving` select animation phases. CSS can use
+`--chat-enter-duration` and `--chat-exit-duration` with custom `@keyframes`.
+The renderer owns each node's animation delay so existing messages do not restart
+when new data arrives. Moderation deletions disappear immediately; the message
+limit drops overflow entries, while timed expiry uses the exit animation.
+
+Message text is escaped, and external CSS resources and scripts are disabled.
+Editor previews and the output compositor use the same visual-document renderer,
+including transparent areas over lower layers. Visual sources have no audio tracks.
+
+Enabled server extensions can publish their declared visual source types. Installed
+types appear beside the built-in Chat button, with extension-defined public settings
+and a source CSS editor. The sample extension provides an Action counter source.
+Disabled/replaced instances cannot keep publishing stale visual output. See the
+[extension source contract](extension-contract.md#visual-source-documents).
+
 ## Layer CSS and GPU effects
 
 The layer inspector exposes one CSS editor instead of separate position/size/crop

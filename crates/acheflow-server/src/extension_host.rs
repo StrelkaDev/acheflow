@@ -194,6 +194,9 @@ async fn run(
             )
             .unwrap();
             input["storage"] = storage.clone();
+            if !manifest.source_types.is_empty() {
+                input["sources"] = json!(host.runtime.workspace.read().unwrap().as_ref().map(|w|w.sources.iter().filter(|s|matches!(&s.kind,acheflow_media_api::visual::SourceKind::Extension(config) if config.extension_id==id)).cloned().collect::<Vec<_>>()).unwrap_or_default());
+            }
             if manifest.capabilities.iter().any(|c| c == "scene") {
                 let state = host.snapshot(0, 1);
                 input["state"] = json!({"workspace_id":state.workspace_id,"revision":state.revision,"scenes":state.scenes});

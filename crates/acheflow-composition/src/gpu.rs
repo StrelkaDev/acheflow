@@ -84,6 +84,8 @@ impl SourceFrame {
 }
 #[derive(Clone)]
 pub struct SceneFrame {
+    pub source_documents: HashMap<u32, acheflow_media_api::visual::SourceDocument>,
+    pub epoch_ms: u64,
     pub scene: MediaScene,
     pub size: Resolution,
     pub inputs: HashMap<u32, SourceFrame>,
@@ -165,6 +167,9 @@ impl Widget for VideoWidget {
     }
 }
 struct LayerGpu {
+    source_document: Option<acheflow_media_api::visual::SourceDocument>,
+    source_phases: Vec<u8>,
+    epoch_ms: u64,
     layer: Option<Layer>,
     canvas: Option<Resolution>,
     document: Option<HtmlDocument>,
@@ -180,6 +185,9 @@ struct LayerGpu {
 impl LayerGpu {
     fn new(device: &wgpu::Device) -> Self {
         Self {
+            source_document: None,
+            source_phases: vec![],
+            epoch_ms: 0,
             layer: None,
             canvas: None,
             document: None,
@@ -193,8 +201,23 @@ impl LayerGpu {
             filters: Filters::new(device),
         }
     }
-    fn document(&mut self, layer: &Layer, size: &Resolution) -> Result<(), String> {
-        if self.layer.as_ref() == Some(layer) && self.canvas.as_ref() == Some(size) {
+    fn document(
+        &mut self,
+        layer: &Layer,
+        size: &Resolution,
+        content: Option<&acheflow_media_api::visual::SourceDocument>,
+        epoch_ms: u64,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let phases = content
+            .map(|doc| crate::visual::phases(doc, now_ms))
+            .unwrap_or_default();
+        if self.layer.as_ref() == Some(layer)
+            && self.canvas.as_ref() == Some(size)
+            && self.source_document.as_ref() == content
+            && self.epoch_ms == epoch_ms
+            && self.source_phases == phases
+        {
             return Ok(());
         }
         validate_css(&layer.css)?;
@@ -214,8 +237,16 @@ impl LayerGpu {
             layer.crop.right,
             layer.crop.bottom
         );
+        let (source_css, body) = if let Some(content) = content {
+            (
+                content.css.as_str(),
+                crate::visual::source_html(content, epoch_ms, now_ms)?,
+            )
+        } else {
+            ("", "<object id='video'></object>".into())
+        };
         let html = format!(
-            "<!DOCTYPE html><html><head><style>{defaults}\n{css}</style></head><body><div class='layer'><object id='video'></object></div></body></html>"
+            "<!DOCTYPE html><html><head><style>{defaults}\n{source_css}\n{css}</style></head><body><div class='layer'>{body}</div></body></html>"
         );
         let mut document = HtmlDocument::from_html(
             &html,
@@ -233,19 +264,23 @@ impl LayerGpu {
             .query_selector(".layer")
             .map_err(|e| format!("CSS selector: {e:?}"))?
             .ok_or("Layer element missing")?;
-        let video = document.query_selector("#video").unwrap().unwrap();
-        document.mutate().set_custom_widget(
-            video,
-            Box::new(VideoWidget {
-                slot: self.slot.clone(),
-            }),
-        );
+        if let Some(video) = document.query_selector("#video").unwrap() {
+            document.mutate().set_custom_widget(
+                video,
+                Box::new(VideoWidget {
+                    slot: self.slot.clone(),
+                }),
+            );
+        }
         // All documents use the same zero-based scene timeline, even after edits.
         document.resolve(0.);
         self.document = Some(document);
         self.node = Some(node);
         self.layer = Some(layer.clone());
         self.canvas = Some(size.clone());
+        self.source_document = content.cloned();
+        self.epoch_ms = epoch_ms;
+        self.source_phases = phases;
         // A static source must be reprocessed if an effect or crop was edited.
         self.source = None;
         Ok(())
@@ -286,8 +321,16 @@ impl GpuScene {
         }
         let mut boxes = Vec::with_capacity(self.layers.len());
         for (index, (gpu, layer)) in self.layers.iter_mut().zip(&frame.scene.layers).enumerate() {
-            gpu.document(layer, &frame.size)
-                .map_err(|e| format!("Layer {}: {e}", index + 1))?;
+            gpu.document(
+                layer,
+                &frame.size,
+                frame.source_documents.get(&layer.source_id),
+                frame.epoch_ms,
+                frame
+                    .epoch_ms
+                    .saturating_add((frame.time.max(0.) * 1000.) as u64),
+            )
+            .map_err(|e| format!("Layer {}: {e}", index + 1))?;
             gpu.filters
                 .configure(&self.device, &layer.effects)
                 .map_err(|e| format!("Layer {}: {e}", index + 1))?;

@@ -90,6 +90,8 @@ pub struct Stream {
 #[serde(deny_unknown_fields)]
 pub struct Source {
     pub id: u32,
+    #[serde(default, skip_serializing_if = "crate::visual::SourceKind::is_rtmp")]
+    pub kind: crate::visual::SourceKind,
     pub name: String,
     pub url: String,
     pub key: String,
@@ -288,6 +290,7 @@ impl Workspace {
             .expect("source IDs exhausted");
         self.sources.push(Source {
             id,
+            kind: Default::default(),
             name: format!("Source {id}"),
             url: "rtmp://localhost:1935/live".into(),
             key: new_token(),
@@ -354,6 +357,15 @@ impl Workspace {
             .map(|s| s.orientation)
         {
             let size = self.stream(o).base.clone();
+            let size = self
+                .sources
+                .iter()
+                .find(|source| source.id == source_id && !source.kind.is_rtmp())
+                .map(|source| Resolution {
+                    width: source.resolution.width.min(size.width),
+                    height: source.resolution.height.min(size.height),
+                })
+                .unwrap_or(size);
             self.scenes
                 .iter_mut()
                 .find(|s| s.id == scene_id)
@@ -534,21 +546,23 @@ impl Workspace {
         }
         let mut ids = std::collections::HashSet::new();
         for source in &self.sources {
+            source.kind.validate()?;
             if source.id == 0
                 || !ids.insert(source.id)
                 || source.name.trim().is_empty()
-                || !["rtmp://", "rtmps://"]
-                    .iter()
-                    .any(|scheme| source.url.starts_with(scheme))
-                || source.url.len() <= 7
-                || source.key.trim().is_empty()
+                || (source.kind.is_rtmp()
+                    && (!["rtmp://", "rtmps://"]
+                        .iter()
+                        .any(|scheme| source.url.starts_with(scheme))
+                        || source.url.len() <= 7
+                        || source.key.trim().is_empty()))
             {
                 return Err("Invalid or duplicate RTMP source".into());
             }
         }
         let mut tokens = std::collections::HashSet::new();
         for source in &self.sources {
-            if !tokens.insert((&source.url, &source.key)) {
+            if source.kind.is_rtmp() && !tokens.insert((&source.url, &source.key)) {
                 return Err("RTMP source tokens must be unique per ingest URL".into());
             }
             if !valid_size(&source.resolution)
@@ -556,12 +570,13 @@ impl Workspace {
             {
                 return Err("Offline source preview must be at most 1920 × 1080 pixels (portrait also supported)".into());
             }
-            if source.key.len() > 256
-                || source.key.len() < 8
-                || !source
-                    .key
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
+            if source.kind.is_rtmp()
+                && (source.key.len() > 256
+                    || source.key.len() < 8
+                    || !source
+                        .key
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c)))
             {
                 return Err("Source token must have 8–256 URL-safe characters".into());
             }

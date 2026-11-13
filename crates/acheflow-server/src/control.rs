@@ -30,6 +30,8 @@ struct RequestResult {
 }
 #[derive(Default)]
 pub struct Services {
+    pub source_frames:
+        std::collections::BTreeMap<u32, acheflow_extension_api::visual::VisualSourceFrame>,
     pub initialized: bool,
     pub panels: std::collections::BTreeMap<String, acheflow_extension_api::ExtensionPanel>,
     pub owner: Option<String>,
@@ -47,7 +49,7 @@ pub struct Services {
 pub struct ControlHost {
     pub runtime: RuntimeState,
     pub client_execution: Mutex<acheflow_control::client_execution::ExecutionRegistry>,
-    pub services: Mutex<Services>,
+    pub services: Arc<Mutex<Services>>,
     pub extension_storage: Mutex<std::collections::BTreeMap<(String, String), Value>>,
     pub extension_owner: Mutex<Option<String>>,
     pub(crate) command_lock: AsyncMutex<()>,
@@ -57,17 +59,19 @@ pub struct ControlHost {
 }
 impl ControlHost {
     pub fn new(runtime: RuntimeState) -> Arc<Self> {
-        Arc::new(Self {
+        let host = Arc::new(Self {
             runtime,
             client_execution: Mutex::new(Default::default()),
-            services: Mutex::new(Services::default()),
+            services: Arc::new(Mutex::new(Services::default())),
             extension_storage: Mutex::new(Default::default()),
             extension_owner: Mutex::new(None),
             command_lock: AsyncMutex::new(()),
             installed: crate::extension_registry::discover(),
             guests: AsyncMutex::new(std::collections::HashMap::new()),
             events: tokio::sync::broadcast::channel(512).0,
-        })
+        });
+        *host.runtime.visual_services.write().unwrap() = Some(host.services.clone());
+        host
     }
     pub fn snapshot(&self, after: u64, limit: usize) -> ControlSnapshot {
         let workspace = self.runtime.workspace.read().unwrap();
@@ -107,6 +111,24 @@ impl ControlHost {
         let executors =
             crate::client_bridge::refresh(self, workspace.as_ref(), &mut state, now_ms());
         ControlSnapshot {
+            source_types: self
+                .installed
+                .iter()
+                .flat_map(|(id, installed)| {
+                    installed
+                        .manifest
+                        .source_types
+                        .iter()
+                        .cloned()
+                        .map(
+                            |source_type| acheflow_extension_api::visual::RegisteredSourceType {
+                                extension_id: id.clone(),
+                                source_type,
+                            },
+                        )
+                })
+                .collect(),
+            source_frames: state.source_frames.values().cloned().collect(),
             client_capabilities: workspace
                 .as_ref()
                 .map(|w| w.client_capabilities.clone())
@@ -165,6 +187,11 @@ impl ControlHost {
         if status.state == "stopped" {
             state.panels.remove(&status.id);
         }
+        if matches!(status.state.as_str(), "stopped" | "failed") {
+            state
+                .source_frames
+                .retain(|_, frame| frame.extension_id != status.id);
+        }
         if let Some(old) = state.extensions.iter_mut().find(|s| s.id == status.id) {
             *old = status;
         } else if state.extensions.len() < 8 {
@@ -190,6 +217,9 @@ impl ControlHost {
         let mut state = self.services.lock().unwrap();
         if state.owner.as_deref() == Some(owner) {
             state.instances.remove(id);
+            state
+                .source_frames
+                .retain(|_, frame| frame.extension_id != id);
             state.panels.remove(id);
             state.integrations.disconnect(id);
             state.analytics.disconnect(id);
@@ -229,7 +259,10 @@ impl ControlHost {
         effect: Value,
         depth: u8,
     ) -> Result<(), String> {
-        let _control = if matches!(effect["type"].as_str(), Some("chat" | "interaction")) {
+        let _control = if matches!(
+            effect["type"].as_str(),
+            Some("chat" | "interaction" | "source")
+        ) {
             Some(self.runtime.control.lock().await)
         } else {
             None
@@ -266,6 +299,32 @@ impl ControlHost {
         if !client_authorized {
             crate::integration_host::validate_effect(self, origin, &effect)?;
         }
+        let visual_frame = if effect["type"] == "source" {
+            if client_authorized {
+                return Err("visual sources require server logic".into());
+            }
+            let mut frame: acheflow_extension_api::visual::VisualSourceFrame =
+                serde_json::from_value(effect["frame"].clone())
+                    .map_err(|_| "invalid visual source frame")?;
+            frame.extension_id = origin.into();
+            frame.document.validate()?;
+            acheflow_media_api::appearance::validate_css(&frame.document.css)?;
+            let declared = self.installed.get(origin).is_some_and(|installed| {
+                installed
+                    .manifest
+                    .source_types
+                    .iter()
+                    .any(|s| s.id == frame.type_id)
+            });
+            let workspace = self.runtime.workspace.read().unwrap();
+            let allowed=workspace.as_ref().is_some_and(|w|w.id==owner&&w.extensions.get(origin).is_some_and(|s|s.enabled)&&w.sources.iter().any(|s|s.id==frame.source_id&&matches!(&s.kind,acheflow_media_api::visual::SourceKind::Extension(config) if config.extension_id==origin&&config.type_id==frame.type_id)));
+            if !declared || !allowed {
+                return Err("undeclared or inactive visual source".into());
+            }
+            Some(frame)
+        } else {
+            None
+        };
         let mut state = self.services.lock().unwrap();
         if state.owner.as_deref() != Some(owner)
             || (!client_authorized
@@ -277,6 +336,10 @@ impl ControlHost {
             return Err("extension instance is no longer active".into());
         }
         match effect["type"].as_str() {
+            Some("source") => {
+                let frame = visual_frame.expect("validated visual frame");
+                state.source_frames.insert(frame.source_id, frame);
+            }
             Some("audience") => {
                 let sample: acheflow_extension_api::audience::AudienceSample =
                     serde_json::from_value(effect["sample"].clone())
@@ -764,6 +827,37 @@ pub async fn command(
     })
 }
 
+impl Services {
+    pub(crate) fn visual_documents(
+        &self,
+        workspace: &acheflow_media_api::workspace::Workspace,
+        now: u64,
+    ) -> std::collections::HashMap<u32, acheflow_media_api::visual::SourceDocument> {
+        let state = self;
+        if state.owner.as_deref() != Some(workspace.id.as_str()) {
+            return Default::default();
+        }
+        let frames = state
+            .source_frames
+            .values()
+            .filter(|frame| {
+                workspace
+                    .extensions
+                    .get(&frame.extension_id)
+                    .is_some_and(|config| config.enabled)
+                    && state.instances.contains_key(&frame.extension_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        acheflow_media_api::visual::source_documents(
+            &workspace.sources,
+            &state.interaction.messages(0, 200).entries,
+            &frames,
+            now,
+        )
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -843,13 +937,17 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn client_side_extensions_cannot_be_activated_by_the_server_host() {
         let (mut host, workspace) = host();
-        Arc::get_mut(&mut host)
+        let manifest = &mut Arc::get_mut(&mut host)
             .unwrap()
             .installed
             .get_mut("sample")
             .unwrap()
-            .manifest
-            .execution_side = acheflow_extension_api::integration::ExecutionSide::Client;
+            .manifest;
+        manifest.source_types.clear();
+        manifest
+            .capabilities
+            .retain(|capability| capability != "source");
+        manifest.execution_side = acheflow_extension_api::integration::ExecutionSide::Client;
         let result =
             crate::extension_host::set_enabled(host.clone(), &workspace.id, "sample", true).await;
         assert!(

@@ -288,6 +288,16 @@ fn vklive_sends_with_stream_and_permission_and_reports_delivery_without_retrying
             .iter()
             .any(|e| e["type"] == "delivery" && e["sent"] == true && e["request_id"] == "request")
     );
+    let echoes = guest.call(json!({"type":"http_result","id":"chat","status":200,"now_ms":2000,"payload":{"data":{"chat_messages":[
+        {"id":1,"author":{"id":123,"nick":"Fixture"},"created_at":1,"parts":[{"text":{"content":"Hello"}}]},
+        {"id":2,"author":{"id":124,"nick":"Other"},"created_at":1,"parts":[{"text":{"content":"Hello"}}]}
+    ]}}})).unwrap();
+    let messages = echoes
+        .iter()
+        .filter(|e| e["type"] == "chat")
+        .collect::<Vec<_>>();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["message"]["user_id"], "124");
     let effects=guest.call(json!({"type":"command","name":"chat.send","channel_id":"other","request_id":"wrong","text":"Hello"})).unwrap();
     assert!(effects.iter().all(|e| e["type"] != "http"));
     assert!(

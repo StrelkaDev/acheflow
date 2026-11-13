@@ -31,6 +31,10 @@ pub struct ExtensionStatus {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ControlSnapshot {
     #[serde(default)]
+    pub source_types: Vec<acheflow_extension_api::visual::RegisteredSourceType>,
+    #[serde(default)]
+    pub source_frames: Vec<acheflow_extension_api::visual::VisualSourceFrame>,
+    #[serde(default)]
     pub client_capabilities: Vec<acheflow_extension_api::client_execution::CapabilityGrant>,
     #[serde(default)]
     pub client_executors: Vec<acheflow_extension_api::client_execution::ExecutorStatus>,

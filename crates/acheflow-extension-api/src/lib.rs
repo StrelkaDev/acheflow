@@ -9,6 +9,7 @@ pub mod client_execution;
 pub mod forwarding;
 pub mod integration;
 pub mod interaction;
+pub mod visual;
 
 pub const API_VERSION: u32 = 2;
 

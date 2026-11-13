@@ -123,7 +123,7 @@ pub fn AudioMixer(mut project: Signal<Workspace>) -> Element {
             }
             section {class:"panel",div {class:"panel-heading",h2 {"Source tracks"}span {class:"badge","Stereo · 48 kHz"}}
                 div {class:"panel-note","Track 0 of sources in this scene starts on Program. Additional tracks start unrouted. Sends are independent; gain does not change when other sources connect. Solo applies across this scene."}
-                for source in &workspace.sources {
+                for source in workspace.sources.iter().filter(|s|s.kind.is_rtmp()) {
                     {
                         let input=status.as_ref().and_then(|s|s.sources.iter().find(|i|i.id==source.id));
                         let mut tracks=BTreeMap::from([(0,None)]);

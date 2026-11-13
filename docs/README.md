@@ -12,6 +12,8 @@ tree. [The roadmap](roadmap.md) separates unfinished work from available behavio
   packages, data locations and FFmpeg.
 - [Live production](live-pipeline.md): source setup, scene editing, CSS/WGSL,
   output profiles, status and media APIs.
+- [Chat and extension sources](live-pipeline.md#chat-and-extension-visual-sources):
+  merged chat in scenes, message CSS, animation phases and custom visual source types.
 - [Audio](audio-capabilities.md): independent tracks, scene buses, mixer controls,
   routing and current limits.
 - [Interaction, audience, 3D and MCP](controls.md): available controls and the

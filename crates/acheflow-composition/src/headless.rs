@@ -226,6 +226,8 @@ mod tests {
             }
         }));
         let mut frame = SceneFrame {
+            source_documents: Default::default(),
+            epoch_ms: 0,
             scene: workspace.scenes[0].clone(),
             size: size.clone(),
             inputs: HashMap::from([(
@@ -329,6 +331,8 @@ mod tests {
             }
         });
         let mut frame = SceneFrame {
+            source_documents: Default::default(),
+            epoch_ms: 0,
             scene: w.scenes[0].clone(),
             size: size.clone(),
             inputs: HashMap::from([(
@@ -434,6 +438,67 @@ mod tests {
             gpu.render(&frame).unwrap().get_pixel(40, 20).0,
             [0, 0, 0],
             "broadcast missing input stays black"
+        );
+    }
+    #[test]
+    #[ignore = "requires an actual GPU adapter"]
+    fn chat_visual_sources_preserve_transparency_and_scene_clock_phases() {
+        use acheflow_media_api::visual::{SourceDocument, SourceNode};
+        let size = Resolution {
+            width: 128,
+            height: 64,
+        };
+        let mut workspace = Workspace::default();
+        workspace.horizontal.base = size.clone();
+        workspace.add_source();
+        workspace.add_source();
+        let scene_id = workspace.add_scene(Orientation::Horizontal);
+        workspace.add_layer(scene_id, 1);
+        workspace.add_layer(scene_id, 2);
+        let overlay = &mut workspace.scenes[0].layers[1];
+        overlay.x = 16;
+        overlay.y = 8;
+        overlay.width = 64;
+        overlay.height = 32;
+        let document=SourceDocument{css:".card {width:100%;height:100%;background:#ff0000;color:white;font-size:12px;} .entering {animation:fade-in 0.2s linear both;} .leaving {animation:fade-out 0.3s linear both;} @keyframes fade-in {from {opacity:0;}to {opacity:1;}} @keyframes fade-out {from {opacity:1;}to {opacity:0;}}".into(),nodes:vec![SourceNode{classes:"card".into(),text:"Hello".into(),animation_at_ms:Some(2000),exit_at_ms:Some(4000),remove_at_ms:Some(4300),..Default::default()}]};
+        let mut frame = SceneFrame {
+            scene: workspace.scenes[0].clone(),
+            size: size.clone(),
+            inputs: HashMap::from([(
+                1,
+                SourceFrame {
+                    image: Arc::new(RgbImage::from_pixel(128, 64, image::Rgb([0, 0, 255]))),
+                    size: size.clone(),
+                },
+            )]),
+            source_documents: HashMap::from([(2, document)]),
+            epoch_ms: 1000,
+            time: 0.5,
+        };
+        let mut renderer = super::Headless::new(size).unwrap();
+        let before = renderer.render(&frame).unwrap();
+        assert_eq!(before.get_pixel(76, 36).0, [0, 0, 255]);
+        frame.time = 1.5;
+        let visible = renderer.render(&frame).unwrap();
+        assert!(visible.get_pixel(76, 36)[0] > 240);
+        assert_eq!(visible.get_pixel(2, 2).0, [0, 0, 255]);
+        frame.source_documents.get_mut(&2).unwrap().nodes[0].text = "Updated".into();
+        frame.time = 1.6;
+        assert!(
+            renderer.render(&frame).unwrap().get_pixel(76, 36)[0] > 240,
+            "document changes must not restart existing entry animations"
+        );
+        frame.time = 3.15;
+        let fading = renderer.render(&frame).unwrap();
+        let pixel = fading.get_pixel(76, 36);
+        assert!(
+            pixel[0] > 20 && pixel[0] < 235 && pixel[2] > 20,
+            "exit must blend with lower layers: {pixel:?}"
+        );
+        frame.time = 3.4;
+        assert_eq!(
+            renderer.render(&frame).unwrap().get_pixel(76, 36).0,
+            [0, 0, 255]
         );
     }
 }

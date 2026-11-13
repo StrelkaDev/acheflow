@@ -44,6 +44,8 @@ pub enum ExecutionSide {
 pub struct GuestManifest {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_types: Vec<crate::visual::SourceType>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_presentation: Option<ChatPresentation>,
     pub api_version: u32,
@@ -93,6 +95,18 @@ impl ChatPresentation {
 }
 impl GuestManifest {
     pub fn validate(&self) -> Result<(), String> {
+        if self.source_types.len() > 16
+            || (!self.source_types.is_empty() && self.execution_side != ExecutionSide::Server)
+        {
+            return Err("visual source types require a server logic extension".into());
+        }
+        let mut source_ids = std::collections::BTreeSet::new();
+        for source in &self.source_types {
+            source.validate()?;
+            if !source_ids.insert(&source.id) {
+                return Err("duplicate visual source type".into());
+            }
+        }
         if let Some(chat) = &self.chat_presentation {
             chat.validate()?;
         }
@@ -141,6 +155,7 @@ impl GuestManifest {
                         | "failure"
                         | "panel"
                         | "scene"
+                        | "source"
                         | "channel"
                         | "poll"
                         | "donation"

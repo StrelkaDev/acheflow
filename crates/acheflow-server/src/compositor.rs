@@ -157,6 +157,7 @@ pub async fn start(
     let error = Arc::new(Mutex::new(None));
     let video_error = error.clone();
     let started = Instant::now();
+    let visual_epoch_ms = crate::control::now_ms();
     let size = stream.base.clone();
     let video = tokio::task::spawn_blocking(move || {
         let mut renderer = match acheflow_composition::headless::Headless::new(size) {
@@ -173,12 +174,19 @@ pub async fn start(
             let workspace = video_runtime.workspace.read().unwrap().clone();
             if let Some(workspace) = workspace {
                 let inputs = video_runtime.inputs.lock().unwrap().clone();
-                let frame = gpu_frame(
+                let mut frame = gpu_frame(
                     &workspace,
                     orientation,
                     &inputs,
                     started.elapsed().as_secs_f64(),
                 );
+                frame.epoch_ms = visual_epoch_ms;
+                if let Some(services) = video_runtime.visual_services.read().unwrap().as_ref() {
+                    frame.source_documents = services.lock().unwrap().visual_documents(
+                        &workspace,
+                        visual_epoch_ms.saturating_add((frame.time * 1000.) as u64),
+                    );
+                }
                 match renderer.render(&frame) {
                     Ok(image) => {
                         video_tx.send_replace(Arc::new(image));
@@ -304,6 +312,8 @@ fn gpu_frame(
 ) -> acheflow_composition::gpu::SceneFrame {
     use acheflow_composition::gpu::{SceneFrame, SourceFrame};
     SceneFrame {
+        source_documents: Default::default(),
+        epoch_ms: 0,
         scene: workspace
             .scenes
             .iter()

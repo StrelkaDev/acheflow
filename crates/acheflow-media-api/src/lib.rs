@@ -6,6 +6,7 @@ pub mod layer;
 pub mod live;
 pub mod server;
 pub mod spatial;
+pub mod visual;
 pub mod workspace;
 
 use serde::{Deserialize, Serialize};

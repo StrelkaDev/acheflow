@@ -14,6 +14,7 @@ implemented features in the [roadmap](docs/roadmap.md).
 
 - Receive authenticated RTMP sources at their native resolution.
 - Compose scenes with CSS layout, crop, animation, WGSL effects and 3D viewports.
+- Add merged chat and extension visual sources, with message CSS and entry/exit animations.
 - Mix audio from multiple sources/tracks through scene buses and stereo controls.
 - Broadcast horizontal and vertical formats to independent RTMP destinations,
   with CBR/VBR profiles, explicit encoder selection and per-output restart.

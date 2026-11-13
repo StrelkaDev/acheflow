@@ -47,7 +47,7 @@ pub(crate) fn StudioMixer(mut project: Signal<Workspace>, orientation: Orientati
         if let Some(scene)=scene {
             div {class:"studio-mixer-scroll",tabindex:0,role:"region","aria-label":"Scene audio mixer channels",
             div {class:"studio-mixer-strips",
-                for (key,strip) in scene.audio.effective_strips(scene.layers.iter().map(|l|l.source_id)) {
+                for (key,strip) in scene.audio.effective_strips(scene.layers.iter().filter(|l|workspace.sources.iter().any(|s|s.id==l.source_id&&s.kind.is_rtmp())).map(|l|l.source_id)) {
                     {
                         let source=workspace.sources.iter().find(|s|s.id==key.source_id);
                         let track=status.as_ref().into_iter().flat_map(|s|&s.sources).find(|s|s.id==key.source_id).and_then(|s|s.audio_tracks.iter().find(|t|t.track_id==key.track_id));
@@ -66,7 +66,7 @@ pub(crate) fn StudioMixer(mut project: Signal<Workspace>, orientation: Orientati
                         }}
                     }
                 }
-                if scene.audio.effective_strips(scene.layers.iter().map(|l|l.source_id)).is_empty(){p {class:"padded form-help","No tracks assigned. Add source layers or configure sends in Live / Mixer."}}
+                if scene.audio.effective_strips(scene.layers.iter().filter(|l|workspace.sources.iter().any(|s|s.id==l.source_id&&s.kind.is_rtmp())).map(|l|l.source_id)).is_empty(){p {class:"padded form-help","No tracks assigned. Add source layers or configure sends in Live / Mixer."}}
                 for bus in &scene.audio.buses {
                 {
                     let levels=running.into_iter().flat_map(|f|&f.audio_buses).find(|b|b.scene_id==scene.id && b.bus_id==bus.id);
