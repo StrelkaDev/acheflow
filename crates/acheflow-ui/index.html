@@ -12,6 +12,11 @@
   <script src="perf.js" defer></script>
   <style>
     html,body { margin:0; width:100%; height:100%; background:#0c1017; overflow:hidden; }
+    .acheflow-mobile-editor { position:fixed; z-index:2147483647; left:0; right:0; padding:14px; background:#141b25; border-top:1px solid #3b485a; color:#e4edf9; font:14px system-ui; display:flex; gap:12px; align-items:end; box-shadow:0 -8px 32px #0008; }
+    .acheflow-mobile-editor label { flex:1; min-width:0; display:flex; flex-direction:column; gap:8px; }
+    .acheflow-mobile-editor input,.acheflow-mobile-editor textarea { box-sizing:border-box; width:100%; min-height:44px; padding:10px; border:1px solid #66758b; border-radius:6px; background:#0c1017; color:#fff; }
+    .acheflow-mobile-editor textarea { min-height:88px; }
+    .acheflow-mobile-editor button { min-height:44px; padding:10px 16px; border:0; border-radius:6px; background:#ed6508; color:#fff; font:inherit; }
     canvas { display:block; width:100%; height:100%; outline:none; }
   </style>
 </head>

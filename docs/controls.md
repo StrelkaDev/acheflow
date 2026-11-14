@@ -62,11 +62,11 @@ viewer samples unavailable; historical records and public configuration remain.
 ## Saving settings
 
 Workspace public config and capability policy auto-save in the local client catalog;
-Apply remains a separate server operation. First-contact and edit conflicts preserve
-local drafts until **Use server settings** or **Keep local edits** is selected. Server
-Apply rejects stale replacement of extension settings, capability grants or 3D state.
-Background animation now persists as a client-wide preference. Server listener JSON
-survives restart; its active workspace does not. See [settings persistence and
+Apply remains a separate server operation. Connected editors follow the server workspace. First-contact and edit conflicts preserve
+local drafts until **Use server workspace** or **Keep local edits** is selected. Server
+Apply rejects every stale configuration revision, including layers, audio and outputs.
+Background animation now persists as a client-wide preference. Server listener JSON and workspace configuration
+survive restart; inputs, outputs and integrations require explicit activation. See [settings persistence and
 restore](settings-persistence.md) for locations, precedence and tested restart behavior.
 
 ## Audience
@@ -113,8 +113,22 @@ Edits stay in the workspace draft until **Apply scene** publishes them.
 
 The primary viewport's **Edit viewport content** opens its flat layer canvas and
 CSS/crop/effect inspectors. These editors remain mounted while switching objects
-or modes, preserving unapplied code drafts. Secondary viewports copy content and
-expose source/layer CSS controls; the API accepts their full content contracts.
+or modes, preserving unapplied code drafts. New secondary viewports start empty.
+Their inspector names the edited viewport, exposes its canvas dimensions, and uses
+the same source names, layer ordering, CSS/crop and GPU effect controls as the
+primary viewport. Object scale controls world dimensions; canvas dimensions control
+content resolution.
+
+**+ Chat** adds an independent chat object backed by a viewport with one chat layer.
+Select it to edit its transform and chat settings in the scene inspector. Chat
+settings belong to the source and affect all layers referencing it. **Show test
+messages** toggles local preview examples (roles, long text, line breaks and Unicode)
+in scene editor/camera previews. Samples bypass channel filters and respect the
+message limit; they never enter saved workspace data, channel delivery or live
+output. Hide them to return to the real messages.
+
+Source cards start collapsed. Click their heading or use Enter/Space to expand
+settings; collapsing keeps code drafts mounted and leaves status/removal accessible.
 
 Shared native/web/headless rendering keeps viewport textures and the depth pass on
 the GPU; only the final FFmpeg RGB readback remains. Reused viewports share decoded
@@ -152,8 +166,9 @@ rejects in-progress duplicates, changed payloads and expired results. After a se
 restart, establish new intents rather than replaying external sends.
 
 The native/web client uses `GET /api/control/state` and
-`POST /api/control/commands`, under the existing application HTTP/proxy trust
-boundary. MCP reuses those service handlers and exports no OAuth secrets, stream
+`POST /api/control/commands`, with authenticated device sessions and per-action
+[permissions](server-access.md). Read and command responses are filtered to the
+device's view rights. MCP reuses those service handlers and exports no OAuth secrets, stream
 keys, shell or raw GPU access.
 
 ## Verification

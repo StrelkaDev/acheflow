@@ -18,7 +18,7 @@ tree. [The roadmap](roadmap.md) separates unfinished work from available behavio
   routing and current limits.
 - [Interaction, audience, 3D and MCP](controls.md): available controls and the
   boundary between local authorization and connected executors.
-- [Provider setup](provider-setup.md) and [local authorization](extension-authorization.md):
+- [Provider setup](provider-setup.md) and [account authorization](extension-authorization.md):
   user-owned applications, callbacks, permissions and local credential lifetime.
 - [Settings and restore](settings-persistence.md): catalogs, Apply, conflict handling
   and what survives a restart.
@@ -33,15 +33,24 @@ tree. [The roadmap](roadmap.md) separates unfinished work from available behavio
 
 ## Develop Acheflow
 
+- [Server device access](server-access.md): pairing, permissions, revocation,
+  protected HTTP APIs and HTTPS/proxy requirements.
+
 - [Architecture](architecture.md): packages, media/control flows and ownership.
 - [Development](development.md): build commands, checks and documentation rules.
 - [UI integration](ui.md): shared native/browser rendering, input and performance.
 - [Extension contract v2](extension-contract.md): governing provider-neutral boundary.
 - [Extension protocol reference](extensions.md) and [authoring guide](../extensions/README.md).
 - [Client executor](client-executor.md): library integration, grants and supported operations.
-- [ADR-002](decisions/002-client-execution-and-workspace-capabilities.md): current
+- [ADR-002](decisions/002-client-execution-and-workspace-capabilities.md): earlier client-only
   credential ownership; [ADR-001](decisions/001-provider-authentication.md) records
   the superseded decision.
+- [ADR-003](decisions/003-trusted-server-workspace.md): accepted target for shared
+  workspaces, device access and trusted server execution; implementation is staged.
+
+- [ADR-004](decisions/004-extension-client-server-ownership.md): client/server
+  extension parts, independent device authorization and server-only shared chat;
+  accepted target with migration tracked in the roadmap.
 
 Documentation contains reusable configuration examples, not live registration
 records or transcripts of test sessions. Obtain installed application versions,

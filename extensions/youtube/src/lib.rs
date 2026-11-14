@@ -101,7 +101,14 @@ impl YouTube {
             )
         }
     }
-    pub fn handle(&mut self, input: Value) -> Vec<Value> {
+    pub fn handle(&mut self, mut input: Value) -> Vec<Value> {
+        if input["type"] == "prepare_action" {
+            input["type"] = json!("start");
+            input["config"]["video_id"] = input["channel_id"].clone();
+            input["config"]["read_chat"] = json!("false");
+            input["config"]["read_audience"] = json!("false");
+        }
+
         if let Some(effects) = self
             .authorization
             .handle(&input, include_str!("../manifest.json"))

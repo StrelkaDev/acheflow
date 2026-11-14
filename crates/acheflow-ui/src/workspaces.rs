@@ -1,3 +1,4 @@
+mod sync;
 use crate::{live::Field, project::Workspace};
 use acheflow_client::catalog::ClientCatalog;
 use dioxus_native::prelude::*;
@@ -9,6 +10,8 @@ use std::rc::Rc;
 pub struct WorkspaceRecord {
     id: u32,
     config: Workspace,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replica: Option<sync::Replica>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -45,6 +48,7 @@ impl Default for Catalog {
             workspaces: vec![WorkspaceRecord {
                 id: 1,
                 config: Workspace::default(),
+                replica: None,
             }],
         }
     }
@@ -80,6 +84,9 @@ impl Catalog {
             .config
     }
 
+    pub(crate) fn update_current(&mut self, config: Workspace) {
+        self.update(config);
+    }
     fn update(&mut self, config: Workspace) {
         self.workspaces
             .iter_mut()
@@ -93,7 +100,11 @@ impl Catalog {
         let id = (1..=u32::MAX)
             .find(|id| !self.workspaces.iter().any(|w| w.id == *id))
             .expect("workspace IDs exhausted");
-        self.workspaces.push(WorkspaceRecord { id, config });
+        self.workspaces.push(WorkspaceRecord {
+            id,
+            config,
+            replica: None,
+        });
         self.active = id;
     }
 
@@ -179,6 +190,7 @@ pub fn Workspaces(
     mut open: Signal<bool>,
 ) -> Element {
     let client_catalog = use_context::<Rc<ClientCatalog>>();
+    let sync = try_consume_context::<crate::workspace_sync::WorkspaceSync>();
     let mut busy = use_signal(|| false);
     let mut notice = use_signal(String::new);
     let mut creating = use_signal(|| false);
@@ -189,10 +201,12 @@ pub fn Workspaces(
             div {class:"padded",
                 Field {label:"Workspace name",value:project.read().name.clone(),change:move |v|project.write().name=v}
                 p {class:"form-help","Server: {server}"}
+                crate::server_workspace::SavedWorkspace {project,open}
                 div {class:"workspace-list",role:"group","aria-label":"Workspaces",
                     for workspace in catalog.read().workspaces.clone() {
                         button {class:if workspace.id==catalog.read().active {"selected"}else{""},onclick:move |_| {
                             let mut next=catalog.peek().clone();next.update(project.peek().clone());next.active=workspace.id;
+                            if let Some(sync)=sync {sync.local();}
                             project.set(next.current().clone());catalog.set(next);notice.set(String::new());
                         },"{workspace.config.name}"}
                     }
@@ -212,7 +226,7 @@ pub fn Workspaces(
                     button {disabled:busy(),onclick:move |_| {busy.set(true);let client_catalog=client_catalog.clone();spawn(async move {
                         if let Some(file)=rfd::AsyncFileDialog::new().add_filter("JSON",&["json"]).pick_file().await {
                             match Workspace::from_json(&file.read().await) {
-                                Ok(mut config)=>{config.migrate_client_extensions(client_catalog.installed.keys().map(String::as_str));config.id=crate::project::new_token();let mut next=catalog.peek().clone();next.update(project.peek().clone());next.add(config.clone());project.set(config);catalog.set(next);notice.set("Workspace added from file".into());},
+                                Ok(mut config)=>{config.migrate_client_extensions(client_catalog.installed.keys().map(String::as_str));config.id=crate::project::new_token();if let Some(sync)=sync {sync.local();}let mut next=catalog.peek().clone();next.update(project.peek().clone());next.add(config.clone());project.set(config);catalog.set(next);notice.set("Workspace added from file".into());},
                                 Err(e)=>notice.set(format!("File rejected: {e}")),
                             }
                         }busy.set(false);
@@ -225,6 +239,7 @@ pub fn Workspaces(
                         cancel:move |_|creating.set(false),
                         create:move |config:Workspace| {
                             let mut next=catalog.peek().clone();next.update(project.peek().clone());
+                            if let Some(sync)=sync {sync.local();}
                             next.add(config.clone());project.set(config);catalog.set(next);
                             creating.set(false);notice.set("Workspace created. Connecting to its server…".into());
                         }

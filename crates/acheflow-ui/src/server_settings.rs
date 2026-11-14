@@ -38,14 +38,16 @@ impl ServerPreferences {
 /// Blitz does not synthesize button/checkbox activation for Space and Enter.
 /// Prevent the default so the same handler also fires once in browsers.
 #[component]
-fn ActionButton(
+pub(crate) fn ActionButton(
+    #[props(default)] class: String,
     #[props(default)] id: &'static str,
     #[props(default)] disabled: bool,
     expanded: Option<bool>,
+    pressed: Option<bool>,
     onclick: EventHandler<()>,
     children: Element,
 ) -> Element {
-    rsx! {button {id,disabled,"aria-expanded":expanded.map(|v|v.to_string()),
+    rsx! {button {id,class,disabled,"aria-expanded":expanded.map(|v|v.to_string()),"aria-pressed":pressed.map(|v|v.to_string()),
         onclick:move |_|{if !disabled {onclick.call(());}},
         onkeydown:move |event|{
             if !disabled && !event.is_auto_repeating() && (event.key()==Key::Named(NamedKey::Enter)||event.key()==Key::Character(" ".into())) {

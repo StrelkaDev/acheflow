@@ -1,31 +1,40 @@
-# Client execution: setup and current boundary
+# Provider execution: server and client hosts
 
-The logic server owns workspace state, policy and rules. Provider accounts, bot
-accounts, OAuth and external AI keys belong to the client or an optional separately
-operated executor. Every installation can use its own platform applications/accounts.
-Public OAuth application IDs may be shared configuration; private application secrets
-and account tokens must never be sent to the logic server.
+The server owns workspace state, policy and rules. Provider WASM can execute in an
+explicitly configured trusted server reactor or in a device-owned native runtime.
+Both hosts use the same bounded transport and typed event/instruction contract.
+Accounts remain separate: configuring server execution never imports a device's
+local credentials. Explicit [account copying](extension-authorization.md#connect-a-trusted-server-account)
+is available. Execution through personal accounts and per-user delegation remain
+[SHARED-06](roadmap.md#shared-06-authorize-server-accounts-and-migrate-credentials).
 
 ## Implemented pieces
 
-- `acheflow-client::runtime::ProviderRuntime`: native real WASM reactor with local
+- `acheflow-client::runtime::ProviderRuntime`: native real WASM reactor with host-private
   credentials, bounded HTTPS/WSS, opaque handles and a local instruction ledger.
 - `acheflow-client::bridge::ExecutorConnection`: authenticated MCP registration,
   typed event publication, instruction claims, results and unregister.
 - Server `acheflow_executor`: `register`, `publish`, `claim`, `report`, `unregister`.
-- Common `send_chat`: queues one instruction per client-owned channel; receipts
+- Trusted server executor: one owned reactor per enabled provider binding, with
+  in-process registration/publication/claims and lifecycle fencing.
+- Common `send_chat`: queues one instruction per authorized channel; receipts
   and provider echoes update the normal shared chat history.
 
-The desktop Studio starts a native runtime for each enabled, locally authorized
-provider. It schedules provider ticks, socket/stream receives, normalized event
-publication and instruction claims independently of the visible page. Account
-removal, disable and workspace/server changes cancel that runtime and unregister
-its channels; failed cleanup expires under the registration TTL. There is no
-standalone executor binary. Enabling a provider on the server alone does not
-collect or send anything.
+With **Studio chat** selected, the desktop automatically starts a native runtime
+for an enabled, locally authorized provider in the active server workspace. It
+schedules provider ticks, socket/stream receives, normalized event publication
+and instruction claims independently of the visible page. **My messages** keeps
+personal authorization separate and does not start collection. Account removal,
+disable and workspace/server changes cancel the runtime and unregister its
+channels; failed cleanup expires under the registration TTL. There is no
+standalone executor binary. Local collection is suppressed when the provider is
+assigned to the server.
 
-Studio uses `POST /api/control/executor` at the same trusted-operator boundary as
-`/api/control/commands`, with the same API body limit and configured UI origins.
+Studio uses `POST /api/control/executor` with an authenticated device session and
+the **Run extensions** grant, the same API body limit and configured UI origins.
+The server namespaces executor identity by the authenticated device; a caller
+cannot impersonate another device by choosing its `client_id`. Device revocation
+withdraws its registrations. See [device access](server-access.md).
 Its typed envelope contains `workspace_id`, a `studio-` client identity and an
 `ExecutorRequest`; it accepts no provider credentials or raw platform effects.
 External executors still use the separately authenticated MCP endpoint described
@@ -40,6 +49,89 @@ storage, native poll instructions and generic external MCP tool registration rem
 unfinished. Native macOS local account panels already use the system vault.
 Moderation DTOs exist; the built-in provider runtime rejects unsupported moderation
 actions. Separately implemented executors must advertise only handlers they support.
+
+## Trusted server execution
+
+Server provider packages are discovered from the server's extension directory
+(`ACHEFLOW_EXTENSIONS_DIR` or its normal installation path), separately from pure
+logic guests. Their existing `execution_side: "client"` identifies the bounded
+provider/reactor contract; it no longer implies that only a desktop may host them.
+Pure `server` logic guests still cannot request network I/O or credentials.
+
+An applied workspace may contain this public configuration fragment. Replace the
+placeholders with an installed provider ID, its public settings and the verified
+account/channel selected for the server:
+
+```json
+{
+  "server_integrations": {
+    "provider-id": {
+      "enabled": true,
+      "application": "SERVER_ACCOUNT_SLOT",
+      "account_id": "ACCOUNT_ID",
+      "channel_id": "CHANNEL_ID",
+      "config": {}
+    }
+  },
+  "client_capabilities": [{
+    "provider": "provider-id",
+    "account_id": "ACCOUNT_ID",
+    "channel_id": "CHANNEL_ID",
+    "capabilities": ["chat.read", "chat.send"]
+  }]
+}
+```
+
+This is a fragment of a complete workspace, not a standalone import. Apply requires
+the normal management grants and expected revision. Settings must match nonsecret
+manifest declarations. One primary binding per provider is supported. A collector
+requires `chat.read`; sending additionally requires `chat.send`. The discovered
+channel must match the binding; channel discovery never expands workspace grants.
+Personal moderation/action-only sessions are separate SHARED-06 work.
+
+The server uses a dedicated server-ID/workspace vault namespace with isolated
+provider/application/account slots. It never falls back to a local device account.
+A missing/locked account or provider authorization loss yields `needs_authorization`
+and withdraws live authority; configuring a binding cannot manufacture credentials.
+Use the explicit [trusted-server account connection](extension-authorization.md#connect-a-trusted-server-account)
+to revalidate and copy an authorized account. `application` is the server-issued
+opaque slot handle; public OAuth application settings remain in `config`.
+Personal user-to-account ownership is implemented through the separate
+[personal account flow](extension-authorization.md#personal-accounts-on-the-trusted-server).
+Per-action authority and delegation remain unfinished. macOS uses the existing OS
+vault adapter; other platforms still need their server credential adapter.
+
+Provider URLs, OAuth validation/renewal, subscriptions and protocol mapping remain
+in WASM. Rotated credentials checkpoint immediately before the guest can issue another
+request; opaque storage-only updates are coalesced to avoid per-message vault writes. Failed checkpointing stops the executor for reauthorization
+rather than restarting with stale stored credentials. Panels, raw HTTP payloads
+and credential values are not forwarded through the typed event bridge.
+
+An enabled binding reserves its provider/channel against external collector
+registration, including while awaiting authorization. The native UI waits for server
+ownership metadata before starting a local collector. Reconciliation preserves an
+unchanged reactor; replacement retires its old identity before starting another.
+Disable, policy revocation, workspace replacement and shutdown cancel owned I/O,
+withdraw channels and fence late events. Server restart restores configuration
+without activating integrations; explicit Apply starts them again.
+
+Lease maintenance continues while provider turns wait for HTTP/gRPC or sends.
+Transient transport errors reconnect with bounded backoff. Unknown/in-flight sends
+become final uncertain receipts when authority is withdrawn; another generation
+cannot claim or retry them. Permanently fenced server actors release registry
+capacity without erasing receipt history or weakening normal client lease rules.
+The outbox remains in memory; durable intent storage is still unfinished.
+
+**Extensions → Server** shows configured server integrations and their connection/
+authorization state. `ControlSnapshot.server_providers` exposes only bounded public
+metadata; account identifiers require extension-configuration permission. Package
+installation and account connection remain separately authorized operations.
+
+Lifecycle tests use two real WASM fixture installations for collection, sending,
+replacement, revocation, repeated replacement and uncertain receipts. Independent
+YouTube/VK WASM protocol tests cover synthetic receive/send paths and bounded
+responses. These checks do not qualify live platform accounts; live authorization
+and renewal remain part of shared-workflow qualification.
 
 ## Authenticate the executor
 

@@ -24,19 +24,12 @@ pub fn update_settings(
     id: &str,
     update: impl FnOnce(&mut acheflow_media_api::workspace::ExtensionSettings),
 ) -> Result<(), String> {
-    let mut workspace = host.runtime.workspace.write().unwrap();
-    let workspace = workspace
-        .as_mut()
-        .filter(|w| w.id == owner)
-        .ok_or("conflict: workspace changed")?;
-    update(workspace.extensions.entry(id.into()).or_default());
-    workspace.edit_revision = host
-        .runtime
-        .control_revision
-        .load(std::sync::atomic::Ordering::Acquire)
-        + 1;
-    Ok(())
+    host.runtime.update_workspace(owner, |workspace| {
+        update(workspace.extensions.entry(id.into()).or_default());
+        Ok(())
+    })
 }
+
 pub fn configure_extension(
     host: &ControlHost,
     owner: &str,
@@ -67,10 +60,14 @@ fn configure_public_settings(
     Ok(())
 }
 
-fn validate_public_settings(host: &ControlHost, workspace: &Workspace) -> Result<(), String> {
+pub(crate) fn validate_public_settings(
+    host: &ControlHost,
+    workspace: &Workspace,
+) -> Result<(), String> {
     if !workspace.client_extensions.is_empty() {
         return Err("client integration settings must stay in the client catalog".into());
     }
+    crate::providers::validate(host, workspace)?;
     acheflow_control::client_execution::ExecutionRegistry::default().set_policy(
         &workspace.id,
         workspace.client_capabilities.clone(),
@@ -86,6 +83,7 @@ fn validate_public_settings(host: &ControlHost, workspace: &Workspace) -> Result
     Ok(())
 }
 async fn reconcile(host: &Arc<ControlHost>) {
+    host.providers.reconcile(host).await;
     let workspace = host.runtime.workspace.read().unwrap().clone();
     let owner = workspace.as_ref().map(|w| w.id.as_str());
     // Snapshot reads can already have reset Services to the new workspace.
@@ -162,15 +160,40 @@ pub async fn deactivate(
     let _command = host.command_lock.lock().await;
     let result = live::deactivate(State(host.runtime.clone()), request).await;
     if result.is_ok() {
-        reconcile(&host).await;
+        suspend(&host).await;
     }
     result
+}
+
+pub(crate) async fn suspend(host: &Arc<ControlHost>) {
+    host.providers.suspend(host).await;
+    let owner = host
+        .runtime
+        .workspace
+        .read()
+        .unwrap()
+        .as_ref()
+        .map(|w| w.id.clone())
+        .unwrap_or_default();
+    for id in host.installed.keys() {
+        let _ = extension_host::set_enabled(host.clone(), &owner, id, false).await;
+    }
+    host.client_execution
+        .lock()
+        .unwrap()
+        .withdraw_workspace(&owner, crate::control::now_ms());
+    *host.extension_owner.lock().unwrap() = Some(owner);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use acheflow_media_api::{control, workspace::ExtensionSettings};
+
+    async fn apply_current(host: Arc<ControlHost>, mut workspace: Workspace) {
+        workspace.edit_revision = host.runtime.saved_state().0;
+        let _ = configure(State(host), Json(workspace)).await.unwrap();
+    }
 
     async fn wait_for_panel(host: &ControlHost) {
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -196,25 +219,19 @@ mod tests {
         wait_for_panel(&host).await;
         let first = host.runtime.workspace.read().unwrap().clone().unwrap();
         let panel = serde_json::to_value(&host.snapshot(0, 1).panels).unwrap();
-        let _ = configure(State(host.clone()), Json(first.clone()))
-            .await
-            .unwrap();
+        apply_current(host.clone(), first.clone()).await;
         assert_eq!(
             serde_json::to_value(&host.snapshot(0, 1).panels).unwrap(),
             panel
         );
 
         let second = Workspace::default();
-        let _ = configure(State(host.clone()), Json(second.clone()))
-            .await
-            .unwrap();
+        apply_current(host.clone(), second.clone()).await;
         assert!(host.guests.lock().await.is_empty());
         assert!(host.snapshot(0, 1).panels.is_empty());
         assert!(host.snapshot(0, 1).extension_settings.is_empty());
 
-        let _ = configure(State(host.clone()), Json(first.clone()))
-            .await
-            .unwrap();
+        apply_current(host.clone(), first.clone()).await;
         wait_for_panel(&host).await;
         let revision = host.snapshot(0, 1).revision;
         host.execute(control::ControlRequest {
@@ -231,8 +248,8 @@ mod tests {
         .unwrap();
         let saved = host.runtime.workspace.read().unwrap().clone().unwrap();
         assert!(!saved.extensions["sample"].enabled);
-        let _ = configure(State(host.clone()), Json(second)).await.unwrap();
-        let _ = configure(State(host.clone()), Json(saved)).await.unwrap();
+        apply_current(host.clone(), second).await;
+        apply_current(host.clone(), saved).await;
         assert!(host.guests.lock().await.is_empty());
 
         // Re-enabling is a new edit based on the current acknowledged revision.
@@ -268,9 +285,15 @@ mod tests {
         let _ = configure(State(host.clone()), Json(first)).await.unwrap();
         wait_for_panel(&host).await;
         // The UI may poll a snapshot after Runtime::apply but before reconciliation.
-        let _ = live::configure(State(host.runtime.clone()), Json(Workspace::default()))
-            .await
-            .unwrap();
+        let _ = live::configure(
+            State(host.runtime.clone()),
+            Json(Workspace {
+                edit_revision: host.runtime.saved_state().0,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
         host.snapshot(0, 1);
         reconcile(&host).await;
         assert!(host.guests.lock().await.is_empty());

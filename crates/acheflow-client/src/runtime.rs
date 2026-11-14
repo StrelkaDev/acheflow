@@ -1,4 +1,4 @@
-//! Native client reactor. Dropping a pending turn cancels its HTTP/WebSocket I/O.
+//! Native provider reactor. Dropping a pending turn cancels its HTTP/WebSocket I/O.
 use crate::transport::{self, Secrets};
 use acheflow_control::extensions::{Guest, GuestManifest};
 use acheflow_extension_api::{client_execution::*, integration::ExecutionSide};
@@ -23,6 +23,7 @@ pub struct Identity {
 }
 /// Owns credentials, local storage and sockets for exactly one workspace/account.
 /// No Debug/Serialize implementation: copying this state into server payloads is forbidden.
+type AccountSink = Box<dyn Fn(&Identity, &Secrets, &Value) -> Result<(), String> + Send + Sync>;
 pub struct ProviderRuntime {
     manifest: GuestManifest,
     guest: Guest,
@@ -33,6 +34,10 @@ pub struct ProviderRuntime {
     socket: Option<Socket>,
     stream: Option<crate::stream::Stream>,
     receipts: BTreeMap<String, (ClaimedInstruction, ExecutionReceipt)>,
+    account_sink: Option<AccountSink>,
+    account_fault: bool,
+    action_phase: u8,
+    action_writes: usize,
 }
 impl ProviderRuntime {
     pub fn new(
@@ -59,7 +64,56 @@ impl ProviderRuntime {
             socket: None,
             stream: None,
             receipts: Default::default(),
+            account_sink: None,
+            account_fault: false,
+            action_phase: 0,
+            action_writes: 0,
         })
+    }
+    pub(crate) fn set_account_sink(&mut self, sink: AccountSink) {
+        self.account_sink = Some(sink);
+    }
+    pub fn account_storage_available(&self) -> bool {
+        !self.account_fault
+    }
+    fn checkpoint_account(&mut self) -> Result<(), String> {
+        if self.account_fault {
+            return Err("account_storage_unavailable".into());
+        }
+        if self
+            .account_sink
+            .as_ref()
+            .is_some_and(|sink| sink(&self.identity, &self.secrets, &self.storage).is_err())
+        {
+            self.account_fault = true;
+            return Err("account_storage_unavailable".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn account_state(&self) -> crate::local::LocalState {
+        crate::local::LocalState {
+            secrets: self.secrets.clone(),
+            storage: self.storage.clone(),
+        }
+    }
+    pub(crate) fn restore_server(
+        &mut self,
+        secrets: Secrets,
+        storage: Value,
+    ) -> Result<(), String> {
+        if secrets.len() > 32
+            || secrets.iter().any(|(key, value)| {
+                !self.manifest.secret_fields.contains_key(key) || value.len() > 8192
+            })
+            || serde_json::to_vec(&storage)
+                .map_err(|_| "Invalid account state.")?
+                .len()
+                > 65536
+        {
+            return Err("Invalid server account state.".into());
+        }
+        self.restore_local(secrets, storage);
+        Ok(())
     }
     /// Used by local OAuth exchange/credential vault adapters only, never an MCP tool.
     pub fn capture_credentials(&mut self, payload: &mut Value) -> Result<(), String> {
@@ -68,7 +122,8 @@ impl ProviderRuntime {
             &serde_json::to_value(&self.manifest.secret_fields)
                 .map_err(|_| "invalid credential mapping")?,
             &mut self.secrets,
-        )
+        )?;
+        self.checkpoint_account()
     }
     pub fn identity(&self) -> &Identity {
         &self.identity
@@ -90,7 +145,24 @@ impl ProviderRuntime {
         self.secrets = secrets;
         self.storage = storage;
     }
+    pub async fn prepare_action(&mut self, now: u64) -> Result<bool, String> {
+        self.action_phase = 1;
+        let output = self
+            .turn(
+                json!({"type":"prepare_action","channel_id":self.identity.connection.channel_id}),
+                now,
+            )
+            .await?;
+        Ok(output.iter().any(|e| {
+            e["type"] == "channel"
+                && e["channel"]["id"] == self.identity.connection.channel_id
+                && e["channel"]["capabilities"]
+                    .as_array()
+                    .is_some_and(|c| c.iter().any(|c| c == "chat.send"))
+        }))
+    }
     pub async fn turn(&mut self, input: Value, now: u64) -> Result<Vec<Value>, String> {
+        self.checkpoint_account()?;
         let turn_started = std::time::Instant::now();
         let mut pending = VecDeque::from([input]);
         let mut output = vec![];
@@ -112,8 +184,20 @@ impl ProviderRuntime {
             input["secrets"] = json!(self.secrets.keys().collect::<Vec<_>>());
             for effect in self.guest.call(input)? {
                 match effect["type"].as_str() {
+                    Some("websocket" | "http_stream") if self.action_phase != 0 => {
+                        return Err("Subscriptions are forbidden for personal actions.".into());
+                    }
                     Some("http") => {
+                        if self.action_phase != 0
+                            && !matches!(effect["method"].as_str().unwrap_or("GET"), "GET" | "HEAD")
+                        {
+                            if self.action_phase == 1 || self.action_writes != 0 {
+                                return Err("Personal action write is not permitted.".into());
+                            }
+                            self.action_writes += 1;
+                        }
                         let result = transport::http(&effect, &self.manifest, &mut self.secrets).await.unwrap_or_else(|_|json!({"type":"http_result","id":effect["id"],"status":0,"payload":null,"error":"platform request interrupted"}));
+                        self.checkpoint_account()?;
                         pending.push_back(result);
                     }
                     Some("websocket") => {
@@ -140,6 +224,7 @@ impl ProviderRuntime {
                             return Err("local storage exceeds 64 KiB".into());
                         }
                         self.storage = effect["value"].clone();
+                        self.checkpoint_account()?;
                     }
                     // Authorization panels/status remain local. Bridge forwarding is typed.
                     Some("scene") => {
@@ -362,6 +447,9 @@ impl ProviderRuntime {
         receipt.outcome = ExecutionOutcome::Unknown;
         self.receipts
             .insert(i.id.clone(), (claim.clone(), receipt.clone()));
+        if self.action_phase != 0 {
+            self.action_phase = 2;
+        }
         let input = json!({"type":"command","name":"chat.send","channel_id":self.identity.connection.channel_id,"request_id":i.id,"text":text});
         let remaining = std::time::Duration::from_millis(
             i.expires_at_ms

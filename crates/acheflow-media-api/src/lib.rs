@@ -1,3 +1,4 @@
+pub mod access;
 pub mod appearance;
 pub mod audio;
 pub mod control;
@@ -5,6 +6,7 @@ pub mod diagnostics;
 pub mod layer;
 pub mod live;
 pub mod server;
+pub mod server_workspace;
 pub mod spatial;
 pub mod visual;
 pub mod workspace;
@@ -214,3 +216,7 @@ mod tests {
         assert!(!encoder.hardware);
     }
 }
+
+pub mod server_provider;
+
+pub mod personal_account;

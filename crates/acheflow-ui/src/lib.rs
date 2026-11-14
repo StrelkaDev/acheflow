@@ -15,6 +15,8 @@ mod layer_editor;
 mod live;
 mod live_client;
 mod media;
+#[cfg(target_arch = "wasm32")]
+mod mobile_input;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_activation;
 #[cfg(target_os = "macos")]
@@ -23,7 +25,9 @@ mod project;
 mod scene_canvas;
 mod scene_geometry;
 mod scene_preview;
+mod server_access;
 mod server_settings;
+mod server_workspace;
 mod slider;
 #[cfg(test)]
 mod slider_tests;
@@ -38,6 +42,7 @@ mod studio_mixer;
 mod traffic;
 mod video_preview;
 mod visual_sources;
+mod workspace_sync;
 mod workspaces;
 
 /// The same component tree, stylesheet, font and shader are used on both targets.

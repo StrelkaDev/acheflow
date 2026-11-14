@@ -78,7 +78,8 @@ requires its Client ID and local application secret before Connect. The guest us
 code/S256 PKCE; each attempt owns an available loopback port. Do not replace it
 with a Web client or the hosted app-link callback. The listener is independent of
 HTTP/RTMP server ports and is released on cancellation. Keep the secret in the
-native application-secret field; it is never sent to the Acheflow server.
+native application-secret field. It stays local unless you explicitly copy the
+authorized account to a trusted server, which also needs the secret for renewal.
 
 For browser sign-in, create a **Web application** client and allow the exact
 JavaScript origin shown in the card. This token-model flow uses a popup and no

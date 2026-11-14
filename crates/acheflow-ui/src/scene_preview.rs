@@ -40,6 +40,7 @@ pub fn ScenePreview(
 ) -> Element {
     let client = use_context::<LiveClient>();
     let control = use_context::<crate::control_client::ControlClient>();
+    let chat_preview = try_consume_context::<crate::visual_sources::ChatPreview>();
     let visual_epoch_ms = use_hook(visual_now_ms);
     let start = use_hook(Instant::now);
     let shared: Shared = use_hook(|| {
@@ -140,7 +141,8 @@ pub fn ScenePreview(
                 let snapshot = snapshot
                     .as_ref()
                     .filter(|s| s.workspace_id.as_deref() == Some(workspace.id.as_str()));
-                acheflow_media_api::visual::source_documents(
+                let now = frame_epoch_ms.saturating_add((time * 1000.) as u64);
+                let mut documents = acheflow_media_api::visual::source_documents(
                     &workspace.sources,
                     snapshot
                         .map(|s| s.chat.entries.as_slice())
@@ -148,8 +150,22 @@ pub fn ScenePreview(
                     snapshot
                         .map(|s| s.source_frames.as_slice())
                         .unwrap_or_default(),
-                    frame_epoch_ms.saturating_add((time * 1000.) as u64),
-                )
+                    now,
+                );
+                if placeholders && let Some(preview) = chat_preview {
+                    for source in &workspace.sources {
+                        if preview.0.read().contains(&source.id)
+                            && let acheflow_media_api::visual::SourceKind::Chat(settings) =
+                                &source.kind
+                        {
+                            documents.insert(
+                                source.id,
+                                crate::visual_sources::test_document(settings, now),
+                            );
+                        }
+                    }
+                }
+                documents
             },
             epoch_ms: frame_epoch_ms,
             scene: contents,
@@ -165,7 +181,7 @@ pub fn ScenePreview(
     use_future(move || {
         let shared = fetch_shared.clone();
         async move {
-            let client = reqwest::Client::new();
+            let client = crate::server_access::client();
             loop {
                 let request = {
                     let state = shared.lock().unwrap();

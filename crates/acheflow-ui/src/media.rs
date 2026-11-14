@@ -15,14 +15,14 @@ pub async fn detect_hosted_server() {
         return;
     };
     let status = reqwest::Client::new()
-        .get(format!("{origin}/api/live/status"))
+        .get(format!("{origin}/api/server/info"))
         .timeout(std::time::Duration::from_secs(3))
         .send()
         .await;
     if let Ok(response) = status
         && response.status().is_success()
         && response
-            .json::<acheflow_media_api::live::LiveStatus>()
+            .json::<acheflow_media_api::server::ServerInfo>()
             .await
             .is_ok()
     {
@@ -58,8 +58,7 @@ async fn fetch(url: String, refresh: bool) -> Result<MediaCapabilities, String> 
     } else {
         reqwest::Method::GET
     };
-    reqwest::Client::new()
-        .request(method, url)
+    crate::server_access::request(method, &url)?
         .timeout(std::time::Duration::from_secs(25))
         .send()
         .await

@@ -155,7 +155,7 @@
       }
     ],
     "native": {
-      "instructions": "Select a Cloud project and enable YouTube Data API v3. Configure the OAuth consent screen and add your account as a test user while the app is in Testing. Create a Desktop app OAuth client. Copy its Client ID into Application Client ID above Connect. PKCE uses a temporary loopback redirect; do not create a Web client or a hosted redirect for native sign-in. Copy its application secret into the local Application secret field; it stays on this device. A read-only connection needs youtube.readonly; sending chat needs youtube.force-ssl.",
+      "instructions": "Select a Cloud project and enable YouTube Data API v3. Configure the OAuth consent screen and add your account as a test user while the app is in Testing. Create a Desktop app OAuth client. Copy its Client ID into Application Client ID above Connect. PKCE uses a temporary loopback redirect; do not create a Web client or a hosted redirect for native sign-in. Copy its application secret into the local Application secret field; it is stored on this device unless you explicitly copy this account to a trusted server. A read-only connection needs youtube.readonly; sending chat needs youtube.force-ssl.",
       "address": {
         "source": "callback_uri",
         "label": "Active Desktop loopback redirect"
@@ -163,7 +163,7 @@
       "secrets": [
         {
           "id": "client_secret",
-          "label": "Application secret (local only)",
+          "label": "Application secret",
           "required": true
         }
       ]

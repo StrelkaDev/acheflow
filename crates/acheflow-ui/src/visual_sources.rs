@@ -39,15 +39,12 @@ fn add(mut project: Signal<Workspace>, kind: SourceKind, name: String) {
 }
 #[component]
 pub(crate) fn VisualSources(mut project: Signal<Workspace>) -> Element {
+    let mut expanded = use_signal(std::collections::HashSet::<u32>::new);
     let control = use_context::<ControlClient>();
     let snapshot = control.state.read();
     let source_types = snapshot
         .as_ref()
         .map(|s| s.source_types.clone())
-        .unwrap_or_default();
-    let channels = snapshot
-        .as_ref()
-        .map(|s| s.channels.clone())
         .unwrap_or_default();
     let full = project.read().sources.len() >= 8;
     rsx! {
@@ -64,30 +61,16 @@ pub(crate) fn VisualSources(mut project: Signal<Workspace>) -> Element {
         }
         for source in project.read().sources.iter().filter(|s|!s.kind.is_rtmp()).cloned().collect::<Vec<_>>() {
             section{key:"visual-{source.id}",class:"panel",
-                div{class:"panel-heading",h2{"{source.name}"}span{class:"badge",if matches!(source.kind,SourceKind::Chat(_)){"Chat overlay"}else{"Extension source"}}button{onclick:move |_|project.write().remove_source(source.id),"Remove"}}
+                div{class:"panel-heading",button{id:"toggle-visual-{source.id}",class:"destination-toggle",onkeydown:move |event|{if activates(&event){event.prevent_default();let mut open=expanded.write();if !open.remove(&source.id){open.insert(source.id);}}},"aria-expanded":expanded.read().contains(&source.id).to_string(),onclick:move |_|{let mut open=expanded.write();if !open.remove(&source.id){open.insert(source.id);}},span{if expanded.read().contains(&source.id){"▾"}else{"▸"}}h2{"{source.name}"}}span{class:"badge",if matches!(source.kind,SourceKind::Chat(_)){"Chat overlay"}else{"Extension source"}}button{onclick:move |_|project.write().remove_source(source.id),"Remove"}}
+                div{style:if expanded.read().contains(&source.id){"display:block"}else{"display:none"},
                 div{class:"form-grid",
                     Field{label:"Name",value:source.name.clone(),change:move|v|edit(project,source.id,|s|s.name=v)}
                     NumberField{label:"Initial layer width",value:source.resolution.width,min:16,max:1920,step:2,change:move|v|edit(project,source.id,|s|s.resolution.width=v)}
                     NumberField{label:"Initial layer height",value:source.resolution.height,min:16,max:1080,step:2,change:move|v|edit(project,source.id,|s|s.resolution.height=v)}
                 }
                 match source.kind {
-                    SourceKind::Chat(settings)=>rsx!{
-                        div{class:"padded",
-                            p{class:"form-help","Add this source to a scene. Layer controls set its position and size; CSS below styles the messages."}
-                            div{class:"form-grid",
-                                NumberField{label:"Maximum messages",value:settings.max_messages,min:1,max:50,step:1,change:move|v|edit_chat(project,source.id,|s|s.max_messages=v)}
-                                NumberField{label:"Display time (ms)",value:settings.lifetime_ms as u32,min:1000,max:3600000,step:1000,change:move|v|edit_chat(project,source.id,|s|s.lifetime_ms=u64::from(v))}
-                                NumberField{label:"Appear duration (ms)",value:settings.enter_ms as u32,min:0,max:10000,step:50,change:move|v|edit_chat(project,source.id,|s|s.enter_ms=u64::from(v))}
-                                NumberField{label:"Disappear duration (ms)",value:settings.exit_ms as u32,min:0,max:10000,step:50,change:move|v|edit_chat(project,source.id,|s|s.exit_ms=u64::from(v))}
-                            }
-                            div{class:"row",span{"Channels"}button{class:if settings.channels.is_empty(){"primary"}else{""},"aria-pressed":settings.channels.is_empty().to_string(),onclick:move |_|edit_chat(project,source.id,|s|s.channels.clear()),"All channels"}
-                                for channel in channels.clone() {
-                                    {let key=channel.key();let selected=settings.channels.contains(&key);rsx!{button{"aria-pressed":selected.to_string(),class:if selected{"primary"}else{""},onclick:move |_|edit_chat(project,source.id,|s|{if s.channels.contains(&key){s.channels.retain(|k|k!=&key)}else{s.channels.push(key.clone());}}),"{channel.label}"}}}
-                                }
-                            }
-                            p{class:"form-help","Selectors: .chat, .chat-message, .chat-author, .chat-body, .chat-platform, .entering, .leaving, .broadcaster, .moderator. Use --chat-enter-duration and --chat-exit-duration with your keyframes."}
-                            CodeEditor{label:"Chat source CSS",kind:CodeKind::Css,value:settings.css,change:move|v|edit_chat(project,source.id,|s|s.css=v)}
-                        }
+                    SourceKind::Chat(_)=>rsx!{
+                        ChatSettings{project,source_id:source.id}
                     },
                     SourceKind::Extension(settings)=>{
                         let definition=snapshot.as_ref().and_then(|s|s.source_types.iter().find(|t|t.extension_id==settings.extension_id&&t.source_type.id==settings.type_id)).cloned();
@@ -103,9 +86,75 @@ pub(crate) fn VisualSources(mut project: Signal<Workspace>) -> Element {
                     },
                     SourceKind::Rtmp=>rsx!{}
                 }
+                }
             }
         }
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ChatPreview(pub Signal<std::collections::HashSet<u32>>);
+
+#[component]
+pub(crate) fn ChatSettings(project: Signal<Workspace>, source_id: u32) -> Element {
+    let control = use_context::<ControlClient>();
+    let local_preview = use_signal(std::collections::HashSet::<u32>::new);
+    let ChatPreview(mut preview) =
+        try_consume_context::<ChatPreview>().unwrap_or(ChatPreview(local_preview));
+    let workspace = project.read();
+    let Some(source) = workspace.sources.iter().find(|s| s.id == source_id) else {
+        return rsx! {};
+    };
+    let SourceKind::Chat(settings) = source.kind.clone() else {
+        return rsx! {};
+    };
+    let channels = control
+        .state
+        .read()
+        .as_ref()
+        .map(|s| s.channels.clone())
+        .unwrap_or_default();
+    rsx! {                         div{class:"padded",
+        p{class:"form-help","Chat settings · {source.name}. Changes affect every scene layer using this source. Layer CSS controls placement; chat CSS styles messages."}
+        button{class:if preview.read().contains(&source_id){"primary"}else{""},"aria-pressed":preview.read().contains(&source_id).to_string(),onclick:move |_|{let mut selected=preview.write();if !selected.remove(&source_id){selected.insert(source_id);}},if preview.read().contains(&source_id){"Hide test messages"}else{"Show test messages"}}
+        p{class:"form-help","Test messages appear only in scene previews. They are never sent to channels or live output."}
+        div{class:"form-grid",
+            NumberField{label:"Maximum messages",value:settings.max_messages,min:1,max:50,step:1,change:move|v|edit_chat(project,source_id,|s|s.max_messages=v)}
+            NumberField{label:"Display time (ms)",value:settings.lifetime_ms as u32,min:1000,max:3600000,step:1000,change:move|v|edit_chat(project,source_id,|s|s.lifetime_ms=u64::from(v))}
+            NumberField{label:"Appear duration (ms)",value:settings.enter_ms as u32,min:0,max:10000,step:50,change:move|v|edit_chat(project,source_id,|s|s.enter_ms=u64::from(v))}
+            NumberField{label:"Disappear duration (ms)",value:settings.exit_ms as u32,min:0,max:10000,step:50,change:move|v|edit_chat(project,source_id,|s|s.exit_ms=u64::from(v))}
+        }
+        div{class:"row",span{"Channels"}button{class:if settings.channels.is_empty(){"primary"}else{""},"aria-pressed":settings.channels.is_empty().to_string(),onclick:move |_|edit_chat(project,source_id,|s|s.channels.clear()),"All channels"}
+            for channel in channels.clone() {
+                {let key=channel.key();let selected=settings.channels.contains(&key);rsx!{button{"aria-pressed":selected.to_string(),class:if selected{"primary"}else{""},onclick:move |_|edit_chat(project,source_id,|s|{if s.channels.contains(&key){s.channels.retain(|k|k!=&key)}else{s.channels.push(key.clone());}}),"{channel.label}"}}}
+            }
+        }
+        p{class:"form-help","Selectors: .chat, .chat-message, .chat-author, .chat-body, .chat-platform, .entering, .leaving, .broadcaster, .moderator. Use --chat-enter-duration and --chat-exit-duration with your keyframes."}
+        CodeEditor{label:"Chat source CSS",kind:CodeKind::Css,value:settings.css,change:move|v|edit_chat(project,source_id,|s|s.css=v)}
+    } }
+}
+
+/// Local preview data never enters workspace storage or the control API.
+pub(crate) fn test_document(
+    settings: &ChatSource,
+    now: u64,
+) -> acheflow_media_api::visual::SourceDocument {
+    use acheflow_extension_api::interaction::{ChatEntry, ChatMessage};
+    let entries = [
+        ("Viewer", "Hello! Checking chat layout 👋", ""),
+        ("Moderator", "Длинное тестовое сообщение для проверки переноса текста и размера карточки. This also tests wrapping across multiple lines.", "moderator"),
+        ("Host", "Welcome to the stream!\nSecond line · Привет ✨", "broadcaster"),
+        ("Another viewer", "A_long_unbroken_message_to_check_overflow_1234567890_abcdefghijklmnopqrstuvwxyz", ""),
+    ].into_iter().enumerate().map(|(index, (author, text, role))| ChatEntry {
+        cursor: index as u64,
+        message: ChatMessage {
+            platform: "Preview".into(), channel_id: "preview".into(), message_id: index.to_string(), user_id: index.to_string(), display_name: author.into(), text: text.into(), roles: if role.is_empty(){vec![]}else{vec![role.into()]}, occurred_at_ms: now,
+        },
+        deleted: false, merged_into: None, delivery: vec![],
+    }).collect::<Vec<_>>();
+    let mut config = settings.clone();
+    config.channels.clear();
+    config.document(&entries, now)
 }
 
 fn activates(event: &KeyboardEvent) -> bool {
@@ -133,6 +182,7 @@ mod tests {
             extension_errors: use_signal(Default::default),
             busy: use_signal(|| false),
             sync_conflict: use_signal(|| false),
+            request_generation: use_signal(|| 0),
         };
         use_context_provider(|| client);
         rsx! {VisualSources{project}}
@@ -145,6 +195,31 @@ mod tests {
             }
         }
         panic!("visual source UI did not settle");
+    }
+    #[test]
+    fn test_messages_ignore_channel_filters_without_changing_saved_settings() {
+        let settings = ChatSource {
+            channels: vec!["example:channel".into()],
+            max_messages: 3,
+            ..Default::default()
+        };
+        let original = settings.clone();
+        let doc = test_document(&settings, 1000);
+        doc.validate().unwrap();
+        assert_eq!(doc.nodes[0].children.len(), 3);
+        assert!(
+            doc.nodes[0]
+                .children
+                .iter()
+                .any(|n| n.classes.contains("moderator"))
+        );
+        assert!(
+            doc.nodes[0]
+                .children
+                .iter()
+                .any(|n| n.classes.contains("broadcaster"))
+        );
+        assert_eq!(settings, original);
     }
     #[tokio::test]
     async fn chat_source_is_created_by_keyboard_and_preserves_css_on_roundtrip() {
@@ -172,11 +247,38 @@ mod tests {
             state: KeyState::Pressed,
             text: None,
         };
-        doc.handle_ui_event(UiEvent::KeyDown(event));
+        doc.handle_ui_event(UiEvent::KeyDown(event.clone()));
         settle(&mut doc);
         let project = harness.project.get().unwrap();
         assert_eq!(project.peek().sources.len(), 1);
         let html = doc.inner.borrow().root_element().outer_html();
+        assert!(html.contains("aria-expanded=\"false\""));
+        let toggle = doc
+            .inner
+            .borrow()
+            .query_selector("#toggle-visual-1")
+            .unwrap()
+            .unwrap();
+        doc.inner.borrow_mut().set_focus_to(toggle);
+        doc.handle_ui_event(UiEvent::KeyDown(event.clone()));
+        settle(&mut doc);
+        assert!(
+            doc.inner
+                .borrow()
+                .root_element()
+                .outer_html()
+                .contains("aria-expanded=\"true\"")
+        );
+        doc.handle_ui_event(UiEvent::KeyDown(event));
+        settle(&mut doc);
+        assert!(
+            doc.inner
+                .borrow()
+                .root_element()
+                .outer_html()
+                .contains("aria-expanded=\"false\"")
+        );
+        assert!(html.contains("Show test messages"));
         assert!(html.contains("Chat source CSS"));
         assert!(html.contains("Disappear duration"));
         assert!(!html.contains("Connection token"));

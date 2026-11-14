@@ -1,4 +1,6 @@
 //! Host-rendered local guest panels. All account logic is executed by the extension.
+mod personal_account;
+mod server_account;
 use acheflow_client::{catalog::ClientCatalog, local::LocalSession};
 use acheflow_extension_api::{ExtensionPanel, PanelWidget};
 use dioxus_core::Task;
@@ -57,7 +59,11 @@ fn environment() -> Value {
     }
 }
 #[component]
-pub(crate) fn ClientAuthorization(id: String, name: String) -> Element {
+pub(crate) fn ClientAuthorization(
+    id: String,
+    name: String,
+    #[props(default = false)] personal: bool,
+) -> Element {
     let client = use_context::<crate::control_client::ControlClient>();
     let catalog = use_context::<Rc<ClientCatalog>>();
     let sessions = use_context::<Signal<Sessions>>();
@@ -150,7 +156,8 @@ pub(crate) fn ClientAuthorization(id: String, name: String) -> Element {
             h3{"{panel.title}"}
             for widget in panel.widgets.clone(){{render_widget(widget,id.clone(),signals,action)}}
         }
-        p{class:"form-help extension-storage-note",if cfg!(target_arch="wasm32"){"Tokens stay in this browser session and are never sent to the server."}else{"Tokens are kept in the system credential store. Disconnect removes the saved account."}}
+        p{class:"form-help extension-storage-note",if cfg!(target_arch="wasm32"){"Tokens stay in this browser session unless you explicitly connect the account to a trusted server."}else{"Local tokens are kept in the system credential store. Disconnect account removes the local copy."}}
+        if personal {personal_account::PersonalAccountPanel {id:id.clone()}} else {server_account::ServerAccount {id:id.clone()}}
         if busy(){p{role:"status","Waiting for {name}…"}if task.read().is_some(){button{onclick:move|_|{if let Some(task)=task.take(){task.cancel();}busy.set(false);restart+=1;error.set("Operation cancelled.".into());},"Cancel"}}}
         if !error().is_empty(){p{class:"field-error",role:"alert","{error}"}}
     }}

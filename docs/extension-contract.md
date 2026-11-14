@@ -2,15 +2,12 @@
 
 Status: accepted; the governing contract for client integrations and server logic.
 
-Credential ownership:
-[ADR-002](decisions/002-client-execution-and-workspace-capabilities.md) moves all
-integration/bot/OAuth and external AI credentials and platform I/O to clients.
-The server receives normalized events, applies logic and returns typed instructions
-for an authorized client to execute. Workspace capabilities may be configured
-manually through MCP metadata or registered by a connected client, without secrets.
-Server credential storage and provider transports have been removed. Execution is specified in
-[the client execution guide](client-executor.md). A later managed executor/AI
-service is optional and acts as a client, not a credential store in the logic server.
+Credential ownership follows [ADR-003](decisions/003-trusted-server-workspace.md).
+A dedicated trusted server reactor now supports explicitly configured provider
+bindings, while ordinary server logic remains credential-free. Local integrations
+retain device-owned accounts. Server account connection, verified user ownership
+and migration UI remain SHARED-06; no client credential is transferred merely by
+connecting or enabling a server binding. See [execution hosts](client-executor.md).
 
 ## Ownership
 
@@ -27,16 +24,21 @@ which rejects service origins, secret captures/settings and HTTP/WebSocket capab
 There is no compatibility execution mode. A server logic guest may handle pure domain
 rules, bounded private noncredential storage and panels, without platform I/O.
 
-The server skips client manifests entirely. The client owns provider discovery:
-native clients read their installation directory (or the bundled fallback), while
-browser clients use the manifest/WASM catalog bundled at UI build time. Server
-snapshots list server logic only; live client connections are separate metadata.
-Client providers need no server installation to register authorized capabilities.
-A native client runtime supplies bounded HTTP/WebSocket I/O and opaque secret handles
-for these guests. Manifest/effect captures redact credentials before guest delivery.
-Secrets remain local to one workspace/account runtime; network calls are restricted
-to declared origins with no redirects. OAuth/protocol definitions remain under
-`extensions/`. Client auth panels and token exchange responses never enter server
+The ordinary server logic loader skips client manifests. A separate, explicit
+trusted provider loader reads those manifests from the server's own extension
+installation. Client discovery still uses native installation directories or the
+browser bundle. `execution_side: "client"` retains the provider/reactor ABI label;
+the host may be the trusted server when a workspace binding authorizes it. It is
+never a relaxation of the pure server-logic capability boundary.
+
+Both provider hosts use the bounded native reactor, opaque handles and declared
+service origins with no redirects. Server bindings reserve collection authority;
+opening a second client cannot create another subscriber for that channel. Server
+snapshots distinguish provider execution status from pure logic extensions. Public
+workspace settings contain binding references and grants, never credentials.
+Server accounts live in the server's own workspace vault; local accounts remain in
+the device vault until explicit authenticated migration/re-authorization.
+Local auth panels and token exchange responses never enter server
 snapshots or MCP events. Client account panels and manual secret inputs are emitted
 by provider WASM guests; shared UI only renders their generic controls. OAuth flow,
 permissions, validation and renewal stay under `extensions/`. Committed native Mac
@@ -110,8 +112,7 @@ gRPC status closes the stream with a generic protocol failure. A guest's close
 effect (`http_stream { id, close: true }`), replacement stream or runtime drop
 destroys its response body and aborts its HTTP/2 driver. Runtime receive timestamps
 include elapsed waiting time before provider backoff is calculated. This is a
-native library transport, not a browser gRPC shim. The desktop Studio owns its
-continuous runtime scheduling.
+native library transport, not a browser gRPC shim. The selected native client or trusted server owns continuous runtime scheduling.
 The wire framing follows the
 [gRPC HTTP/2 protocol](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md).
 
@@ -223,3 +224,22 @@ all/single chat dispatch and echo reconciliation, per-channel failures, poll
 create/update/close, donation deduplication, interaction registration/trigger,
 workspace isolation, stop/restart and late-event rejection, denied origins and
 secret redaction. Live account testing is separate from provider-shaped fixtures.
+
+## Trusted-server account validation
+
+Provider guests supporting explicit server connection handle
+`local_server_authorize` after `local_start`. The host stages only declared secret
+slots and supplies public `config`, presence-only `secrets` and `now_ms`; it never
+accepts a client-supplied storage object. The event must perform platform validation
+through extension-owned HTTPS effects and commit credentials with `secret_commit`
+and verified `storage.account`. An uncommitted/missing/empty account is rejected.
+The shared authorization SDK implements this event using the manifest validation
+request and identity/application/scope checks. Non-supporting packages fail closed.
+
+This validation instance cannot open a browser or publish channels/chat, launch
+subscriptions or execute commands. The host accepts only bounded panel/status and
+HTTPS validation effects and suppresses arbitrary guest/platform errors in its API
+response. A separate server runtime starts only after validation and durable save.
+New server connections grant only `chat.read`; sending requires separate policy.
+See [the connection flow](extension-authorization.md#connect-a-trusted-server-account)
+for trust, migration and disconnect behavior.

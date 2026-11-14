@@ -31,6 +31,10 @@ pub struct ExtensionStatus {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ControlSnapshot {
     #[serde(default)]
+    pub server_providers: Vec<crate::server_provider::ServerProviderStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_fingerprint: Option<String>,
+    #[serde(default)]
     pub source_types: Vec<acheflow_extension_api::visual::RegisteredSourceType>,
     #[serde(default)]
     pub source_frames: Vec<acheflow_extension_api::visual::VisualSourceFrame>,

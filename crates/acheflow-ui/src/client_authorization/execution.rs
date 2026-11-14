@@ -19,6 +19,38 @@ pub(crate) fn ClientExecutionPanel(id: String) -> Element {
     let mut generation = use_signal(now);
     let permissions = use_signal(std::collections::BTreeSet::<String>::new);
     let actor = use_hook(|| format!("studio-{}", &crate::project::new_token()[..32]));
+    let provider_id = id.clone();
+    let managed_id = provider_id.clone();
+    let server_managed = use_memo(move || {
+        client
+            .project
+            .read()
+            .server_integrations
+            .get(&managed_id)
+            .is_some_and(|b| b.enabled)
+            || client.state.read().as_ref().is_some_and(|s| {
+                s.server_providers
+                    .iter()
+                    .any(|p| p.provider == managed_id && p.server_owned)
+            })
+    });
+    let eligible = use_memo(move || {
+        !server_managed()
+            && client.state.read().as_ref().is_some_and(|s| {
+                s.workspace_id.as_deref() == Some(client.project.read().id.as_str())
+                    && !s
+                        .server_providers
+                        .iter()
+                        .any(|p| p.provider == provider_id && p.server_owned)
+            })
+            && crate::server_access::allows(acheflow_media_api::access::Permission::ExtensionsRun)
+            && try_consume_context::<crate::live_client::LiveClient>().is_some_and(|live| {
+                live.status
+                    .read()
+                    .as_ref()
+                    .is_some_and(|status| status.activated)
+            })
+    });
     let owner = use_memo({
         let id = id.clone();
         move || {
@@ -33,9 +65,12 @@ pub(crate) fn ClientExecutionPanel(id: String) -> Element {
             )
         }
     });
+    let permitted = eligible;
     use_resource({
         let id = id.clone();
         move || {
+            let permitted = permitted();
+            let managed = server_managed();
             let owner = owner();
             let id = id.clone();
             let catalog = catalog.clone();
@@ -44,6 +79,17 @@ pub(crate) fn ClientExecutionPanel(id: String) -> Element {
             error.set(String::new());
             actions.write().clear();
             async move {
+                if !permitted {
+                    state.set(
+                        if managed {
+                            "This integration runs on the server."
+                        } else {
+                            "Activate this workspace to connect chat."
+                        }
+                        .into(),
+                    );
+                    return;
+                }
                 let mut failures = 0u8;
                 loop {
                     let prepared = (|| {
@@ -367,7 +413,7 @@ async fn authorize(
         if permissions.peek().contains(&key) {
             return Err("This channel's workspace permissions were revoked. Re-enable the local integration to reconnect.".into());
         }
-        // Enabling this local integration and its guest-declared functions is the
+        // Explicitly starting local collection with its guest-declared functions is the
         // Studio operator's grant. Existing (possibly narrower) policy is preserved.
         grants.push(CapabilityGrant {
             provider: connection.provider.clone(),
@@ -414,3 +460,6 @@ fn widget_view(widget: PanelWidget, action: Callback<Value>) -> Element {
         _ => rsx! {p{class:"form-help","Unsupported live provider control"}},
     }
 }
+
+#[cfg(test)]
+mod collection_tests;

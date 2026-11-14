@@ -37,7 +37,11 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
     use_context_provider(|| client);
     let identity = use_memo(move || {
         let workspace = project.read();
-        (workspace.id.clone(), workspace.server_url.clone())
+        (
+            workspace.id.clone(),
+            workspace.server_url.clone(),
+            crate::server_access::identity(),
+        )
     });
     use_resource(move || {
         let owner = identity();
@@ -123,6 +127,8 @@ impl LiveClient {
         let workspace = self.project.peek().clone();
         let applies_workspace = matches!(&action, Action::Apply | Action::Start);
         let target = workspace.clone();
+        let identity = crate::server_access::identity();
+        let sync = try_consume_context::<crate::workspace_sync::WorkspaceSync>();
         self.busy.set(true);
         self.error.set(None);
         *self.generation.write() += 1;
@@ -191,6 +197,7 @@ impl LiveClient {
             if generation != *self.generation.peek()
                 || self.project.peek().id != target.id
                 || self.project.peek().server_url != target.server_url
+                || crate::server_access::identity() != identity
             {
                 return;
             }
@@ -199,7 +206,11 @@ impl LiveClient {
                     if applies_workspace
                         && status.workspace_id.as_deref() == Some(target.id.as_str())
                     {
-                        self.project.write().edit_revision = status.edit_revision;
+                        if let Some(sync) = sync {
+                            sync.applied(&target, status.edit_revision);
+                        } else {
+                            self.project.write().edit_revision = status.edit_revision;
+                        }
                     }
                     self.status.set(Some(status));
                     self.connection.set(None);
@@ -287,9 +298,9 @@ async fn request(
     path: &str,
     body: Option<serde_json::Value>,
 ) -> Result<LiveStatus, String> {
-    let mut request = reqwest::Client::new()
-        .request(method, crate::media::server_url(workspace, path)?)
-        .timeout(std::time::Duration::from_secs(15));
+    let mut request =
+        crate::server_access::request(method, &crate::media::server_url(workspace, path)?)?
+            .timeout(std::time::Duration::from_secs(15));
     if let Some(body) = body {
         request = request.json(&body);
     }

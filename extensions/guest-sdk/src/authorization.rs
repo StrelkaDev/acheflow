@@ -266,6 +266,11 @@ impl Authorization {
                     }
                 }
             }
+            "local_server_authorize" => {
+                self.error.clear();
+                output.push(json!({"type":"secret_begin"}));
+                output.push(self.validate(&manifest, input));
+            }
             "local_action" => self.local_action(&manifest, input, now, &mut output),
             "local_crypto" if self.pending => self.local_crypto(&manifest, input, &mut output),
             "local_browser" if self.pending => {

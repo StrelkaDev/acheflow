@@ -4,10 +4,18 @@ The workspace model is shared by server and native/WASM GUI in
 `acheflow-media-api::workspace`; the GUI's `project.rs` re-exports it. Existing
 workspace JSON receives a generated identity and default offline source pattern size when
 those fields are absent. Importing a workspace in the GUI creates a separate
-identity. Disk/browser catalogs remain local; the server holds one applied
-workspace at a time. After a server restart, reapply the saved workspace; media
+identity. Disk/browser catalogs remain local; the server durably stores one workspace
+configuration. Restart restores its identity and revision without activating
+inputs, outputs or integrations. Apply sources explicitly to activate it; media
 production does not resume automatically. [Getting started](getting-started.md)
 covers application/server launch and the first broadcast.
+
+Authenticated native/browser clients follow the saved server workspace, including
+media and scene updates. Local drafts stay in the client catalog; selecting one
+enters local editing until **Follow server workspace** or explicit save/apply.
+Conflicting edits preserve the draft for explicit resolution. Read-only viewers
+receive a display projection without stream keys or transport URLs. See
+[settings persistence](settings-persistence.md#conflicts-and-reconnects).
 
 ## User flow
 
@@ -248,6 +256,11 @@ separate work. Hardware encoders can fail at runtime even when listed by FFmpeg;
 their failures are shown in Studio.
 
 ## API and local access
+
+All media API routes require [device authentication](server-access.md), including
+previews and loopback clients. Mutations require `X-Acheflow-Request: 1` and the
+corresponding management grants; full Apply/Start requires workspace, scene, media
+and extension configure/run permissions because it replaces their configuration.
 
 - `GET /api/live/status`: owner workspace id, RTMP bind address, source and format/output state; no tokens or destination URLs/keys. Sources report cumulative `received_bytes` and rolling `bitrate_kbps`; outputs report their workspace `index`, `sent_bytes` and `bitrate_kbps`. Input bytes count compressed audio/video payload, output bytes count FFmpeg FLV mux bytes. Rates use a two-second rolling window; transport overhead and GUI preview traffic are excluded. Output counters reset on individual restart; input byte counters span publisher reconnects.
 - `PUT /api/live/config`: apply a workspace. Layout/source validation is independent of unfinished output drafts. Running encoding profiles cannot be changed.

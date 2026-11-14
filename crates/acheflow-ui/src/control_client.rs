@@ -10,6 +10,7 @@ pub struct ControlClient {
     pub extension_errors: Signal<std::collections::BTreeMap<String, String>>,
     pub busy: Signal<bool>,
     pub sync_conflict: Signal<bool>,
+    pub(crate) request_generation: Signal<u64>,
 }
 pub fn use_control_client(project: Signal<Workspace>) -> ControlClient {
     crate::client_authorization::provide_accounts(project);
@@ -20,26 +21,41 @@ pub fn use_control_client(project: Signal<Workspace>) -> ControlClient {
         extension_errors: use_signal(std::collections::BTreeMap::new),
         busy: use_signal(|| false),
         sync_conflict: use_signal(|| false),
+        request_generation: use_signal(|| 0),
     };
     use_context_provider(|| client);
     let identity = use_memo(move || {
         let p = project.read();
-        (p.id.clone(), p.server_url.clone())
+        (
+            p.id.clone(),
+            p.server_url.clone(),
+            crate::server_access::identity(),
+        )
     });
     use_resource(move || {
         let owner = identity();
         client.state.set(None);
-        client.sync_conflict.set(false);
+        if try_consume_context::<crate::workspace_sync::WorkspaceSync>().is_none() {
+            client.sync_conflict.set(false);
+        }
         client.error.set(None);
         client.extension_errors.write().clear();
+        client.busy.set(false);
+        *client.request_generation.write() += 1;
         async move {
             let mut failures = 0u8;
             loop {
                 if !*client.busy.peek() {
+                    let generation = *client.request_generation.peek();
                     let workspace = project.peek().clone();
                     let result = fetch(&workspace, None).await;
                     if identity() != owner {
                         return;
+                    }
+                    if !client.response_current(generation, &workspace, &owner.2)
+                        || *client.busy.peek()
+                    {
+                        continue;
                     }
                     match result {
                         Ok(state) => {
@@ -68,7 +84,22 @@ pub fn use_control_client(project: Signal<Workspace>) -> ControlClient {
     client
 }
 impl ControlClient {
+    pub(crate) fn response_current(
+        &self,
+        generation: u64,
+        workspace: &Workspace,
+        identity: &Option<String>,
+    ) -> bool {
+        generation == *self.request_generation.peek()
+            && self.project.peek().id == workspace.id
+            && self.project.peek().server_url == workspace.server_url
+            && crate::server_access::identity() == *identity
+    }
     pub(crate) fn accept(mut self, snapshot: ControlSnapshot) {
+        if try_consume_context::<crate::workspace_sync::WorkspaceSync>().is_some() {
+            self.state.set(Some(snapshot));
+            return;
+        }
         let previous = self
             .state
             .peek()
@@ -89,18 +120,25 @@ impl ControlClient {
                 }
                 _ => {}
             }
-            if matches_remote_settings(&workspace, &snapshot) {
-                conflict = false;
+            if let Some(fingerprint) = snapshot.workspace_fingerprint.as_ref() {
+                if acheflow_media_api::server_workspace::fingerprint(&workspace)
+                    .as_ref()
+                    .ok()
+                    == Some(fingerprint)
+                {
+                    conflict = false;
+                    workspace.edit_revision = snapshot.edit_revision;
+                } else if workspace.edit_revision != snapshot.edit_revision {
+                    conflict = true;
+                }
             }
-            if !conflict {
-                workspace.edit_revision = snapshot.edit_revision;
-            }
+            // A partial/read-only snapshot cannot acknowledge unseen media edits.
             self.sync_conflict.set(conflict);
             if had_conflict && !conflict {
                 self.error.set(None);
             }
             if conflict {
-                self.error.set(Some("Workspace settings changed on the server. Your local edits are preserved; choose which settings to use.".into()));
+                self.error.set(Some("Workspace changed on the server. Your local edits are preserved; choose which workspace configuration to use.".into()));
             }
         } else {
             self.sync_conflict.set(false);
@@ -110,6 +148,10 @@ impl ControlClient {
     /// Resolve against the last observed server state. Keeping local edits only
     /// acknowledges that revision; Apply remains a separate explicit action.
     pub fn resolve_sync_conflict(mut self, use_server: bool) {
+        if let Some(sync) = try_consume_context::<crate::workspace_sync::WorkspaceSync>() {
+            sync.resolve(use_server);
+            return;
+        }
         let Some(snapshot) = self
             .state
             .peek()
@@ -121,20 +163,40 @@ impl ControlClient {
         if !*self.sync_conflict.peek() {
             return;
         }
-        let mut workspace = self.project.write();
-        if use_server {
-            workspace.extensions = snapshot.extension_settings;
-            workspace.client_capabilities = snapshot.client_capabilities;
-            for remote in snapshot.scenes {
-                if let Some(local) = workspace.scenes.iter_mut().find(|s| s.id == remote.id) {
-                    local.spatial = remote.spatial;
-                }
-            }
+        if !use_server {
+            self.project.write().edit_revision = snapshot.edit_revision;
+            self.sync_conflict.set(false);
+            self.error.set(None);
+            return;
         }
-        workspace.edit_revision = snapshot.edit_revision;
-        self.sync_conflict.set(false);
-        self.error.set(None);
+        let owner = self.project.peek().clone();
+        self.busy.set(true);
+        spawn(async move {
+            let result = crate::server_workspace::fetch(&owner).await;
+            if self.project.peek().id != owner.id
+                || self.project.peek().server_url != owner.server_url
+            {
+                self.busy.set(false);
+                return;
+            }
+            match result {
+                Ok(state) => {
+                    if let Some(mut remote) = state.workspace.filter(|w| w.id == owner.id) {
+                        remote.server_url = owner.server_url;
+                        remote.client_extensions = self.project.peek().client_extensions.clone();
+                        self.project.set(remote);
+                        self.sync_conflict.set(false);
+                        self.error.set(None);
+                    } else {
+                        self.error.set(Some("The server workspace changed or this device cannot load its configuration.".into()));
+                    }
+                }
+                Err(error) => self.error.set(Some(error)),
+            }
+            self.busy.set(false);
+        });
     }
+
     pub fn set_extension(mut self, id: String, enabled: bool) {
         self.extension_errors.write().remove(&id);
         if self
@@ -159,6 +221,20 @@ impl ControlClient {
     }
     pub fn command(mut self, mut action: ControlAction) {
         if *self.busy.peek() {
+            return;
+        }
+        if *self.sync_conflict.peek()
+            && matches!(
+                &action,
+                ControlAction::SetScene { .. }
+                    | ControlAction::SetExtension { .. }
+                    | ControlAction::SetClientCapabilities { .. }
+                    | ControlAction::ExtensionEvent { .. }
+            )
+        {
+            self.error.set(Some(
+                "Resolve the workspace conflict before changing its configuration.".into(),
+            ));
             return;
         }
         match &mut action {
@@ -202,15 +278,17 @@ impl ControlClient {
             action,
         };
         self.busy.set(true);
+        *self.request_generation.write() += 1;
+        let generation = *self.request_generation.peek();
+        let identity = crate::server_access::identity();
         spawn(async move {
             let result = fetch(&workspace, Some(request)).await;
-            if self.project.peek().id == workspace.id
-                && self.project.peek().server_url == workspace.server_url
-            {
-                match result {
-                    Ok(state) => self.accept(state),
-                    Err(error) => self.command_error(extension.as_deref(), Some(error)),
-                }
+            if !self.response_current(generation, &workspace, &identity) {
+                return;
+            }
+            match result {
+                Ok(state) => self.accept(state),
+                Err(error) => self.command_error(extension.as_deref(), Some(error)),
             }
             self.busy.set(false);
         });
@@ -341,10 +419,11 @@ pub(crate) async fn fetch(
         "/api/control/state"
     };
     let endpoint = crate::media::server_url(workspace, path)?;
-    let http = reqwest::Client::new();
     let request = match command {
-        Some(command) => http.post(&endpoint).json(&command),
-        None => http.get(&endpoint),
+        Some(command) => {
+            crate::server_access::request(reqwest::Method::POST, &endpoint)?.json(&command)
+        }
+        None => crate::server_access::request(reqwest::Method::GET, &endpoint)?,
     };
     let response = request
         .timeout(std::time::Duration::from_secs(10))
@@ -353,8 +432,9 @@ pub(crate) async fn fetch(
         .map_err(|_| format!("Could not reach the interaction service at {endpoint}. Check the server address and that the server is running."))?;
     if !response.status().is_success() {
         let value: serde_json::Value = response.json().await.unwrap_or_default();
-        return Err(value["error"]["message"]
+        return Err(value["error"]
             .as_str()
+            .or_else(|| value["error"]["message"].as_str())
             .unwrap_or("Interaction command failed")
             .to_owned());
     }

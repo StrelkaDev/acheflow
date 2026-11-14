@@ -113,7 +113,7 @@ pub(crate) fn LogsPanel(project: Signal<crate::project::Workspace>) -> Element {
                 } else {
                     let result = async {
                         let url = target.as_ref().map_err(|_| "Invalid server address")?;
-                        reqwest::Client::new().get(url).timeout(std::time::Duration::from_secs(3))
+                        crate::server_access::request(reqwest::Method::GET,url).map_err(|_|"Device session is unavailable.")?.timeout(std::time::Duration::from_secs(3))
                             .send().await.map_err(|_| "Cannot reach server log. Check the connection.")?
                             .error_for_status().map_err(|_| "Server log is unavailable. Update the server to a version with log support.")?
                             .json::<Vec<LogEntry>>().await.map_err(|_| "Invalid server log response")

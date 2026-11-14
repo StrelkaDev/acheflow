@@ -1,5 +1,8 @@
 //! Browser access from explicitly trusted UI origins; same-origin/native need no opt-in.
-use axum::http::{HeaderValue, Method, header::CONTENT_TYPE};
+use axum::http::{
+    HeaderValue, Method,
+    header::{AUTHORIZATION, CONTENT_TYPE, HeaderName},
+};
 use tower_http::cors::CorsLayer;
 
 pub fn from_env() -> Result<CorsLayer, String> {
@@ -25,7 +28,12 @@ fn origins(value: &str) -> Result<CorsLayer, String> {
     Ok(CorsLayer::new()
         .allow_origin(origins)
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers([CONTENT_TYPE]))
+        .allow_headers([
+            CONTENT_TYPE,
+            AUTHORIZATION,
+            HeaderName::from_static("x-acheflow-request"),
+            HeaderName::from_static("x-acheflow-client"),
+        ]))
 }
 
 #[cfg(test)]

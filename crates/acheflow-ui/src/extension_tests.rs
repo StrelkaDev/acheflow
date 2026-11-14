@@ -44,6 +44,7 @@ fn test_app(include_clients: bool) -> Element {
         extension_errors: use_signal(std::collections::BTreeMap::new),
         busy: use_signal(|| false),
         sync_conflict: use_signal(|| false),
+        request_generation: use_signal(|| 0),
     };
     use_context_provider(|| {
         Rc::new(if include_clients {
@@ -309,7 +310,9 @@ async fn first_snapshot_cannot_acknowledge_remote_settings_over_an_unsynced_loca
         }],
         ..Default::default()
     };
-    client.accept(snapshot.clone());
+    doc.vdom
+        .runtime()
+        .in_scope(ScopeId::ROOT, || client.accept(snapshot.clone()));
     settle(&mut doc);
     assert_eq!(
         client.project.read().edit_revision,
@@ -321,7 +324,9 @@ async fn first_snapshot_cannot_acknowledge_remote_settings_over_an_unsynced_loca
         "localdraft"
     );
     assert!(client.error.read().is_some());
-    client.accept(snapshot);
+    doc.vdom
+        .runtime()
+        .in_scope(ScopeId::ROOT, || client.accept(snapshot));
     settle(&mut doc);
     assert_eq!(
         client.project.read().edit_revision,
@@ -371,7 +376,9 @@ async fn resolving_settings_conflicts_is_explicit_and_does_not_send_an_apply() {
         }],
         ..Default::default()
     };
-    client.accept(snapshot.clone());
+    doc.vdom
+        .runtime()
+        .in_scope(ScopeId::ROOT, || client.accept(snapshot.clone()));
     settle(&mut doc);
     assert!((client.sync_conflict)());
     assert_eq!(
@@ -382,7 +389,9 @@ async fn resolving_settings_conflicts_is_explicit_and_does_not_send_an_apply() {
             .len(),
         2
     );
-    client.resolve_sync_conflict(false);
+    doc.vdom
+        .runtime()
+        .in_scope(ScopeId::ROOT, || client.resolve_sync_conflict(false));
     settle(&mut doc);
     assert!(!(client.sync_conflict)());
     assert_eq!(client.project.read().edit_revision, 2);
@@ -397,10 +406,47 @@ async fn resolving_settings_conflicts_is_explicit_and_does_not_send_an_apply() {
     );
     client.state.set(None);
     client.project.write().edit_revision = 1;
-    client.accept(snapshot.clone());
+    doc.vdom
+        .runtime()
+        .in_scope(ScopeId::ROOT, || client.accept(snapshot.clone()));
     settle(&mut doc);
-    client.resolve_sync_conflict(true);
-    settle(&mut doc);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    client.project.write().server_url = endpoint.clone();
+    let mut remote = client.project.read().server_configuration();
+    remote.edit_revision = 2;
+    remote.extensions = snapshot.extension_settings.clone();
+    remote.client_capabilities = snapshot.client_capabilities.clone();
+    remote.horizontal.fps = 25;
+    let response = acheflow_media_api::server_workspace::WorkspaceState {
+        view: None,
+        server_id: "fixture".into(),
+        revision: 2,
+        summary: None,
+        workspace: Some(remote),
+    };
+    let app = axum::Router::new().route(
+        "/api/workspace",
+        axum::routing::get(move || {
+            let response = response.clone();
+            async move { axum::Json(response) }
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    doc.vdom
+        .runtime()
+        .in_scope(ScopeId::ROOT, || client.resolve_sync_conflict(true));
+    for _ in 0..100 {
+        settle(&mut doc);
+        if !(client.busy)() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    server.abort();
+    assert!(!(client.busy)());
+    assert_eq!(client.project.read().horizontal.fps, 25);
+    assert_eq!(client.project.read().server_url, endpoint);
     assert_eq!(
         client.project.read().client_capabilities,
         snapshot.client_capabilities
@@ -456,6 +502,7 @@ fn local_client_fixture(enabled: bool) -> Element {
         extension_errors: use_signal(Default::default),
         busy: use_signal(|| false),
         sync_conflict: use_signal(|| false),
+        request_generation: use_signal(|| 0),
     };
     use_context_provider(|| Rc::new(acheflow_client::catalog::ClientCatalog::bundled()));
     use_context_provider(|| client);
@@ -1330,4 +1377,112 @@ async fn saved_read_only_permissions_offer_an_explicit_send_grant_for_capable_in
         .insert(Capability::ChatSend);
     settle(&mut doc);
     assert!(!exists(&doc, ".allow-chat-send"));
+}
+
+#[tokio::test]
+async fn unseen_media_edits_require_explicit_resolution_and_partial_snapshots_cannot_acknowledge_them()
+ {
+    let harness = Rc::new(Harness::default());
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(app).with_root_context(harness.clone()),
+        DocumentConfig::default(),
+    );
+    doc.initial_build();
+    settle(&mut doc);
+    let mut client = harness.client.get().unwrap();
+    client.state.set(None);
+    client.project.write().edit_revision = 1;
+    let mut remote = client.project.read().clone();
+    remote.horizontal.fps = 25;
+    let snapshot = ControlSnapshot {
+        workspace_id: Some(remote.id.clone()),
+        revision: 2,
+        edit_revision: 2,
+        workspace_fingerprint: Some(
+            acheflow_media_api::server_workspace::fingerprint(&remote).unwrap(),
+        ),
+        ..Default::default()
+    };
+    doc.vdom
+        .runtime()
+        .in_scope(ScopeId::ROOT, || client.accept(snapshot.clone()));
+    settle(&mut doc);
+    assert!((client.sync_conflict)());
+    assert_eq!(client.project.read().edit_revision, 1);
+    assert_eq!(client.project.read().horizontal.fps, 30);
+    doc.vdom
+        .runtime()
+        .in_scope(ScopeId::ROOT, || client.accept(snapshot.clone()));
+    settle(&mut doc);
+    assert_eq!(client.project.read().edit_revision, 1);
+    doc.vdom
+        .runtime()
+        .in_scope(ScopeId::ROOT, || client.resolve_sync_conflict(false));
+    settle(&mut doc);
+    assert_eq!(client.project.read().edit_revision, 2);
+    assert_eq!(client.project.read().horizontal.fps, 30);
+    let mut partial = snapshot.clone();
+    partial.edit_revision = 3;
+    partial.workspace_fingerprint = None;
+    doc.vdom
+        .runtime()
+        .in_scope(ScopeId::ROOT, || client.accept(partial));
+    settle(&mut doc);
+    assert_eq!(client.project.read().edit_revision, 2);
+    client.project.write().horizontal.fps = 25;
+    doc.vdom
+        .runtime()
+        .in_scope(ScopeId::ROOT, || client.accept(snapshot));
+    settle(&mut doc);
+    assert!(!(client.sync_conflict)());
+    assert_eq!(client.project.read().edit_revision, 2);
+}
+
+#[tokio::test]
+async fn server_integrations_report_host_status_without_exposing_account_identifiers() {
+    let harness = Rc::new(Harness::default());
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(app).with_root_context(harness.clone()),
+        DocumentConfig::default(),
+    );
+    doc.initial_build();
+    settle(&mut doc);
+    let mut client = harness.client.get().unwrap();
+    client.state.write().as_mut().unwrap().server_providers =
+        vec![acheflow_media_api::server_provider::ServerProviderStatus {
+            provider: "fixture".into(),
+            name: "Shared provider".into(),
+            state: "running".into(),
+            server_owned: true,
+            account_id: Some("private-account-fixture".into()),
+            channel_id: Some("channel".into()),
+            generation: 2,
+        }];
+    settle(&mut doc);
+    let id = doc
+        .inner
+        .borrow()
+        .query_selector(".server-providers")
+        .unwrap()
+        .unwrap();
+    let text = doc.inner.borrow().get_node(id).unwrap().text_content();
+    assert!(text.contains("Connected"));
+    assert!(text.contains("Shared provider"));
+    assert!(!text.contains("private-account-fixture"));
+    client.state.write().as_mut().unwrap().server_providers[0].state = "needs_authorization".into();
+    settle(&mut doc);
+    let id = doc
+        .inner
+        .borrow()
+        .query_selector(".server-providers")
+        .unwrap()
+        .unwrap();
+    assert!(
+        doc.inner
+            .borrow()
+            .get_node(id)
+            .unwrap()
+            .text_content()
+            .contains("Account authorization required")
+    );
 }

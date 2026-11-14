@@ -56,10 +56,16 @@ pub struct ControlHost {
     pub installed: std::collections::BTreeMap<String, crate::extension_registry::Installed>,
     pub guests: AsyncMutex<std::collections::HashMap<String, crate::extension_host::Running>>,
     pub events: tokio::sync::broadcast::Sender<Value>,
+    pub provider_catalog: acheflow_client::catalog::ClientCatalog,
+    pub providers: crate::providers::Manager,
 }
 impl ControlHost {
     pub fn new(runtime: RuntimeState) -> Arc<Self> {
         let host = Arc::new(Self {
+            provider_catalog: acheflow_client::catalog::ClientCatalog::discover_at(
+                &crate::extension_registry::root(),
+            ),
+            providers: Default::default(),
             runtime,
             client_execution: Mutex::new(Default::default()),
             services: Arc::new(Mutex::new(Services::default())),
@@ -111,6 +117,12 @@ impl ControlHost {
         let executors =
             crate::client_bridge::refresh(self, workspace.as_ref(), &mut state, now_ms());
         ControlSnapshot {
+            server_providers: self
+                .providers
+                .snapshot(&self.provider_catalog, workspace.as_ref()),
+            workspace_fingerprint: workspace
+                .as_ref()
+                .and_then(|w| acheflow_media_api::server_workspace::fingerprint(w).ok()),
             source_types: self
                 .installed
                 .iter()
@@ -368,27 +380,14 @@ impl ControlHost {
                 }
                 drop(state);
                 if let Some(action) = action {
-                    let mut workspace = self.runtime.workspace.write().unwrap();
-                    let workspace = workspace
-                        .as_mut()
-                        .filter(|w| w.id == owner)
-                        .ok_or("workspace changed")?;
-                    let scene = workspace
-                        .scenes
-                        .iter_mut()
-                        .find(|s| s.id == action.scene_id)
-                        .ok_or("command scene not found")?;
-                    let object = scene
-                        .spatial
-                        .as_mut()
-                        .and_then(|s| s.objects.iter_mut().find(|o| o.id == action.object_id))
-                        .ok_or("command object not found")?;
-                    object.transform.rotation = action.rotation;
-                    workspace.edit_revision = self
-                        .runtime
-                        .control_revision
-                        .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
-                        + 1;
+                    self.apply_rotation(
+                        owner,
+                        &acheflow_extension_api::integration::SceneAction {
+                            scene_id: action.scene_id,
+                            object_id: action.object_id,
+                            rotation: action.rotation,
+                        },
+                    )?;
                 }
             }
             Some("delete") => {
@@ -595,7 +594,18 @@ impl ControlHost {
     fn complete(&self, request: &ControlRequest, result: &Result<(), String>) {
         let mut state = self.services.lock().unwrap();
         if state.owner.as_deref() == Some(&request.workspace_id) {
-            if result.is_ok() && !matches!(request.action, ControlAction::SetScene { .. }) {
+            if result.is_ok()
+                && !matches!(
+                    request.action,
+                    ControlAction::SetScene { .. }
+                        | ControlAction::SetExtension { .. }
+                        | ControlAction::SetClientCapabilities { .. }
+                        | ControlAction::ExtensionEvent {
+                            config: Some(_),
+                            ..
+                        }
+                )
+            {
                 self.runtime
                     .control_revision
                     .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -639,25 +649,18 @@ impl ControlHost {
         id: u32,
         spatial: &acheflow_media_api::spatial::SpatialScene,
     ) -> Result<(), String> {
-        let mut workspace = self.runtime.workspace.write().unwrap();
-        let workspace = workspace
-            .as_mut()
-            .filter(|w| w.id == owner)
-            .ok_or("conflict: workspace changed")?;
-        spatial.validate(&workspace.sources.iter().map(|s| s.id).collect::<Vec<_>>())?;
-        let scene = workspace
-            .scenes
-            .iter_mut()
-            .find(|s| s.id == id)
-            .ok_or("not_found: scene")?;
-        scene.spatial = Some(spatial.clone());
-        workspace.edit_revision = self
-            .runtime
-            .control_revision
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
-            + 1;
-        Ok(())
+        self.runtime.update_workspace(owner, |workspace| {
+            spatial.validate(&workspace.sources.iter().map(|s| s.id).collect::<Vec<_>>())?;
+            let scene = workspace
+                .scenes
+                .iter_mut()
+                .find(|s| s.id == id)
+                .ok_or("not_found: scene")?;
+            scene.spatial = Some(spatial.clone());
+            Ok(())
+        })
     }
+
     async fn apply(
         self: &Arc<Self>,
         request: &ControlRequest,
@@ -676,18 +679,22 @@ impl ControlHost {
                 .await?;
             }
             ControlAction::SetClientCapabilities { grants } => {
+                acheflow_control::client_execution::ExecutionRegistry::default().set_policy(
+                    &request.workspace_id,
+                    grants.clone(),
+                    now_ms(),
+                )?;
+                self.runtime
+                    .update_workspace(&request.workspace_id, |workspace| {
+                        workspace.client_capabilities = grants.clone();
+                        Ok(())
+                    })?;
                 self.client_execution.lock().unwrap().set_policy(
                     &request.workspace_id,
                     grants.clone(),
                     now_ms(),
                 )?;
-                let mut workspace = self.runtime.workspace.write().unwrap();
-                let workspace = workspace
-                    .as_mut()
-                    .filter(|w| w.id == request.workspace_id)
-                    .ok_or("conflict: workspace changed")?;
-                workspace.client_capabilities = grants.clone();
-                workspace.edit_revision = request.expected_revision + 1;
+                self.providers.reconcile(self).await;
             }
 
             ControlAction::ExtensionEvent {
@@ -784,25 +791,17 @@ impl ControlHost {
         if action.rotation.iter().any(|v| !v.is_finite()) {
             return Err("invalid interaction rotation".into());
         }
-        let mut workspace = self.runtime.workspace.write().unwrap();
-        let workspace = workspace
-            .as_mut()
-            .filter(|w| w.id == owner)
-            .ok_or("workspace changed")?;
-        let object = workspace
-            .scenes
-            .iter_mut()
-            .find(|s| s.id == action.scene_id)
-            .and_then(|s| s.spatial.as_mut())
-            .and_then(|s| s.objects.iter_mut().find(|o| o.id == action.object_id))
-            .ok_or("interaction object not found")?;
-        object.transform.rotation = action.rotation;
-        workspace.edit_revision = self
-            .runtime
-            .control_revision
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
-            + 1;
-        Ok(())
+        self.runtime.update_workspace(owner, |workspace| {
+            let object = workspace
+                .scenes
+                .iter_mut()
+                .find(|s| s.id == action.scene_id)
+                .and_then(|s| s.spatial.as_mut())
+                .and_then(|s| s.objects.iter_mut().find(|o| o.id == action.object_id))
+                .ok_or("interaction object not found")?;
+            object.transform.rotation = action.rotation;
+            Ok(())
+        })
     }
 }
 
@@ -967,6 +966,9 @@ pub(crate) mod tests {
         let mut workspace = Workspace::default();
         workspace.add_scene(Orientation::Horizontal);
         *runtime.workspace.write().unwrap() = Some(workspace.clone());
+        runtime
+            .activated
+            .store(true, std::sync::atomic::Ordering::Release);
         let mut host = ControlHost::new(runtime);
         Arc::get_mut(&mut host).unwrap().installed = crate::extension_registry::discover_at(
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions"),

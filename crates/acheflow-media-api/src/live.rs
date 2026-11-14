@@ -24,6 +24,8 @@ pub struct RestartOutputRequest {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LiveStatus {
     #[serde(default)]
+    pub activated: bool,
+    #[serde(default)]
     pub edit_revision: u64,
     pub workspace_id: Option<String>,
     pub rtmp_address: String,

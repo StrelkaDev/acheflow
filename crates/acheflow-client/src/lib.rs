@@ -1,4 +1,7 @@
-//! Local executor. Platform credentials and provider transports never enter the server.
+//! Native provider execution and local account primitives. Trusted servers reuse
+//! the bounded reactor with a separate server-owned account namespace.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod access;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod browser;
 pub mod catalog;
@@ -15,3 +18,6 @@ mod vault;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod bridge;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod server_account;

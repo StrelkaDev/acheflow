@@ -35,6 +35,7 @@ fn app() -> Element {
         extension_errors: use_signal(Default::default),
         busy: use_signal(|| false),
         sync_conflict: use_signal(|| false),
+        request_generation: use_signal(|| 0),
     };
     use_context_provider(|| client);
     harness.client.set(Some(client));

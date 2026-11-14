@@ -13,6 +13,8 @@ use dioxus_native::prelude::*;
 pub fn Live(project: Signal<Workspace>, visible: bool) -> Element {
     let client = use_context::<LiveClient>();
     let mut tab = use_signal(|| "Studio");
+    let preview = use_signal(std::collections::HashSet::<u32>::new);
+    use_context_provider(|| crate::visual_sources::ChatPreview(preview));
     rsx! {div {class:"live-root",
         nav {class:"subnav",for name in ["Analytics","Sources","Scenes","Mixer","Studio","Chat","Interactive","Settings"] {
             button {class:if tab()==name {"selected"}else{""},onclick:move |_|tab.set(name),"{name}"}
@@ -94,6 +96,7 @@ fn Analytics() -> Element {
 #[component]
 pub fn Sources(mut project: Signal<Workspace>) -> Element {
     let mut copied = use_signal(|| None::<u32>);
+    let mut expanded = use_signal(std::collections::HashSet::<u32>::new);
     let client = use_context::<LiveClient>();
     let state = if client.owns() {
         client.status.read().clone()
@@ -112,10 +115,11 @@ pub fn Sources(mut project: Signal<Workspace>) -> Element {
         if project.read().sources.is_empty(){div {class:"panel empty-state",h3 {"No expected sources"}p {"Add a source, then apply it to authorize its token on the server."}}}
         for source in project.read().sources.iter().filter(|s|s.kind.is_rtmp()).cloned().collect::<Vec<_>>() {
             section {key:"{source.id}",class:"panel",
-                div {class:"panel-heading",h2 {"{source.name}"}
+                div {class:"panel-heading",button{class:"destination-toggle",onkeydown:move |event|{if !event.is_auto_repeating() && (event.key()==Key::Named(NamedKey::Enter) || event.key()==Key::Character(" ".into())){event.prevent_default();let mut open=expanded.write();if !open.remove(&source.id){open.insert(source.id);}}},"aria-expanded":expanded.read().contains(&source.id).to_string(),onclick:move |_|{let mut open=expanded.write();if !open.remove(&source.id){open.insert(source.id);}},span{if expanded.read().contains(&source.id){"▾"}else{"▸"}}h2 {"{source.name}"}}
                     span {class:"badge",if state.as_ref().and_then(|s|s.sources.iter().find(|i|i.id==source.id)).is_some_and(|s|s.connected){"Connected"}else{"Waiting for token"}}
                     button {onclick:move |_|project.write().remove_source(source.id),"Remove"}
                 }
+                div {style:if expanded.read().contains(&source.id){"display:block"}else{"display:none"},
                 div {class:"form-grid",
                     Field {label:"Name",value:source.name,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.name=v;}}}
                     Field {label:"RTMP ingest URL",value:source.url,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.url=v;}}}
@@ -134,6 +138,7 @@ pub fn Sources(mut project: Signal<Workspace>) -> Element {
                     if let Some(error)=input.error.as_ref(){p {class:"field-error padded","{error}"}}
                 }
                 div {class:"panel-note","Incoming video keeps its original resolution. Resize and fit it in the scene layer. Offline preview dimensions only size the test pattern while no video is available."}
+                }
             }
         }
     }

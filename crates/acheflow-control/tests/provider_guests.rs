@@ -346,3 +346,28 @@ fn vklive_denies_read_only_offline_and_stopped_instances_and_does_not_retry_unkn
             .is_empty()
     );
 }
+
+#[test]
+fn personal_action_preparation_never_opens_a_chat_subscription() {
+    for id in ["youtube", "vklive"] {
+        let mut guest = load(id);
+        let effects=guest.call(json!({"type":"prepare_action","channel_id":if id=="youtube"{"video"}else{"streamer"},"config":{"send_chat":"true","read_chat":"true","read_audience":"true"},"secrets":["access_token"],"now_ms":1000})).unwrap();
+        assert!(!effects.is_empty());
+        assert!(
+            effects
+                .iter()
+                .all(|e| e["type"] != "websocket" && e["type"] != "http_stream")
+        );
+        for effect in effects.iter().filter(|e| e["type"] == "http") {
+            assert!(effect["method"].is_null() || effect["method"] == "GET");
+            assert!(!effect["url"].as_str().unwrap().contains("chat/messages"));
+            assert!(
+                !effect["url"]
+                    .as_str()
+                    .unwrap()
+                    .contains("liveChat/messages")
+            );
+        }
+        assert!(effects.iter().any(|e| e["type"] == "http"));
+    }
+}

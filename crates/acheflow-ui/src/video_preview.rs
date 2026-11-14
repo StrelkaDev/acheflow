@@ -35,7 +35,7 @@ pub fn VideoPreview(
     use_resource(use_reactive((&url,), move |(url,)| {
         let latest = latest.clone();
         async move {
-            let client = reqwest::Client::new();
+            let client = crate::server_access::client();
             loop {
                 let result = download_rgb(&client, &url).await.map(|image| {
                     let rgba = image::DynamicImage::ImageRgb8(image).to_rgba8();
@@ -69,8 +69,8 @@ pub(crate) async fn download_snapshot(
     client: &reqwest::Client,
     url: &str,
 ) -> Option<(image::RgbImage, acheflow_media_api::workspace::Resolution)> {
-    let response = client
-        .get(url)
+    let response = crate::server_access::authorize(client.get(url), url)
+        .ok()?
         .header(reqwest::header::CACHE_CONTROL, "no-cache")
         .timeout(std::time::Duration::from_secs(3))
         .send()

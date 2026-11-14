@@ -209,6 +209,9 @@ pub struct Workspace {
     /// Local client integrations. Excluded from Apply/Start by server_configuration().
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub client_extensions: std::collections::BTreeMap<String, ExtensionSettings>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub server_integrations:
+        std::collections::BTreeMap<String, crate::server_provider::ServerIntegration>,
     #[serde(default)]
     pub client_capabilities: Vec<acheflow_extension_api::client_execution::CapabilityGrant>,
     pub horizontal: Stream,
@@ -228,6 +231,7 @@ impl Default for Workspace {
             server_url: String::new(),
             extensions: Default::default(),
             client_extensions: Default::default(),
+            server_integrations: Default::default(),
             client_capabilities: Default::default(),
             horizontal: Stream {
                 base: Resolution {
@@ -475,6 +479,20 @@ impl Workspace {
         }
     }
     fn validate_extensions(&self) -> Result<(), String> {
+        if self.server_integrations.len() > 8
+            || self.server_integrations.iter().any(|(provider, b)| {
+                !acheflow_extension_api::integration::valid_provider_id(provider)
+                    || !acheflow_extension_api::integration::valid_id(&b.account_id, 128)
+                    || !acheflow_extension_api::integration::valid_id(&b.channel_id, 128)
+                    || b.application.len() > 256
+                    || b.application.chars().any(char::is_control)
+                    || b.config.len() > 32
+                    || b.config.values().any(|v| v.len() > 8192)
+            })
+        {
+            return Err("Invalid server integration binding.".into());
+        }
+
         if self.extensions.len() > 8
             || self.client_extensions.len() > 8
             || self

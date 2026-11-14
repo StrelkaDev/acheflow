@@ -312,6 +312,30 @@ impl LocalSession {
         result["type"] = json!("local_http");
         result
     }
+    /// Explicit credential transfer; drafts and unverified accounts cannot be sent.
+    pub fn server_credentials(&self, workspace: &str) -> Result<AccountCredentials, String> {
+        if self.workspace_id.as_deref() != Some(workspace) {
+            return Err("Account belongs to another workspace.".into());
+        }
+        self.server_credentials_unbound()
+    }
+    pub(crate) fn server_credentials_unbound(&self) -> Result<AccountCredentials, String> {
+        let account = self.state.storage["account"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or("Authorize this account before connecting it to the server.")?;
+        if self.staged.is_some() || self.credential_revision().is_none() {
+            return Err("Finish account authorization before connecting it to the server.".into());
+        }
+        Ok(AccountCredentials {
+            account_id: account.into(),
+            secrets: self.state.secrets.clone(),
+        })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn take_server_state(&mut self) -> LocalState {
+        std::mem::take(&mut self.state)
+    }
     /// Restores only into the matching local provider runtime, never through MCP.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn install(&self, runtime: &mut crate::runtime::ProviderRuntime) -> Result<(), String> {
@@ -323,6 +347,12 @@ impl LocalSession {
         runtime.restore_local(self.state.secrets.clone(), self.state.storage.clone());
         Ok(())
     }
+}
+
+/// No Debug/Serialize: exported only by an explicit trusted-server connection.
+pub struct AccountCredentials {
+    pub account_id: String,
+    pub secrets: BTreeMap<String, String>,
 }
 
 #[cfg(test)]

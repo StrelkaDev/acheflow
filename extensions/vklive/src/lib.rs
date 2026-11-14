@@ -153,7 +153,14 @@ impl VkLive {
         };
         json!({"type":"delivery","request_id":request,"channel_id":self.channel,"sent":if code==0 {Value::Null}else{json!(sent)},"error":if sent {Value::Null}else{json!(error)}})
     }
-    pub fn handle(&mut self, input: Value) -> Vec<Value> {
+    pub fn handle(&mut self, mut input: Value) -> Vec<Value> {
+        if input["type"] == "prepare_action" {
+            input["type"] = json!("start");
+            input["config"]["channel"] = input["channel_id"].clone();
+            input["config"]["read_chat"] = json!("false");
+            input["config"]["read_audience"] = json!("false");
+        }
+
         if input["type"] == "stop" {
             *self = Self::default();
             self.stopped = true;

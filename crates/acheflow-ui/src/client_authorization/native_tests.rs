@@ -43,6 +43,7 @@ fn app() -> Element {
         extension_errors: use_signal(BTreeMap::new),
         busy: use_signal(|| false),
         sync_conflict: use_signal(|| false),
+        request_generation: use_signal(|| 0),
     };
     use_context_provider(|| Rc::new(acheflow_client::catalog::ClientCatalog::bundled()));
     let page = use_signal(|| "Overview");

@@ -3,6 +3,7 @@ use std::{error::Error, time::Duration};
 
 use axum::{Router, routing::get};
 use tower_http::services::ServeDir;
+mod access;
 mod assets;
 mod audio_input;
 mod audio_mixer;
@@ -31,13 +32,16 @@ mod native_activation;
 mod output;
 #[cfg(test)]
 mod pipeline_tests;
+mod providers;
 mod rtmp;
+mod server_workspace;
 mod settings;
 mod tls;
 mod traffic;
 #[cfg(test)]
 mod visual_source_tests;
 mod workspace_extensions;
+mod workspace_store;
 
 pub use tokio_util::sync::CancellationToken as Shutdown;
 
@@ -75,6 +79,8 @@ async fn serve(
         native_activation::Launch::HandedOff => return Ok(()),
     };
     let cors = browser_access::from_env()?;
+    let access_path = args.config.with_extension("access.json");
+    let workspace_path = args.config.with_extension("workspace.json");
     let settings = settings::SettingsState::from_args(args)?;
     let config = &settings.active;
     let http_tls = tls::load(&config.http_tls)?;
@@ -111,6 +117,12 @@ async fn serve(
         std::sync::Arc::new(tokio::sync::Mutex::new(capabilities));
     let runtime = live::Runtime::new(media_state.clone(), rtmp_listener.local_addr()?.to_string());
     let control_host = control::ControlHost::new(runtime.clone());
+    let access = access::Access::open(access_path, control_host.clone())?;
+    control_host.providers.set_server(&access.server_id())?;
+    runtime.attach_store(workspace_store::Store::open(
+        workspace_path,
+        &access.server_id(),
+    )?)?;
     let native_task = receiver.map(|receiver| tokio::spawn(receiver.run(control_host.clone())));
     let mcp_host = control_host.clone();
     let mcp_task = tokio::spawn(async move {
@@ -130,7 +142,7 @@ async fn serve(
             axum::routing::post(control::command),
         )
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
-        .with_state(control_host);
+        .with_state(control_host.clone());
     runtime
         .rtmp_tls
         .store(rtmp_tls.is_some(), std::sync::atomic::Ordering::Relaxed);
@@ -181,10 +193,17 @@ async fn serve(
         .merge(live_routes)
         .merge(control_routes)
         .merge(workspace_routes)
+        .merge(server_workspace::routes(control_host.clone()))
+        .merge(
+            access
+                .routes()
+                .layer(axum::extract::DefaultBodyLimit::max(16 * 1024)),
+        )
         .layer(cors)
         .merge(settings_routes)
         .fallback_service(ServeDir::new(web_root).append_index_html_on_directories(true))
         .layer(axum::middleware::from_fn(diagnostics::requests));
+    let app = access.protect(app);
     let rtmp_runtime = runtime.clone();
     let rtmp_task = tokio::spawn(async move {
         if let Err(error) = rtmp::serve(rtmp_listener, rtmp_runtime, rtmp_tls).await {
@@ -208,15 +227,16 @@ async fn serve(
         axum_server::from_tcp(listener)?
             .acceptor(axum_server::tls_openssl::OpenSSLAcceptor::new(tls))
             .handle(handle)
-            .serve(app.into_make_service())
+            .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
             .await
     } else {
         axum_server::from_tcp(listener)?
             .handle(handle)
-            .serve(app.into_make_service())
+            .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
             .await
     };
     shutdown_task.abort();
+    control_host.providers.suspend(&control_host).await;
     runtime.close().await;
     if let Some(task) = native_task {
         let _ = task.await;

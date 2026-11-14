@@ -1,6 +1,8 @@
+mod personal_chat;
 use crate::{
     control_client::ControlClient,
     live_client::{Action, LiveClient},
+    server_settings::ActionButton,
 };
 use acheflow_client::catalog::ClientCatalog;
 use acheflow_extension_api::interaction::{CommandRule, PollRequest};
@@ -14,9 +16,9 @@ pub fn Notice() -> Element {
     let live = use_context::<LiveClient>();
     rsx! {
         if let Some(error)=client.error.read().as_ref(){p{class:"field-error",role:"alert","{error}"}}
-        if (client.sync_conflict)() {
+        if (client.sync_conflict)() && try_consume_context::<crate::workspace_sync::WorkspaceSync>().is_none() {
             div{class:"panel-note row",
-                button{disabled:(client.busy)() || (live.busy)(),onclick:move |_|client.resolve_sync_conflict(true),"Use server settings"}
+                button{disabled:(client.busy)() || (live.busy)(),onclick:move |_|client.resolve_sync_conflict(true),"Use server workspace"}
                 button{disabled:(client.busy)() || (live.busy)(),onclick:move |_|client.resolve_sync_conflict(false),"Keep local edits"}
             }
         }
@@ -91,20 +93,46 @@ fn date(ms: u64) -> String {
 struct ChatDraft {
     text: Signal<String>,
     targets: Signal<Vec<String>>,
+    personal_mode: Signal<bool>,
+    personal_pending: Signal<
+        Option<(
+            String,
+            acheflow_media_api::personal_account::SendPersonalChat,
+        )>,
+    >,
 }
 
 pub fn use_chat_draft(project: Signal<crate::project::Workspace>) {
     let mut text = use_signal(String::new);
     let mut targets = use_signal(Vec::new);
-    use_context_provider(|| ChatDraft { text, targets });
+    let mut personal_mode = use_signal(|| false);
+    let mut personal_pending = use_signal(|| None);
+    use_context_provider(|| ChatDraft {
+        text,
+        targets,
+        personal_mode,
+        personal_pending,
+    });
+    let access = try_consume_context::<crate::server_access::AccessState>();
     let identity = use_memo(move || {
         let workspace = project.read();
-        (workspace.id.clone(), workspace.server_url.clone())
+        (
+            workspace.id.clone(),
+            workspace.server_url.clone(),
+            access.and_then(|a| {
+                a.session
+                    .read()
+                    .as_ref()
+                    .map(|s| (s.server_id.clone(), s.user.id.clone()))
+            }),
+        )
     });
     use_effect(move || {
         let _ = identity();
         text.set(String::new());
         targets.set(Vec::new());
+        personal_mode.set(false);
+        personal_pending.set(None);
     });
 }
 
@@ -148,6 +176,8 @@ pub fn ChatPanel() -> Element {
     let ChatDraft {
         mut text,
         mut targets,
+        personal_mode: mut personal,
+        personal_pending,
     } = use_context::<ChatDraft>();
     let state = client
         .state
@@ -199,6 +229,8 @@ pub fn ChatPanel() -> Element {
                     }
                 }
             }
+            div{class:"chat-sender row",role:"group","aria-label":"Sender account",span{"Send as"}ActionButton{class:if !personal(){"selected"}else{""},pressed:Some(!personal()),disabled:personal_pending.read().is_some(),onclick:move |_|personal.set(false),"Studio account"}ActionButton{class:if personal(){"selected"}else{""},pressed:Some(personal()),onclick:move |_|personal.set(true),"My account"}}
+            if personal(){personal_chat::Composer{channels:channels.clone(),text}}else{
             div{class:"chat-compose",
                 div{class:"chat-compose-input",input{"aria-label":"Message",placeholder:if can_send{"Write a message…"}else{"No selected channel can send"},disabled:!can_send,maxlength:8192,value:"{text}",oninput:move|e|text.set(e.value())}
                     button{class:"primary",disabled:(client.busy)() || !can_send || text().trim().is_empty(),onclick:move |_|{client.command(ControlAction::SendChat{targets:targets(),text:text()});text.set(String::new());},"Send"}
@@ -222,6 +254,7 @@ pub fn ChatPanel() -> Element {
                         }
                     }
                 }
+            }
             }
         }
     }
@@ -370,9 +403,9 @@ pub fn ExtensionsPage() -> Element {
     };
     let server = crate::media::server_url(&workspace, "").unwrap_or_else(|e| e);
     rsx! {
-        div {class:"page-heading",div {h1 {"Extensions"}p {"Client integrations and server logic for this workspace."}}}
+        div {class:"page-heading",div {h1 {"Extensions"}p {"Integrations and logic for this workspace."}}}
         nav{class:"subnav extension-scope-tabs",role:"tablist","aria-label":"Extension scope",
-            for (index,label) in [(0,"Client"),(1,"Server")] {
+            for (index,label) in [(0,"Accounts"),(1,"Studio")] {
                 button{class:if scope()==index{"selected"}else{""},role:"tab",id:if index==0{"extensions-tab-client"}else{"extensions-tab-server"},
                     "aria-selected":(scope()==index).to_string(),"aria-controls":if index==0{"extensions-panel-client"}else{"extensions-panel-server"},tabindex:if scope()==index{0}else{-1},
                     onmounted:move |e|handles.write()[index]=e.data().downcast::<NodeHandle>().cloned(),
@@ -394,7 +427,7 @@ pub fn ExtensionsPage() -> Element {
         }
         section{class:"extension-scope-panel",id:"extensions-panel-client",role:"tabpanel","aria-labelledby":"extensions-tab-client",hidden:scope()!=0,tabindex:0,
             p{class:"form-help extension-scope-context","{client_label} · {workspace.name}"}
-            p{class:"form-help","Installed in this client. Accounts and credentials stay on the executor."}
+            p{class:"form-help","Connect a platform for studio chat or use your own account for messages."}
             for error in &local.errors {p{class:"field-error","{error}"}}
             if local.installed.is_empty() {p{class:"form-help","No integrations are installed in this client."}}
             for (id,installed) in &local.installed {
@@ -404,6 +437,7 @@ pub fn ExtensionsPage() -> Element {
         section{class:"extension-scope-panel",id:"extensions-panel-server",role:"tabpanel","aria-labelledby":"extensions-tab-server",hidden:scope()!=1,tabindex:0,
             p{class:"form-help extension-scope-context","Server: {server}"}
             Notice {}
+            ServerProviders {}
             if client.state.read().is_none(){p{class:"form-help","Connecting to the selected server…"}}
             if client.state.read().is_some() && extensions.is_empty() {p{class:"form-help","No logic extensions are installed on this server."}}
             for status in extensions {
@@ -412,6 +446,34 @@ pub fn ExtensionsPage() -> Element {
             WorkspaceCapabilities {}
         }
     }
+}
+
+#[component]
+fn ServerProviders() -> Element {
+    let client = use_context::<ControlClient>();
+    let providers: Vec<_> = client
+        .state
+        .read()
+        .as_ref()
+        .map(|s| {
+            s.server_providers
+                .iter()
+                .filter(|p| p.server_owned)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    if providers.is_empty() {
+        return rsx! {};
+    }
+    rsx! {section {class:"panel server-providers",div {class:"panel-heading",div {h2 {"Server integrations"}p {class:"form-help","These channels are managed by the server, independently of this client."}}}
+        div {class:"padded",for provider in providers {
+            div {key:"{provider.provider}",class:"server-provider row",strong {"{provider.name}"}
+                span {class:"badge",match provider.state.as_str(){"running"=>"Connected","needs_authorization"=>"Account authorization required","not_authorized"=>"Channel permission required","reconnecting"=>"Reconnecting","failed"=>"Unavailable","stopped"=>"Stopped",_=>"Connecting"}}
+                if let Some(channel)=provider.channel_id {span {class:"form-help","Channel: {channel}"}}
+            }
+        }}
+    }}
 }
 
 fn select_extension_scope(
@@ -548,6 +610,7 @@ pub(crate) fn ExtensionSetting(
 
 #[component]
 fn ClientIntegrationCard(id: String, name: String) -> Element {
+    let mut personal = use_signal(|| false);
     let mut client = use_context::<ControlClient>();
     let catalog = use_context::<Rc<ClientCatalog>>();
     let manifest = &catalog.installed[&id].manifest;
@@ -566,13 +629,16 @@ fn ClientIntegrationCard(id: String, name: String) -> Element {
             s.client_executors
                 .iter()
                 .any(|e| e.connections.iter().any(|c| c.provider == id))
+                || s.server_providers
+                    .iter()
+                    .any(|p| p.provider == id && p.state == "running")
         });
     let toggle_id = id.clone();
     let key_id = id.clone();
     rsx! {
         section{class:if enabled{"panel extension-card enabled client-integration"}else{"panel extension-card client-integration"},
             div{class:"panel-heading",
-                div{class:"extension-identity",h2{"{name}"}if enabled{span{class:"badge",if connected{"Executor connected"}else{"Executor not connected"}}}}
+                div{class:"extension-identity",h2{"{name}"}if enabled{span{class:"badge",if personal(){"Personal account"}else if connected{"Chat connected"}else{"Not connected"}}}}
                 button{class:if enabled{"extension-toggle selected"}else{"extension-toggle"},role:"switch","aria-label":"Enable {name} locally for this workspace","aria-checked":enabled.to_string(),"aria-expanded":enabled.to_string(),"aria-controls":"client-extension-{id}",
                     onclick:move |_|{client.project.write().client_extensions.entry(toggle_id.clone()).or_default().enabled = !enabled;},
                     onkeydown:move |event|{if event.key()==Key::Named(NamedKey::Enter)||event.key()==Key::Character(" ".into()){event.prevent_default();client.project.write().client_extensions.entry(key_id.clone()).or_default().enabled = !enabled;}},
@@ -582,8 +648,15 @@ fn ClientIntegrationCard(id: String, name: String) -> Element {
             if enabled{div{class:"padded extension-settings",id:"client-extension-{id}",
                 div{class:"extension-fields",for setting in manifest.settings.iter().filter(|s|!s.secret && !s.toggle && !manifest.application_setup.as_ref().is_some_and(|setup|setup.settings.contains(&s.id))).cloned(){ExtensionSetting{key:"{setting.id}",extension:id.clone(),setting,local:true}}}
                 div{class:"extension-functions",for setting in manifest.settings.iter().filter(|s|!s.secret && s.toggle).cloned(){ExtensionSetting{key:"{setting.id}",extension:id.clone(),setting,local:true}}}
-                crate::client_authorization::ClientAuthorization{key:"{client.project.read().id}:{id}",id:id.clone(),name:name.clone()}
-                {client_execution_panel(id.clone())}
+                div {class:"account-purpose",id:format!("account-purpose-{id}"),span {"Use this connection for"}
+                    div {class:"row",role:"group","aria-label":"Account purpose",
+                        crate::server_settings::ActionButton {class:if !personal(){"selected"}else{""},pressed:Some(!personal()),onclick:move |_|personal.set(false),"Studio chat"}
+                        crate::server_settings::ActionButton {class:if personal(){"selected"}else{""},pressed:Some(personal()),onclick:move |_|personal.set(true),"My messages"}
+                    }
+                    p {class:"form-help",if personal(){"Use your own account for sending. This does not open another chat connection."}else{"Connect once to receive chat in this studio."}}
+                }
+                crate::client_authorization::ClientAuthorization{personal:personal(),key:"{client.project.read().id}:{id}",id:id.clone(),name:name.clone()}
+                if !personal() {{client_execution_panel(id.clone())}}
             }}
         }
     }
@@ -660,6 +733,6 @@ fn client_execution_panel(id: String) -> Element {
     #[cfg(target_arch = "wasm32")]
     {
         let _ = id;
-        rsx! {p{class:"form-help","Continuous live chat is available in the desktop client."}}
+        rsx! {p{class:"form-help","Server connections keep shared chat running while this browser is closed."}}
     }
 }

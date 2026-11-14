@@ -21,6 +21,7 @@ pub fn dashboard() -> Element {
     let mut page = use_signal(|| "Overview");
     let (project, mut catalog, storage_status) = use_workspaces();
     crate::server_settings::provide(project, catalog);
+    crate::server_access::provide(project);
     let effects = use_signal(|| catalog.peek().background_animation());
     use_effect(move || {
         let enabled = effects();
@@ -31,11 +32,13 @@ pub fn dashboard() -> Element {
     let workspace_open = use_signal(|| false);
     let live = use_live_client(project);
     let control = crate::control_client::use_control_client(project);
+    let sync = crate::workspace_sync::provide(project, catalog, control);
     crate::diagnostics::observe(live, control);
     crate::interaction::use_chat_draft(project);
     #[cfg(not(target_arch = "wasm32"))]
     let activation_notice = crate::native_activation::provide(project, page);
     rsx! {
+        {mobile_input_mount()}
         style {{include_str!("dashboard.css")}}
         div {class:"app",
             aside {class:"sidebar",
@@ -48,7 +51,7 @@ pub fn dashboard() -> Element {
                     }
                 }}
                 div {class:"sidebar-footer",
-                    div {class:"local-badge",span {class:"status-dot"}"Local workspace"}
+                    div {class:"local-badge",span {class:"status-dot"}if (sync.following)(){if (sync.ready)(){"Server workspace"}else{"Connecting to workspace"}}else{"Local draft"}}
                     p {class:"sidebar-backend","{backend}"}
                     p {class:"app-version","v{APP_VERSION}"}
                 }
@@ -60,6 +63,7 @@ pub fn dashboard() -> Element {
                 )}
                 if effects(){SparksBackground {backend}}
                 Workspaces {project,catalog,storage_status,open:workspace_open}
+                crate::workspace_sync::Notice {}
                 div {class:if live.running(){"workspace-body with-live-chat"}else{"workspace-body"},
                 div {class:"tab-viewport",for tab in ["Overview","Live","Extensions","Settings"] {
                     div {key:"{tab}",class:if page()==tab{"tab-scroll active"}else{"tab-scroll"},"aria-hidden":if page()==tab{"false"}else{"true"},
@@ -114,6 +118,7 @@ pub(crate) fn GeneralSettings(
         div {class:"page-heading",div {h1 {"Settings"}p {"Server connection, desktop behavior and appearance."}}}
         nav {class:"settings-tabs","aria-label":"Settings sections",
             crate::diagnostics::TabButton {id:"settings-general",selected:section()=="General",label:"General",onclick:move |_|section.set("General")}
+            crate::diagnostics::TabButton {id:"settings-access",selected:section()=="Access",label:"Device access",onclick:move |_|section.set("Access")}
             crate::diagnostics::TabButton {id:"settings-logs",selected:section()=="Logs",label:"Logs",onclick:move |_|section.set("Logs")}
         }
         div {style:if section()=="General"{""}else{"display:none"},
@@ -130,6 +135,7 @@ pub(crate) fn GeneralSettings(
             div {class:"padded",p {"Version {APP_VERSION}"}}
         }
         }
+        if section()=="Access" {crate::server_access::Panel {project}}
         if section()=="Logs" {crate::diagnostics::LogsPanel {project}}
     }
 }
@@ -141,4 +147,15 @@ fn Stat(title: &'static str, value: String, detail: &'static str) -> Element {
 fn SparksBackground(backend: Signal<String>) -> Element {
     let sparks = use_hook(move || CustomWidgetAttr::new(SparksWidget::new(backend)));
     rsx! {object {class:"sparks","data":sparks}}
+}
+
+fn mobile_input_mount() -> Element {
+    #[cfg(target_arch = "wasm32")]
+    {
+        rsx! {crate::mobile_input::Mount {}}
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        rsx! {}
+    }
 }

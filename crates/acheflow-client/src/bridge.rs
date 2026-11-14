@@ -1,4 +1,4 @@
-//! Authenticated MCP connection. Only typed domain DTOs can leave this adapter.
+//! Typed executor bridge for authenticated HTTP/MCP or a trusted in-process host.
 use crate::runtime::ProviderRuntime;
 use acheflow_extension_api::client_execution::*;
 use rmcp::{
@@ -54,13 +54,13 @@ impl ExecutorConnection {
         }
         Ok(Self {
             service: None,
-            studio: Some((crate::transport::client()?, endpoint, workspace, client_id)),
+            studio: Some((crate::access::client()?, endpoint, workspace, client_id)),
         })
     }
     pub async fn request(&self, request: ExecutorRequest) -> Result<Value, String> {
         if let Some((http, endpoint, workspace, client_id)) = &self.studio {
-            let mut response = http
-                .post(endpoint)
+            let mut response = crate::access::authorize(http.post(endpoint), endpoint)?
+                .header("x-acheflow-request", "1")
                 .timeout(std::time::Duration::from_secs(10))
                 .json(&acheflow_media_api::control::StudioExecutorRequest {
                     workspace_id: workspace.clone(),
@@ -112,6 +112,58 @@ impl ExecutorConnection {
         result
             .structured_content
             .ok_or_else(|| "executor response has no structured result".into())
+    }
+    pub async fn heartbeat(&self, runtime: &ProviderRuntime) -> Result<ExecutorStatus, String> {
+        Executor(self).heartbeat(runtime).await
+    }
+    pub async fn publish(&self, runtime: &ProviderRuntime, output: &[Value]) -> Result<(), String> {
+        Executor(self).publish(runtime, output).await
+    }
+    pub async fn execute_pending(
+        &self,
+        runtime: &mut ProviderRuntime,
+        now: u64,
+    ) -> Result<usize, String> {
+        Executor(self).execute_pending(runtime, now).await
+    }
+    pub async fn disconnect(self, generation: u64) -> Result<(), String> {
+        let result = self
+            .request(ExecutorRequest::Unregister { generation })
+            .await;
+        if let Some(service) = self.service {
+            let _ = service.cancel().await;
+        }
+        result.map(|_| ())
+    }
+}
+
+/// A trusted host can use the same typed bridge in-process without loopback HTTP.
+pub trait ExecutorTransport: Sync {
+    fn request(
+        &self,
+        request: ExecutorRequest,
+    ) -> impl std::future::Future<Output = Result<Value, String>> + Send;
+}
+impl ExecutorTransport for ExecutorConnection {
+    fn request(
+        &self,
+        request: ExecutorRequest,
+    ) -> impl std::future::Future<Output = Result<Value, String>> + Send {
+        ExecutorConnection::request(self, request)
+    }
+}
+impl<T: ExecutorTransport> ExecutorTransport for &T {
+    fn request(
+        &self,
+        request: ExecutorRequest,
+    ) -> impl std::future::Future<Output = Result<Value, String>> + Send {
+        T::request(self, request)
+    }
+}
+pub struct Executor<T>(pub T);
+impl<T: ExecutorTransport> Executor<T> {
+    async fn request(&self, request: ExecutorRequest) -> Result<Value, String> {
+        self.0.request(request).await
     }
     pub async fn heartbeat(&self, runtime: &ProviderRuntime) -> Result<ExecutorStatus, String> {
         let identity = runtime.identity();
@@ -198,14 +250,5 @@ impl ExecutorConnection {
             self.publish(runtime, &output).await?;
         }
         Ok(count)
-    }
-    pub async fn disconnect(self, generation: u64) -> Result<(), String> {
-        let result = self
-            .request(ExecutorRequest::Unregister { generation })
-            .await;
-        if let Some(service) = self.service {
-            let _ = service.cancel().await;
-        }
-        result.map(|_| ())
     }
 }

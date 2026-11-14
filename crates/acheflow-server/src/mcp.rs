@@ -146,7 +146,7 @@ impl ServerHandler for Mcp {
             .into());
         }
         let result = match request.name.as_ref() {
-            "acheflow_state" => Ok(self.host.snapshot(
+            "acheflow_state" => Ok(self.visible_snapshot(
                 arguments["after"].as_u64().unwrap_or(0),
                 arguments["limit"].as_u64().unwrap_or(100).min(200) as usize,
             )),
@@ -162,6 +162,36 @@ impl ServerHandler for Mcp {
             Ok(snapshot)=>CallToolResult::structured(serde_json::to_value(snapshot).map_err(|_|ErrorData::internal_error("state serialization failed",None))?),
             Err(message)=>CallToolResult::structured_error(json!({"error":{"code":message.split(':').next().unwrap_or("invalid_argument"),"message":message}})),
         }.into())
+    }
+}
+impl Mcp {
+    fn visible_snapshot(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> acheflow_media_api::control::ControlSnapshot {
+        let snapshot = self.host.snapshot(after, limit);
+        if !self.read_only {
+            return snapshot;
+        }
+        use acheflow_media_api::access::{Device, Permission as P, Session};
+        crate::access::Principal(Session {
+            user: acheflow_media_api::access::User {
+                id: "fixture-user".into(),
+                name: "Fixture".into(),
+            },
+            server_id: "mcp".into(),
+            device: Device {
+                user_id: "fixture-user".into(),
+                id: "mcp-reader".into(),
+                name: "MCP reader".into(),
+                permissions: [P::StudioView, P::InteractiveView, P::ChatRead]
+                    .into_iter()
+                    .collect(),
+                expires_at_ms: u64::MAX,
+            },
+        })
+        .snapshot(snapshot)
     }
 }
 #[derive(Clone)]
@@ -277,6 +307,47 @@ pub async fn serve(host: Arc<ControlHost>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reader_snapshots_do_not_expose_operator_settings_or_panels() {
+        let (host, _) = crate::control::tests::host();
+        host.runtime
+            .workspace
+            .write()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .extensions
+            .insert(
+                "fixture".into(),
+                acheflow_media_api::workspace::ExtensionSettings {
+                    enabled: true,
+                    config: std::collections::BTreeMap::from([(
+                        "private-setting".into(),
+                        "fixture".into(),
+                    )]),
+                },
+            );
+        let operator = Mcp {
+            host: host.clone(),
+            read_only: false,
+            executor: None,
+        };
+        assert!(
+            !operator
+                .visible_snapshot(0, 1)
+                .extension_settings
+                .is_empty()
+        );
+        let reader = Mcp {
+            host,
+            read_only: true,
+            executor: None,
+        };
+        let snapshot = reader.visible_snapshot(0, 1);
+        assert!(snapshot.extension_settings.is_empty());
+        assert!(snapshot.panels.is_empty());
+        assert!(snapshot.client_capabilities.is_empty());
+    }
     use rmcp::{
         ServiceExt,
         transport::{

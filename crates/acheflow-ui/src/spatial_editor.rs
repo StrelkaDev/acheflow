@@ -19,6 +19,15 @@ pub fn SpatialEditor(mut project: Signal<Workspace>, scene_id: u32, children: El
         .map(|s| project.read().stream(s.orientation).base.height)
         .unwrap_or(1080);
     let mut view = use_signal(|| crate::spatial_view::EditorView::new(height as f32));
+    let mut visited = use_signal(std::collections::HashSet::<u64>::new);
+    use_effect(move || {
+        if let Some(id) = view.read().selected
+            && id != 0
+            && !visited.peek().contains(&id)
+        {
+            visited.write().insert(id);
+        }
+    });
     let mut preview = use_signal(|| false);
     let mut content = use_signal(|| false);
     let workspace = project.read();
@@ -71,22 +80,24 @@ pub fn SpatialEditor(mut project: Signal<Workspace>, scene_id: u32, children: El
                     div{class:"hierarchy-title",strong{"Scene collection"}span{"{spatial.objects.len()} objects"}}
                     button{class:if selected==Some(0){"hierarchy-item selected"}else{"hierarchy-item"},onclick:move |_|view.write().selected=Some(0),span{class:"object-type","CAM"}span{"Camera"}small{"Active"}}
                     for object in &spatial.objects {button{key:"{object.id}",class:if selected==Some(object.id){"hierarchy-item selected"}else{"hierarchy-item"},onclick:{let id=object.id;move |_|view.write().selected=Some(id)},span{class:"object-type",match object.kind{ObjectKind::Viewport{..}=>"VP",_=>"MESH"}}span{"{object.name}"}if !object.visible{small{"Hidden"}}}}
-                    div{class:"hierarchy-add",span{"Add object"}for kind in ["Viewport","Plane","Cube"]{button{disabled:spatial.objects.len()>=32,onclick:{let base=base.clone();move |_|{
-                        let mut p=project.write();let Some(scene)=p.scenes.iter_mut().find(|s|s.id==scene_id)else{return;};let layers=scene.layers.clone();let Some(s)=scene.spatial.as_mut()else{return;};if s.objects.len()>=32{return;}
+                    div{class:"hierarchy-add",span{"Add object"}button{disabled:spatial.objects.len()>=32 || project.read().sources.len()>=8,onclick:move |_|{if let Some(id)=add_chat_object(&mut project.write(),scene_id){view.write().selected=Some(id);}},"+ Chat"}for kind in ["Viewport","Plane","Cube"]{button{disabled:spatial.objects.len()>=32,onclick:{let base=base.clone();move |_|{
+                        let mut p=project.write();let Some(scene)=p.scenes.iter_mut().find(|s|s.id==scene_id)else{return;};let layers=vec![];let Some(s)=scene.spatial.as_mut()else{return;};if s.objects.len()>=32{return;}
                         let id=crate::project::new_entity_id();let (kind_data,scale)=match kind{"Viewport"=>(ObjectKind::Viewport{primary:false,canvas:base.clone(),layers},[base.width as f32/2.,base.height as f32/2.,1.]),"Plane"=>(ObjectKind::Plane{color:[0.9,0.3,0.05,1.]},[200.,200.,1.]),_=>(ObjectKind::Cube{color:[0.9,0.3,0.05,1.]},[150.;3])};
                         let transform=Transform{position:[0.,0.,100.],scale,..Default::default()};s.objects.push(SceneObject{id,name:format!("{kind} {}",s.objects.len()+1),visible:true,transform:transform.clone(),kind:kind_data});
                         let mut v=view.write();v.selected=Some(id);v.frame(&transform);
                     }},"+ {kind}"}}}
                 }
             }
-            section{class:"spatial-inspector","aria-label":"Selected object inspector",
+        }
+            section{class:"spatial-inspector",style:if preview(){"display:none"}else{"display:block"},"aria-label":"Selected object inspector",
                 div{class:"inspector-heading",strong{"Inspector"}span{{if selected==Some(0){"Camera · Active".to_owned()}else{current.as_ref().map(|o|o.name.clone()).unwrap_or_else(||"No selection".into())}}}}
                 if selected==Some(0){CameraInspector{key:"camera-{scene_id}",project,scene_id,camera:spatial.camera.clone(),canvas_height:base.height as f32}}
-                else if let Some(object)=current {ObjectInspector{key:"object-{object.id}",project,scene_id,object}}
-                else{p{class:"padded form-help","Select an object in the view or scene collection."}}
+                for object in spatial.objects.iter().filter(|o|visited.read().contains(&o.id)).cloned(){
+                    div{key:"object-{object.id}",style:if selected==Some(object.id){"display:block"}else{"display:none"},ObjectInspector{project,scene_id,object:object.clone()}}
+                }
+                if selected.is_none(){p{class:"padded form-help","Select an object in the view or scene collection."}}
                 if primary {div{class:"inspector-content-toggle",button{class:if content(){"selected"}else{""},onclick:move |_|{let open=content();content.set(!open);},if content(){"Close viewport content"}else{"Edit viewport content"}}span{class:"form-help","Layers, sources, crop, CSS and effects belong to this viewport."}}}
             }
-        }
         // Keep viewport code editors mounted so switching mode/object keeps drafts.
         div{class:"viewport-content-editor",style:if primary && content() && !preview(){"display:block"}else{"display:none"},{children}}
     }}
@@ -124,7 +135,13 @@ fn ObjectInspector(project: Signal<Workspace>, scene_id: u32, object: SceneObjec
         }
         match &object.kind {
             ObjectKind::Viewport{primary:true,..}=>rsx!{},
-            ObjectKind::Viewport{..}=>rsx!{ViewportLayers{project,scene_id,object_id:id}},
+            ObjectKind::Viewport{canvas,..}=>rsx!{
+                div{class:"form-grid",
+                    crate::live::NumberField{label:"Viewport canvas width",value:canvas.width,min:16,max:(3840*2160/canvas.height.max(1)).min(7680),step:2,change:move|v|edit_object(project,scene_id,id,|o|if let ObjectKind::Viewport{canvas,..}=&mut o.kind{canvas.width=v;})}
+                    crate::live::NumberField{label:"Viewport canvas height",value:canvas.height,min:16,max:(3840*2160/canvas.width.max(1)).min(7680),step:2,change:move|v|edit_object(project,scene_id,id,|o|if let ObjectKind::Viewport{canvas,..}=&mut o.kind{canvas.height=v;})}
+                }
+                ViewportLayers{project,scene_id,object_id:id}
+            },
             ObjectKind::Plane{color}|ObjectKind::Cube{color}=>rsx!{div{class:"material-properties",VectorInput{label:"Color RGB",value:[color[0],color[1],color[2]],change:move|v:[f32;3]|edit_object(project,scene_id,id,|o|match &mut o.kind{ObjectKind::Plane{color}|ObjectKind::Cube{color}=>color[..3].copy_from_slice(&v.map(|n|n.clamp(0.,1.))),_=>{}})}}},
         }
     }}
@@ -208,29 +225,146 @@ fn VectorInput(label: &'static str, value: [f32; 3], change: EventHandler<[f32; 
 }
 #[component]
 fn ViewportLayers(mut project: Signal<Workspace>, scene_id: u32, object_id: u64) -> Element {
+    let mut selection = use_signal(|| {
+        project
+            .peek()
+            .scenes
+            .iter()
+            .find(|s| s.id == scene_id)
+            .and_then(|s| s.spatial.as_ref())
+            .and_then(|s| s.objects.iter().find(|o| o.id == object_id))
+            .and_then(|o| match &o.kind {
+                ObjectKind::Viewport { layers, .. } => layers.first().map(|l| l.id),
+                _ => None,
+            })
+    });
     let workspace = project.read();
     let sources = workspace.sources.clone();
-    let layers = workspace
+    let Some(object) = workspace
         .scenes
         .iter()
         .find(|s| s.id == scene_id)
         .and_then(|s| s.spatial.as_ref())
         .and_then(|s| s.objects.iter().find(|o| o.id == object_id))
-        .and_then(|o| match &o.kind {
-            ObjectKind::Viewport { layers, .. } => Some(layers.clone()),
-            _ => None,
-        })
-        .unwrap_or_default();
-    drop(workspace);
-    rsx! {div{class:"viewport-layers",h3{"Viewport content"}
+    else {
+        return rsx! {};
+    };
+    let ObjectKind::Viewport { canvas, .. } = &object.kind else {
+        return rsx! {};
+    };
+    rsx! {div{class:"viewport-layers",
+        h3{"Content · {object.name}"}
+        p{class:"form-help","Editing this viewport only · {canvas.width} × {canvas.height} canvas pixels. Object position and scale place the entire viewport in the scene; layer CSS places its content."}
         div{class:"row",for source in sources{button{onclick:move |_|{
             let mut p=project.write();let Some(index)=p.scenes.iter().position(|s|s.id==scene_id) else{return;};
-            p.add_layer(scene_id,source.id);let Some(layer)=p.scenes[index].layers.pop() else{return;};
-            if let Some(ObjectKind::Viewport{layers,..})=p.scenes[index].spatial.as_mut().and_then(|s|s.objects.iter_mut().find(|o|o.id==object_id)).map(|o|&mut o.kind){layers.push(layer);}
+            let before=p.scenes[index].layers.len();p.add_layer(scene_id,source.id);if p.scenes[index].layers.len()==before{return;}
+            let Some(layer)=p.scenes[index].layers.pop() else{return;};let id=layer.id;
+            if let Some(ObjectKind::Viewport{layers,..})=p.scenes[index].spatial.as_mut().and_then(|s|s.objects.iter_mut().find(|o|o.id==object_id)).map(|o|&mut o.kind){layers.push(layer);selection.set(Some(id));}
         },"+ {source.name}"}}}
-        for layer in layers {div{key:"{layer.id}",class:"viewport-layer",strong{"Source {layer.source_id}"}
-            label{class:"field",span{"CSS"}textarea{class:"viewport-css",value:"{layer.css}",rows:5,oninput:move|e|edit_object(project,scene_id,object_id,|o|if let ObjectKind::Viewport{layers,..}=&mut o.kind && let Some(layer)=layers.iter_mut().find(|l|l.id==layer.id){layer.css=e.value();})}}
-            button{onclick:move |_|edit_object(project,scene_id,object_id,|o|if let ObjectKind::Viewport{layers,..}=&mut o.kind{layers.retain(|l|l.id!=layer.id);}),"Remove layer"}
-        }}
+        crate::layer_editor::LayerEditor{project,scene_id,selection,viewport_id:Some(object_id)}
     }}
+}
+
+fn add_chat_object(workspace: &mut Workspace, scene_id: u32) -> Option<u64> {
+    let scene = workspace.scenes.iter().find(|s| s.id == scene_id)?;
+    let spatial = scene.spatial.as_ref()?;
+    let viewports = spatial
+        .objects
+        .iter()
+        .filter(|o| matches!(o.kind, ObjectKind::Viewport { .. }))
+        .count();
+    if spatial.objects.len() >= 32 || viewports >= 8 || workspace.sources.len() >= 8 {
+        return None;
+    }
+    workspace.add_source();
+    let source = workspace.sources.last_mut()?;
+    source.name = "Chat".into();
+    source.kind = acheflow_media_api::visual::SourceKind::Chat(Default::default());
+    source.url.clear();
+    source.key.clear();
+    source.resolution = crate::project::Resolution {
+        width: 420,
+        height: 720,
+    };
+    let source_id = source.id;
+    let scene = workspace.scenes.iter_mut().find(|s| s.id == scene_id)?;
+    let id = crate::project::new_entity_id();
+    scene.spatial.as_mut()?.objects.push(SceneObject {
+        id,
+        name: "Chat".into(),
+        visible: true,
+        transform: Transform {
+            position: [0., 0., 100.],
+            scale: [420., 720., 1.],
+            ..Default::default()
+        },
+        kind: ObjectKind::Viewport {
+            primary: false,
+            canvas: crate::project::Resolution {
+                width: 420,
+                height: 720,
+            },
+            layers: vec![acheflow_media_api::workspace::Layer {
+                source_id,
+                width: 420,
+                height: 720,
+                ..Default::default()
+            }],
+        },
+    });
+    Some(id)
+}
+
+#[cfg(test)]
+mod chat_object_tests {
+    use super::*;
+    #[test]
+    fn chat_object_has_independent_content_and_roundtrips() {
+        let mut workspace = Workspace::default();
+        let scene = workspace.add_scene(crate::project::Orientation::Horizontal);
+        workspace.migrate_spatial();
+        let original = workspace.scenes[0].layers.clone();
+        let id = add_chat_object(&mut workspace, scene).unwrap();
+        let object = workspace.scenes[0]
+            .spatial
+            .as_ref()
+            .unwrap()
+            .objects
+            .iter()
+            .find(|o| o.id == id)
+            .unwrap();
+        let ObjectKind::Viewport {
+            primary,
+            canvas,
+            layers,
+        } = &object.kind
+        else {
+            panic!("chat viewport missing")
+        };
+        assert!(!primary);
+        assert_eq!(canvas.width, 420);
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].source_id, workspace.sources[0].id);
+        assert!(matches!(
+            workspace.sources[0].kind,
+            acheflow_media_api::visual::SourceKind::Chat(_)
+        ));
+        assert_eq!(workspace.scenes[0].layers, original);
+        workspace.validate().unwrap();
+        let restored: Workspace =
+            serde_json::from_str(&serde_json::to_string(&workspace).unwrap()).unwrap();
+        assert_eq!(restored, workspace);
+    }
+    #[test]
+    fn failed_chat_creation_leaves_workspace_unchanged() {
+        let mut workspace = Workspace::default();
+        let scene = workspace.add_scene(crate::project::Orientation::Horizontal);
+        workspace.migrate_spatial();
+        for _ in 0..8 {
+            workspace.add_source();
+        }
+        let before = workspace.clone();
+        assert!(add_chat_object(&mut workspace, scene).is_none());
+        assert_eq!(workspace, before);
+    }
 }

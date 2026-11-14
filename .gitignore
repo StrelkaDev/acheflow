@@ -8,6 +8,11 @@
 /.repowise/
 /acheflow-server.json
 /acheflow-server.json.tmp
+*.access.json
+*.access.lock
+*.access.*.tmp
+*.workspace.json
+*.workspace.*.tmp
 *.pem
 *.key
 

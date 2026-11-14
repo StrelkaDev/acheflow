@@ -30,6 +30,11 @@ fn app() -> Element {
         logs: use_signal(Vec::new),
     };
     use_context_provider(|| state);
+    let access = crate::server_access::AccessState {
+        session: use_signal(|| None),
+        error: use_signal(String::new),
+    };
+    use_context_provider(|| access);
     use_context_provider(|| Some(Arc::new(LocalServer::new().unwrap())));
     let project = use_signal(|| Workspace {
         server_url: "https://remote.example".into(),
@@ -83,6 +88,57 @@ fn focus(doc: &mut DioxusDocument, selector: &str) {
         .unwrap()
         .unwrap();
     doc.inner.borrow_mut().set_focus_to(id);
+}
+
+#[tokio::test]
+async fn device_access_opens_from_its_own_tab_with_keyboard_and_masks_invitation() {
+    let harness = Rc::new(Harness::default());
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(app).with_root_context(harness),
+        DocumentConfig {
+            font_ctx: Some(dioxus_native::build_single_font_ctx(include_bytes!(
+                "../../assets/DejaVuSans.woff2"
+            ))),
+            ..Default::default()
+        },
+    );
+    doc.initial_build();
+    doc.inner.borrow_mut().set_viewport(Viewport {
+        window_size: (1000, 1000),
+        ..Default::default()
+    });
+    settle(&mut doc);
+    assert!(!exists(&doc, ".access-connect-card"));
+    focus(&mut doc, "#settings-access");
+    press(&mut doc, Key::Named(NamedKey::Enter), Code::Enter);
+    assert!(exists(&doc, ".access-connect-card"));
+    assert!(exists(&doc, ".access-connect-form input[type='password']"));
+    assert!(exists(&doc, "#access-connect[disabled]"));
+    doc.inner.borrow_mut().set_viewport(Viewport {
+        window_size: (390, 844),
+        ..Default::default()
+    });
+    settle(&mut doc);
+    {
+        let document = doc.inner.borrow();
+        for selector in [
+            ".access-connect-card",
+            ".access-connect-form input[type='password']",
+            "#access-connect",
+        ] {
+            let id = document.query_selector(selector).unwrap().unwrap();
+            let node = document.get_node(id).unwrap();
+            let left = node.absolute_position(0., 0.).x;
+            let right = left + node.final_layout().size.width;
+            assert!(
+                left >= 0. && right <= 390.,
+                "{selector} exceeds the mobile viewport: {left}..{right}"
+            );
+        }
+    }
+    focus(&mut doc, "#settings-general");
+    press(&mut doc, Key::Character(" ".into()), Code::Space);
+    assert!(!exists(&doc, ".access-connect-card"));
 }
 
 #[tokio::test]

@@ -11,8 +11,8 @@ pub struct Discovery {
     pub installed: BTreeMap<String, Installed>,
     pub errors: Vec<String>,
 }
-pub fn discover() -> BTreeMap<String, Installed> {
-    let root = std::env::var_os("ACHEFLOW_EXTENSIONS_DIR")
+pub(crate) fn root() -> std::path::PathBuf {
+    std::env::var_os("ACHEFLOW_EXTENSIONS_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             let local = std::path::PathBuf::from("extensions");
@@ -32,8 +32,10 @@ pub fn discover() -> BTreeMap<String, Installed> {
                     })
                     .unwrap_or(local)
             }
-        });
-    discover_at(&root)
+        })
+}
+pub fn discover() -> BTreeMap<String, Installed> {
+    discover_at(&root())
 }
 pub fn discover_at(root: &Path) -> BTreeMap<String, Installed> {
     let discovery = discover_catalog_at(root);

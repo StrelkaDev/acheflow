@@ -35,6 +35,8 @@ pub struct Runtime {
     pub rtmp_address: String,
     pub rtmp_tls: std::sync::atomic::AtomicBool,
     pub shutdown: CancellationToken,
+    pub activated: std::sync::atomic::AtomicBool,
+    saved: Mutex<(u64, Option<crate::workspace_store::Store>)>,
 }
 
 impl Runtime {
@@ -50,6 +52,8 @@ impl Runtime {
             rtmp_address,
             rtmp_tls: std::sync::atomic::AtomicBool::new(false),
             shutdown: CancellationToken::new(),
+            activated: std::sync::atomic::AtomicBool::new(false),
+            saved: Mutex::new((0, None)),
         })
     }
 
@@ -75,6 +79,7 @@ impl Runtime {
             .map(RunningFormat::status)
             .collect();
         LiveStatus {
+            activated: self.activated.load(Ordering::Acquire),
             edit_revision: self
                 .workspace
                 .read()
@@ -90,88 +95,138 @@ impl Runtime {
         }
     }
 
-    async fn apply(&self, mut workspace: Workspace) -> Result<(), String> {
+    pub fn attach_store(&self, store: crate::workspace_store::Store) -> Result<(), String> {
+        let (revision, workspace) = store.load()?;
+        let mut current = self.workspace.write().unwrap();
+        *current = workspace;
+        *self.saved.lock().unwrap() = (revision, Some(store));
+        let mut random = [0; 8];
+        openssl::rand::rand_bytes(&mut random)
+            .map_err(|_| "Cannot establish server control generation.")?;
+        self.control_revision.store(
+            u64::from_le_bytes(random) & ((1u64 << 52) - 1),
+            Ordering::Release,
+        );
+        self.activated.store(false, Ordering::Release);
+        Ok(())
+    }
+    fn revision_for(&self, current: &Option<Workspace>) -> u64 {
+        self.saved
+            .lock()
+            .unwrap()
+            .0
+            .max(current.as_ref().map(|w| w.edit_revision).unwrap_or(0))
+    }
+    pub fn saved_state(&self) -> (u64, Option<Workspace>) {
+        let current = self.workspace.read().unwrap();
+        (self.revision_for(&current), current.clone())
+    }
+    fn commit(
+        &self,
+        current: &mut Option<Workspace>,
+        mut next: Option<Workspace>,
+    ) -> Result<(), String> {
+        let mut saved = self.saved.lock().unwrap();
+        let revision = saved
+            .0
+            .max(current.as_ref().map(|w| w.edit_revision).unwrap_or(0))
+            .checked_add(1)
+            .ok_or("Workspace revision exhausted.")?;
+        if let Some(workspace) = &mut next {
+            workspace.edit_revision = revision;
+            workspace.server_url.clear();
+        }
+        if let Some(store) = &saved.1 {
+            store.save(revision, next.as_ref())?;
+        }
+        saved.0 = revision;
+        *current = next;
+        self.control_revision.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+    pub fn update_workspace(
+        &self,
+        owner: &str,
+        update: impl FnOnce(&mut Workspace) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut current = self.workspace.write().unwrap();
+        let mut next = current
+            .as_ref()
+            .filter(|w| w.id == owner)
+            .cloned()
+            .ok_or("conflict: workspace changed")?;
+        update(&mut next)?;
+        validate(&next)?;
+        self.commit(&mut current, Some(next))
+    }
+    pub(crate) async fn install(
+        &self,
+        mut workspace: Workspace,
+        activate: bool,
+    ) -> Result<(), String> {
         workspace.migrate_spatial();
         validate(&workspace)?;
-        if let Some(old) =
-            self.workspace.read().unwrap().as_ref().filter(|old| {
-                old.id == workspace.id && old.edit_revision != workspace.edit_revision
-            })
-        {
-            if old.extensions != workspace.extensions
-                || old.client_capabilities != workspace.client_capabilities
-            {
-                return Err("Workspace extension settings or capabilities changed remotely. Refresh or resolve the conflict before applying.".into());
-            }
-            if old.scenes.iter().any(|before| {
-                workspace
-                    .scenes
-                    .iter()
-                    .find(|s| s.id == before.id)
-                    .is_none_or(|after| after.spatial != before.spatial)
-            }) {
+        let formats = self.formats.lock().await;
+        let mut current = self.workspace.write().unwrap();
+        if workspace.edit_revision != self.revision_for(&current) {
+            return Err("conflict: Workspace changed on the server. Refresh or explicitly resolve your local edits before applying.".into());
+        }
+        if !formats.is_empty() {
+            let old = current
+                .as_ref()
+                .ok_or("conflict: another workspace is running")?;
+            if !activate || old.id != workspace.id {
                 return Err(
-                    "The 3D scene changed remotely. Refresh before applying this workspace.".into(),
+                    "conflict: Stop streaming before replacing the server workspace.".into(),
                 );
             }
-        }
-        {
-            let formats = self.formats.lock().await;
-            if !formats.is_empty() {
-                let old = self.workspace.read().unwrap();
-                if let Some(old) = old.as_ref() {
-                    if old.id != workspace.id {
-                        return Err(
-                            "Another workspace is running. Stop it before switching.".into()
-                        );
-                    }
-                    for format in formats.iter() {
-                        if !old.same_output_profile(&workspace, format.orientation) {
-                            return Err("Stop streaming before changing resolution, FPS or outputs. Scene layers, mixers and audio routes can be changed live.".into());
-                        }
-                    }
+            for format in formats.iter() {
+                if !old.same_output_profile(&workspace, format.orientation) {
+                    return Err("Stop streaming before changing resolution, FPS or outputs. Scene layers, mixers and audio routes can be changed live.".into());
                 }
             }
         }
         let mut inputs = self.inputs.lock().unwrap();
-        if self
-            .workspace
-            .read()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|old| old.id != workspace.id)
-        {
-            if inputs
+        let switching = current.as_ref().is_some_and(|old| old.id != workspace.id);
+        if (!activate || switching)
+            && inputs
                 .values()
                 .any(|input| input.connected.load(Ordering::Acquire))
-            {
-                return Err("Another workspace has connected publishers. Deactivate its sources before switching.".into());
-            }
-            for input in inputs.values() {
-                input.disconnect();
-            }
-            inputs.clear();
+        {
+            return Err(
+                "conflict: Deactivate connected sources before replacing the server workspace."
+                    .into(),
+            );
         }
+        // Publish neither the new configuration nor input cancellations until saving succeeds.
+        self.commit(&mut current, Some(workspace))?;
+        let workspace = current.as_ref().unwrap();
         inputs.retain(|id, input| {
-            let keep = workspace.sources.iter().any(|s| {
-                s.kind.is_rtmp()
-                    && s.id == *id
-                    && s.key == input.config.key
-                    && s.url == input.config.url
-            });
+            let keep = activate
+                && !switching
+                && workspace.sources.iter().any(|s| {
+                    s.kind.is_rtmp()
+                        && s.id == *id
+                        && s.key == input.config.key
+                        && s.url == input.config.url
+                });
             if !keep {
                 input.disconnect();
             }
             keep
         });
-        for source in workspace.sources.iter().filter(|s| s.kind.is_rtmp()) {
-            inputs
-                .entry(source.id)
-                .or_insert_with(|| Arc::new(Input::new(source.clone())));
+        if activate {
+            for source in workspace.sources.iter().filter(|s| s.kind.is_rtmp()) {
+                inputs
+                    .entry(source.id)
+                    .or_insert_with(|| Arc::new(Input::new(source.clone())));
+            }
         }
-        workspace.edit_revision = self.control_revision.fetch_add(1, Ordering::AcqRel) + 1;
-        *self.workspace.write().unwrap() = Some(workspace);
+        self.activated.store(activate, Ordering::Release);
         Ok(())
+    }
+    async fn apply(&self, workspace: Workspace) -> Result<(), String> {
+        self.install(workspace, true).await
     }
 
     pub fn authorize(
@@ -221,7 +276,7 @@ impl Runtime {
     }
 }
 
-fn validate(workspace: &Workspace) -> Result<(), String> {
+pub(crate) fn validate(workspace: &Workspace) -> Result<(), String> {
     let mut layout = workspace.clone();
     layout.horizontal.outputs.clear();
     layout.vertical.outputs.clear();
@@ -306,7 +361,16 @@ fn validate_outputs(
 }
 
 fn invalid(error: String) -> (StatusCode, Json<ApiError>) {
-    (StatusCode::UNPROCESSABLE_ENTITY, Json(ApiError { error }))
+    (
+        if error.starts_with("conflict:") {
+            StatusCode::CONFLICT
+        } else if error.contains("save workspace") {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::UNPROCESSABLE_ENTITY
+        },
+        Json(ApiError { error }),
+    )
 }
 
 pub async fn status(State(runtime): State<RuntimeState>) -> Json<LiveStatus> {
@@ -434,7 +498,8 @@ pub async fn deactivate(
             input.disconnect();
         }
         inputs.clear();
-        *runtime.workspace.write().unwrap() = None;
+        runtime.activated.store(false, Ordering::Release);
+        runtime.control_revision.fetch_add(1, Ordering::AcqRel);
     }
     Ok(Json(runtime.status().await))
 }
@@ -582,6 +647,7 @@ mod tests {
             width: 64,
             height: 64,
         };
+        workspace.edit_revision = runtime.saved_state().0;
         runtime.apply(workspace).await.unwrap();
         assert!(Arc::ptr_eq(&input, &runtime.inputs.lock().unwrap()[&1]));
     }

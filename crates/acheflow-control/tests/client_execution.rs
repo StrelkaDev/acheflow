@@ -551,3 +551,43 @@ fn client_provider_identities_cannot_impersonate_host_roles() {
     }
     assert_eq!(registry.connections("workspace", 1001).len(), 2);
 }
+
+#[test]
+fn explicitly_retired_host_actors_release_capacity_without_erasing_uncertain_intents() {
+    let mut registry = setup();
+    assert!(!registry.forget_retired("workspace", "client-a", 1001));
+    registry
+        .enqueue(
+            "workspace",
+            intent("1000:retired", "client-a", 1, "hello", 5000),
+            1001,
+        )
+        .unwrap();
+    assert_eq!(
+        registry
+            .claim("workspace", "client-a", 1, 1, 1001)
+            .unwrap()
+            .len(),
+        1
+    );
+    registry
+        .unregister("workspace", "client-a", 1, 1002)
+        .unwrap();
+    assert!(registry.forget_retired("workspace", "client-a", 1002));
+    assert_eq!(
+        registry.instructions("workspace", 1002)[0].state,
+        InstructionState::Unknown
+    );
+    for n in 0..100 {
+        let actor = format!("retired-host-{n}");
+        registry
+            .register("workspace", &actor, registration("alpha", 1), 1003)
+            .unwrap();
+        registry.unregister("workspace", &actor, 1, 1003).unwrap();
+        assert!(registry.forget_retired("workspace", &actor, 1003));
+    }
+    assert_eq!(
+        registry.instructions("workspace", 1004)[0].state,
+        InstructionState::Unknown
+    );
+}

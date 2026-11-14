@@ -2,6 +2,11 @@
 
 ## Status
 
+The target credential/execution ownership is superseded by
+[ADR-003](003-trusted-server-workspace.md). The client-only boundary below describes the original decision. Explicit trusted
+server provider execution is now available; local authorization and personal account
+migration remain separate. Pure server logic still has no provider I/O or secrets.
+
 Accepted. The server boundary, native client/MCP libraries and provider-owned local
 account panels are implemented. Continuous studio executor integration remains
 unfinished; see [current boundaries](../client-executor.md).

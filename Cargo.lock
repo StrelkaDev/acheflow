@@ -141,6 +141,7 @@ dependencies = [
  "naga 30.0.1",
  "serde",
  "serde_json",
+ "sha2",
  "url",
 ]
 
@@ -157,6 +158,7 @@ dependencies = [
  "axum",
  "axum-server",
  "clap",
+ "futures-util",
  "image",
  "openssl",
  "reqwest",

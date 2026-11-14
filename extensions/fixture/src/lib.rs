@@ -22,11 +22,30 @@ impl Fixture {
                 json!({"type":"chat","message":{"platform":origin,"channel_id":"channel","message_id":format!("{origin}:{}",self.events),"user_id":"loop","display_name":"Loop","text":"loop","roles":[],"occurred_at_ms":now}}),
             ];
         }
+        if input["config"]["server_authorization_fixture"] == "true" && input["type"] == "local_server_authorize" {
+            return vec![json!({"type":"secret_commit","keep":["access_token"]}), json!({"type":"storage","value":{"account":"verified-bot"}})];
+        }
+        if input["type"] == "prepare_action" && input["config"]["action_prepare_write"] == "true" {
+            return vec![json!({"type":"http","method":"POST","id":"forbidden","url":"https://provider.invalid/write"})];
+        }
+        if input["type"] == "prepare_action" && input["config"]["action_prepare_stream"] == "true" {
+            return vec![json!({"type":"websocket","id":"forbidden","url":"wss://provider.invalid/stream"})];
+        }
+        if input["type"] == "prepare_action" { return vec![json!({"type":"channel","channel":{"id":input["channel_id"],"capabilities":["chat.send"]}})]; }
         match input["type"].as_str().unwrap_or_default() {
+            "start" if input["config"]["server_fixture"] == "true" => vec![
+                json!({"type":"channel","channel":{"id":"channel","label":origin,"capabilities":["chat.read","chat.send"]}}),
+            ],
             "start" if input["config"]["studio_fixture"] == "true" => vec![
                 json!({"type":"channel","channel":{"id":"channel","label":origin,"capabilities":["chat.read"]}}),
             ],
-            "tick" if input["config"]["studio_fixture"] == "true" => {
+            "tick"
+                if input["config"]["studio_fixture"] == "true"
+                    || input["config"]["server_fixture"] == "true" =>
+            {
+                if input["config"]["server_auth_lost"] == "true" {
+                    return vec![json!({"type":"status","state":"needs_authorization"})];
+                }
                 self.events += 1;
                 vec![
                     json!({"type":"chat","message":{"platform":origin,"channel_id":"channel","message_id":format!("studio:{}",self.events),"user_id":"viewer","display_name":"Viewer","text":"Live fixture message","roles":[],"occurred_at_ms":now}}),

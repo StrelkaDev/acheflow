@@ -255,6 +255,19 @@ impl ExecutionRegistry {
         self.maintain(now);
         Ok(())
     }
+    /// Release a permanently retired host-owned actor after its independent
+    /// instance fence is revoked. Ordinary expiring client leases keep their
+    /// generation history; callers must never use this as a heartbeat shortcut.
+    pub fn forget_retired(&mut self, workspace: &str, actor: &str, now: u64) -> bool {
+        self.maintain(now);
+        let key = (workspace.into(), actor.into());
+        if self.clients.get(&key).is_some_and(|r| !r.active) {
+            self.clients.remove(&key);
+            true
+        } else {
+            false
+        }
+    }
     pub fn connections(&mut self, workspace: &str, now: u64) -> Vec<ExecutorStatus> {
         self.maintain(now);
         self.clients

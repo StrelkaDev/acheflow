@@ -206,6 +206,14 @@ async fn launch(
             endpoint: Some(endpoint),
             ..
         }) => {
+            if let Err(error) = directory().and_then(|directory| {
+                acheflow_client::access::attach_owned(
+                    &endpoint,
+                    &directory.join("acheflow-server.access.json"),
+                )
+            }) {
+                state.error.set(error);
+            }
             if local_endpoint_if_current(&project.peek(), &identity, preferences.http_port)
                 .is_some()
             {

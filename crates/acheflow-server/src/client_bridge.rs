@@ -10,6 +10,7 @@ use std::sync::Arc;
 /// bypass. Registration still intersects the saved workspace capability policy.
 pub async fn studio(
     axum::extract::State(host): axum::extract::State<Arc<ControlHost>>,
+    axum::Extension(principal): axum::Extension<crate::access::Principal>,
     axum::Json(request): axum::Json<acheflow_media_api::control::StudioExecutorRequest>,
 ) -> Result<axum::Json<Value>, (axum::http::StatusCode, axum::Json<Value>)> {
     let result = if !request.client_id.starts_with("studio-")
@@ -17,16 +18,24 @@ pub async fn studio(
     {
         Err("invalid_argument: invalid Studio client identity".into())
     } else {
-        call(
+        let requested = request.client_id.clone();
+        let actor = principal.executor_id(&requested);
+        let result = call(
             &host,
             &ExecutorCredential {
-                id: request.client_id,
+                id: actor,
                 workspace_id: request.workspace_id,
                 token: String::new(),
             },
             request.operation,
         )
-        .await
+        .await;
+        // The wire identity stays compatible with the local runtime's ledger;
+        // registry ownership is always namespaced by the authenticated device.
+        result.map(|mut value| {
+            restore_client_id(&mut value, &requested);
+            value
+        })
     };
     result.map(axum::Json).map_err(|message: String| {
         let status = if message.starts_with("conflict") {
@@ -38,6 +47,25 @@ pub async fn studio(
         };
         (status, axum::Json(json!({"error":{"message":message}})))
     })
+}
+
+fn restore_client_id(value: &mut Value, requested: &str) {
+    match value {
+        Value::Object(fields) => {
+            if fields.contains_key("client_id") {
+                fields.insert("client_id".into(), json!(requested));
+            }
+            for value in fields.values_mut() {
+                restore_client_id(value, requested);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                restore_client_id(value, requested);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -54,7 +82,43 @@ pub async fn call(
     actor: &ExecutorCredential,
     request: ExecutorRequest,
 ) -> Result<Value, String> {
+    call_inner(host, actor, request, None).await
+}
+pub(crate) async fn call_server(
+    host: &Arc<ControlHost>,
+    provider: &str,
+    actor: &ExecutorCredential,
+    request: ExecutorRequest,
+) -> Result<Value, String> {
+    call_inner(host, actor, request, Some(provider)).await
+}
+async fn call_inner(
+    host: &Arc<ControlHost>,
+    actor: &ExecutorCredential,
+    request: ExecutorRequest,
+    server_provider: Option<&str>,
+) -> Result<Value, String> {
     let _command = host.command_lock.lock().await;
+    if host.runtime.shutdown.is_cancelled() {
+        return Err("unavailable: server stopped".into());
+    }
+    if let Some(provider) = server_provider
+        && !host
+            .providers
+            .current(&actor.workspace_id, provider, &actor.id)
+    {
+        return Err("forbidden: server provider ownership changed".into());
+    }
+
+    if !host
+        .runtime
+        .activated
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(
+            "unavailable: activate the saved workspace before running client integrations".into(),
+        );
+    }
     if !host.owns(&actor.workspace_id) {
         return Err("conflict: executor workspace is not active".into());
     }
@@ -64,6 +128,21 @@ pub async fn call(
     match request {
         ExecutorRequest::Register { registration } => {
             for connection in &registration.connections {
+                if server_provider.is_none()
+                    && host
+                        .runtime
+                        .workspace
+                        .read()
+                        .unwrap()
+                        .as_ref()
+                        .is_some_and(|w| {
+                            w.server_integrations
+                                .get(&connection.provider)
+                                .is_some_and(|b| b.enabled && b.channel_id == connection.channel_id)
+                        })
+                {
+                    return Err("forbidden: this channel is collected by the server".into());
+                }
                 if host.installed.contains_key(&connection.provider) {
                     return Err("conflict: provider identity is reserved by server logic".into());
                 }
@@ -383,7 +462,25 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let app = axum::Router::new()
             .route("/api/control/executor", axum::routing::post(studio))
-            .with_state(host.clone());
+            .with_state(host.clone())
+            .layer(axum::Extension(crate::access::Principal(
+                acheflow_media_api::access::Session {
+                    user: acheflow_media_api::access::User {
+                        id: "fixture-user".into(),
+                        name: "Fixture".into(),
+                    },
+                    server_id: "fixture".into(),
+                    device: acheflow_media_api::access::Device {
+                        user_id: "fixture-user".into(),
+                        id: "bridge-fixture".into(),
+                        name: "Bridge fixture".into(),
+                        permissions: acheflow_media_api::access::Permission::ALL
+                            .into_iter()
+                            .collect(),
+                        expires_at_ms: u64::MAX,
+                    },
+                },
+            )));
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -409,6 +506,21 @@ mod tests {
         assert_eq!(state.client_executors.len(), 2);
         for id in ["alpha", "beta"] {
             assert!(state.chat.entries.iter().any(|e| e.message.platform==id && e.message.text=="Studio fixture message"));
+        }
+        host.execute(ControlRequest {
+            workspace_id: state.workspace_id.clone().unwrap(),
+            request_id: format!("{}:studio-fanout", now_ms()),
+            expected_revision: state.revision,
+            action: acheflow_media_api::control::ControlAction::SendChat {
+                targets: vec![],
+                text: "Device-bound Studio reply".into(),
+            },
+        })
+        .await
+        .unwrap();
+        for (bridge, (_, runtime)) in bridges.iter().zip(&mut clients) {
+            assert_eq!(bridge.execute_pending(runtime, now_ms()).await.unwrap(), 1);
+            assert_eq!(bridge.execute_pending(runtime, now_ms()).await.unwrap(), 0);
         }
         let wrong_workspace = ExecutorConnection::studio(
             endpoint.clone(),

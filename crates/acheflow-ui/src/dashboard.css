@@ -37,6 +37,98 @@ nav { display: flex; flex-direction: column; gap: 6px; }
 .app-version { font-size: 10px; }
 .effect-button { font-size: 11px; background: transparent; }
 .settings-row { display:flex; align-items:center; justify-content:space-between; gap:24px; flex-wrap:wrap; }
+.settings-tabs { display:flex; flex-direction:row; align-items:center; gap:5px; padding:5px; margin-bottom:24px; border:1px solid #2a3443; border-radius:10px; background:#111923; }
+.settings-tabs button { flex:1; padding:10px 12px; border:0; border-radius:6px; background:transparent; color:#8c9cb1; font-size:12px; }
+.settings-tabs button.selected { background:#263345; color:#e4edf9; }
+.access-page { max-width:1120px; padding-top:8px; }
+.access-intro { display:flex; align-items:center; justify-content:space-between; gap:20px; margin-bottom:24px; }
+.access-intro h2 { font-size:22px; letter-spacing:-0.4px; }
+.access-intro p { max-width:520px; font-size:13px; }
+.access-status { display:flex; align-items:center; gap:7px; white-space:nowrap; padding:7px 10px; border:1px solid #303744; border-radius:20px; color:#919cad; font-size:11px; }
+.access-status-dot { width:6px; height:6px; border-radius:50%; background:#697586; }
+.access-status.connected { color:#94c7ad; border-color:#2b463b; background:#14231e; }
+.access-status.connected .access-status-dot { background:#78bc98; }
+.access-current { display:flex; align-items:center; gap:14px; padding:17px 20px; margin-bottom:24px; border:1px solid #29313e; border-radius:12px; background:#121821; }
+.access-current strong { font-size:13px; }
+.access-current p { margin:3px 0 0; font-size:12px; }
+.access-device-icon,.access-device-avatar { display:flex; align-items:center; justify-content:center; flex:0 0 38px; height:38px; border:1px solid #303a49; border-radius:10px; background:#1c2532; color:#a2b0c3; font-size:22px; }
+.access-role-badge { padding:5px 9px; margin-left:auto; background:#222b38; border:1px solid #344155; border-radius:6px; color:#b8c9e3; white-space:nowrap; font-size:11px; }
+.access-layout { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(250px,0.8fr); align-items:start; gap:20px; }
+.access-card { min-width:0; overflow:hidden; border:1px solid #2c3442; border-radius:12px; background:#141b25; }
+.access-card-heading { padding:23px 24px 18px; }
+.access-card-heading h3 { font-size:18px; letter-spacing:-0.3px; }
+.access-card-heading p { font-size:12px; }
+.access-eyebrow { display:block; margin-bottom:9px; color:#7c8b9e; font-size:9px; letter-spacing:1.2px; }
+.access-role-list { padding:0 14px; }
+.access-role { display:flex; align-items:center; gap:13px; width:100%; padding:13px 12px; margin-bottom:4px; border:1px solid transparent; border-radius:8px; background:transparent; text-align:left; }
+.access-role:hover { background:#1b2533; }
+.access-role.selected { border-color:#88401d; background:#2a1e19; }
+.access-radio { flex:0 0 16px; height:16px; border:1px solid #566376; border-radius:50%; }
+.access-role.selected .access-radio { border:4px solid var(--accent); background:#17191f; }
+.access-role-copy { display:flex; flex-direction:column; gap:4px; }
+.access-role-copy strong { color:#e4e9f1; font-size:13px; font-weight:600; }
+.access-role-copy > span { color:#8f9bad; font-size:11px; line-height:1.5; }
+.access-role.selected .access-role-copy strong { color:#ffad7b; }
+.access-custom { margin:14px 24px 0; border-top:1px solid #2a3442; }
+.access-custom-toggle { display:flex; align-items:center; gap:12px; width:100%; padding:15px 0; border:0; background:transparent; text-align:left; color:#b6c2d3; font-size:12px; }
+.access-custom-toggle:hover { background:transparent; color:#e9edf5; }
+.access-custom-count { margin-left:auto; color:#78889e; font-size:10px; }
+.access-permissions { padding:0 0 12px; }
+.access-permission-group { margin:10px 0 16px; }
+.access-permission-group h4 { margin:0 0 8px; color:#8b9bb1; font-size:10px; font-weight:500; letter-spacing:0.5px; }
+.access-permission { display:flex; align-items:center; gap:9px; width:100%; min-height:34px; padding:6px 3px; border:0; background:transparent; color:#a8b4c6; text-align:left; font-size:11px; }
+.access-permission:hover { background:#1a2431; }
+.access-check { display:flex; align-items:center; justify-content:center; flex:0 0 16px; height:16px; border:1px solid #435067; border-radius:4px; color:#ffaf80; font-size:12px; }
+.access-permission.selected .access-check { border-color:#b34c18; background:#492610; }
+.access-invite-footer { padding:5px 24px 22px; }
+.access-invite-footer .primary,.access-copy { width:100%; padding:11px 16px; }
+.access-invite-footer p,.access-footnote { color:#75859a; font-size:10px; text-align:center; }
+.access-devices-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.access-device-count { padding:4px 8px; background:#202b3a; border-radius:6px; color:#a9bad2; font-size:11px; }
+.access-device-row { display:flex; align-items:center; gap:12px; padding:16px 20px; border-top:1px solid #252f3d; }
+.access-device-avatar { flex-basis:34px; height:34px; font-size:19px; border-radius:8px; }
+.access-device-copy { min-width:0; flex:1; }
+.access-device-copy strong { display:block; color:#d4dce8; font-size:12px; overflow-wrap:anywhere; }
+.access-device-copy p { margin:3px 0 0; font-size:10px; }
+.access-this-device { display:block; margin-top:5px; color:#7dac96; font-size:9px; }
+.access-revoke { padding:6px 8px; border:1px solid #3b414e; color:#a9a1a6; background:transparent; font-size:10px; }
+.access-revoke:hover { border-color:#815048; color:#e6a298; background:#302124; }
+.access-devices-note { padding:15px 20px; margin:0; border-top:1px solid #252f3d; color:#748398; font-size:10px; line-height:1.6; }
+.access-empty { padding:20px 24px 32px; text-align:center; }
+.access-empty-icon { display:block; margin-bottom:12px; color:#48596f; font-size:34px; }
+.access-empty h4 { margin:0; color:#bac7d8; font-size:13px; }
+.access-empty p { font-size:11px; }
+.access-text-button { border:0; background:transparent; color:#a2b1c5; padding:7px; font-size:11px; }
+.access-text-button:hover { background:transparent; color:#e9edf5; }
+.access-connect-card { max-width:600px; margin:12px auto 0; padding:8px 12px 24px; }
+.access-connect-card .access-card-heading { text-align:center; padding-top:23px; }
+.access-connect-icon { display:flex; align-items:center; justify-content:center; width:48px; height:48px; margin:0 auto 18px; border:1px solid #81411f; border-radius:14px; background:#302219; color:var(--accent-text); font-size:25px; }
+.access-connect-form { display:flex; flex-direction:column; gap:17px; padding:2px 24px 10px; }
+.access-connect-form .field { margin:0; }
+.access-connect-form input { width:100%; min-height:42px; }
+.access-connect-form .primary { min-height:42px; }
+.access-invitation-ready { padding:12px 24px 22px; text-align:center; }
+.access-ready-icon { display:flex; align-items:center; justify-content:center; width:42px; height:42px; margin:0 auto 14px; background:#1a3429; border:1px solid #39634f; border-radius:50%; color:#a1d6b7; font-size:22px; }
+.access-invitation-ready h4 { margin:0; color:#dce7f4; font-size:16px; }
+.access-invitation-ready > p { font-size:11px; }
+.access-invitation-code { display:flex; align-items:center; gap:8px; margin:20px 0 12px; }
+.access-invitation-code input { flex:1; min-width:0; width:100%; }
+.access-invitation-ready .access-footnote { margin:10px 0; }
+.access-error { padding:12px 16px; margin:0 0 20px; border:1px solid #704128; border-radius:8px; background:#2b211c; color:#f0b48b; font-size:12px; line-height:1.5; }
+@media (max-width:1100px) { .access-layout { grid-template-columns:minmax(0,1fr); } }
+@media (max-width:650px) { .access-intro { align-items:flex-start; flex-direction:column; gap:12px; } .access-current { flex-wrap:wrap; } .access-current .access-role-badge { margin-left:0; } .access-connect-form { padding-left:12px; padding-right:12px; } }
+@media (max-width:650px) {
+    .app { flex-direction:column; }
+    .app .sidebar { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; width:100%; padding:10px 16px; border-right:0; border-bottom:1px solid #252c38; }
+    .sidebar .brand { grid-column:1; margin:0; padding:0; font-size:20px; }
+    .sidebar .brand-mark { width:24px; height:30px; }
+    .sidebar .workspace-label,.sidebar .sidebar-footer { display:none; }
+    .sidebar .sidebar-workspaces { grid-column:2; margin:0; max-width:150px; }
+    .sidebar > nav { grid-column:1 / -1; display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:4px; }
+    .sidebar .nav-item { justify-content:center; padding:8px 3px; gap:5px; font-size:11px; }
+    .sidebar .nav-symbol { width:auto; font-size:14px; }
+    .app .content { padding:20px 16px; }
+}
 .content { position: relative; z-index: 1; max-width: 1280px; padding: 34px 36px 24px; margin: 0 auto; }
 .page-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 28px; }
 .badge, .count-badge { display: inline-block; border: 1px solid #343d4d; border-radius: 5px; padding: 5px 8px; color: #a7b1c2; font-size: 10px; background: #19212c; }
@@ -475,3 +567,31 @@ button.selected { background:var(--accent-surface); color:var(--accent-text); bo
 .chat-tooltip-text { display:none; position:absolute; z-index:20; bottom:100%; left:0; width:220px; max-width:70vw; padding:8px 10px; border:1px solid #394354; border-radius:4px; background:#171e29; color:#e4e9f0; font-size:12px; line-height:1.4; white-space:normal; pointer-events:none; box-shadow:0 4px 12px #0006; }
 .chat-tooltip:hover > .chat-tooltip-text, .chat-tooltip:focus-within > .chat-tooltip-text { display:block; }
 .chat-target-check { font-size:11px; }
+
+.workspace-sync-note { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin:12px 24px 0; padding:12px 16px; flex-shrink:0; }
+.workspace-sync-note span { flex:1 1 280px; }
+@media (max-width:650px) { .workspace-sync-note { margin:8px 12px 0; padding:10px; } }
+
+.access-identity { margin-bottom:24px; }
+.access-identity .access-connect-form { flex-direction:row; align-items:flex-end; max-width:560px; }
+.access-identity .access-connect-form .field { flex:1; min-width:0; }
+.access-identity .access-connect-form button { min-height:42px; white-space:nowrap; }
+.access-identity .access-invite-footer { max-width:420px; padding-top:16px; }
+.access-identity .access-invitation-ready { max-width:560px; }
+@media (max-width:650px) { .access-identity .access-connect-form { flex-direction:column; align-items:stretch; } }
+
+.server-account-connect { margin-top:20px; padding-top:20px; border-top:1px solid #303a49; }
+.server-account-connect h4 { margin:0 0 10px; font-size:14px; }
+.server-account-connect .field { max-width:480px; margin:14px 0; }
+.server-account-connect .primary { margin-top:12px; }
+.server-account-current { margin-top:16px; padding-top:12px; border-top:1px solid #303a49; }
+
+.chat-sender { padding:10px 16px 0; gap:6px; color:#8c9cb1; font-size:11px; }
+.chat-sender button { padding:5px 10px; font-size:11px; }
+.chat-sender button.selected { background:#2b1d16; border-color:#a24b25; color:#ffad7d; }
+.personal-chat-compose .field { margin:0 0 8px; }
+
+.account-purpose { margin:16px 0; padding:14px 0; border-top:1px solid #303a49; }
+.account-purpose > span { display:block; font-size:11px; color:#8c9cb1; margin-bottom:8px; }
+.account-purpose button { padding:8px 14px; }
+.account-purpose button.selected { border-color:#aa5127; background:#2b1d16; color:#ffad7d; }
