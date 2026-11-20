@@ -22,12 +22,20 @@ fn main() {
             "client manifest exceeds 64 KiB"
         );
         let value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        if value["execution_side"] != "client" {
-            continue;
-        }
+        let runtime = if let Some(parts) = value.get("parts") {
+            let Some(client) = parts.get("client").filter(|v| !v.is_null()) else {
+                continue;
+            };
+            client
+        } else {
+            if value["execution_side"] != "client" {
+                continue;
+            }
+            &value
+        };
         count += 1;
         assert!(count <= 8, "too many bundled client extensions");
-        let module = value["module"].as_str().unwrap();
+        let module = runtime["module"].as_str().unwrap();
         assert!(!module.contains(['/', '\\']) && module.ends_with(".wasm"));
         let module = path.parent().unwrap().join(module).canonicalize().unwrap();
         assert!(
@@ -39,7 +47,7 @@ fn main() {
             "client module exceeds 4 MiB"
         );
         println!("cargo:rerun-if-changed={}", module.display());
-        let browser_auth = if let Some(name) = value["authentication"]["browser_module"]
+        let browser_auth = if let Some(name) = runtime["authentication"]["browser_module"]
             .as_str()
             .filter(|s| !s.is_empty())
         {

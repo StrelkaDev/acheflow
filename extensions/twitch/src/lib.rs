@@ -8,6 +8,7 @@ pub struct Twitch {
     authorization: guest_sdk::authorization::Authorization,
     client_id: String,
     user: String,
+    action_channel: Option<String>,
     login: String,
     authed: bool,
     expires: u64,
@@ -91,7 +92,20 @@ impl Twitch {
             self.panel(),
         ]
     }
-    pub fn handle(&mut self, input: Value) -> Vec<Value> {
+    pub fn handle(&mut self, mut input: Value) -> Vec<Value> {
+        if input["type"] == "prepare_action" {
+            self.action_channel = input["channel_id"].as_str().map(str::to_owned);
+            input["type"] = json!("start");
+            input["config"]["read_chat"] = json!("false");
+            input["config"]["read_audience"] = json!("false");
+            input["config"]["manage_polls"] = json!("false");
+        }
+        if self.action_channel.is_some() {
+            input["config"]["read_chat"] = json!("false");
+            input["config"]["read_audience"] = json!("false");
+            input["config"]["manage_polls"] = json!("false");
+            input["config"]["send_chat"] = json!("true");
+        }
         if let Some(effects) = self
             .authorization
             .handle(&input, include_str!("../manifest.json"))
@@ -99,8 +113,8 @@ impl Twitch {
             return effects;
         }
         let now = input["now_ms"].as_u64().unwrap_or(0);
-        let manifest: Value =
-            serde_json::from_str(include_str!("../manifest.json")).expect("bundled manifest");
+        let manifest =
+            guest_sdk::authorization::manifest_for_input(&input, include_str!("../manifest.json"));
         let required_scopes =
             guest_sdk::authorization::scopes(&manifest, &input["config"]).join(" ");
         let read_chat = guest_sdk::authorization::enabled(&input["config"], "read_chat");
@@ -214,7 +228,7 @@ impl Twitch {
                     out.push(json!({"type":"storage","value":{"expires":self.expires}}));
                     let was_authed = self.authed;
                     self.authed = true;
-                    out.push(json!({"type":"channel","channel":{"id":self.user,"label":format!("Twitch / {}",self.login),"capabilities":([read_chat.then_some("chat.read"),read_audience.then_some("audience.read"),send_chat.then_some("chat.send"),manage_polls.then_some("poll.create")].into_iter().flatten().collect::<Vec<_>>()),"constraints":{"chat.max_chars":500,"poll.max_options":5,"poll.min_duration_seconds":15,"poll.max_duration_seconds":1800,"poll.max_question_chars":45,"poll.max_option_chars":25}}}));
+                    out.push(json!({"type":"channel","channel":{"id":self.action_channel.as_deref().unwrap_or(&self.user),"label":format!("Twitch / {}",self.login),"capabilities":([read_chat.then_some("chat.read"),read_audience.then_some("audience.read"),send_chat.then_some("chat.send"),manage_polls.then_some("poll.create")].into_iter().flatten().collect::<Vec<_>>()),"constraints":{"chat.max_chars":500,"poll.max_options":5,"poll.min_duration_seconds":15,"poll.max_duration_seconds":1800,"poll.max_question_chars":45,"poll.max_option_chars":25}}}));
                     out.push(self.panel());
                     if !was_authed && read_chat {
                         self.next_socket = 0;
@@ -464,3 +478,6 @@ impl Twitch {
     }
 }
 guest_sdk::export!(Twitch);
+
+guest_sdk::export_part!(client_handle, Twitch);
+guest_sdk::export_part!(server_handle, Twitch);

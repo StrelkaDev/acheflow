@@ -268,13 +268,7 @@ async fn command_permissions_are_enforced_before_execution_and_response_projecti
         None,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    assert!(
-        value(response).await["chat"]["entries"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let body = serde_json::json!({"workspace_id":"fixture","request_id":"fixture","expected_revision":0,"action":{"type":"set_extension","id":"fixture","enabled":true}});
     assert_eq!(
         call(
@@ -486,7 +480,7 @@ async fn executor_identity_is_device_bound_and_revocation_withdraws_its_registra
                     provider: "executor-fixture".into(),
                     account_id: "bot".into(),
                     channel_id: channel.into(),
-                    capabilities: [acheflow_extension_api::client_execution::Capability::ChatRead]
+                    capabilities: [acheflow_extension_api::client_execution::Capability::ChatSend]
                         .into_iter()
                         .collect(),
                 },
@@ -494,7 +488,7 @@ async fn executor_identity_is_device_bound_and_revocation_withdraws_its_registra
             .collect();
         saved.id.clone()
     };
-    let body = serde_json::json!({"workspace_id":workspace,"client_id":"studio-same","operation":{"type":"register","registration":{"version":1,"generation":1,"connections":[{"id":"fixture","provider":"executor-fixture","account_id":"bot","channel_id":"channel-a","capabilities":["chat.read"]}]}}});
+    let body = serde_json::json!({"workspace_id":workspace,"client_id":"studio-same","operation":{"type":"register","registration":{"version":1,"generation":1,"connections":[{"id":"fixture","provider":"executor-fixture","account_id":"bot","channel_id":"channel-a","capabilities":["chat.send"]}]}}});
     for (index, device) in [&first, &second].into_iter().enumerate() {
         let mut body = body.clone();
         body["operation"]["registration"]["connections"][0]["channel_id"] =

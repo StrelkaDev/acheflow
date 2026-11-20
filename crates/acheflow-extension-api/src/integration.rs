@@ -15,6 +15,8 @@ pub struct Setting {
     pub secret: bool,
     #[serde(default)]
     pub toggle: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<String>,
 }
 impl Default for Setting {
     fn default() -> Self {
@@ -25,6 +27,7 @@ impl Default for Setting {
             max_length: setting_limit(),
             secret: false,
             toggle: false,
+            default_value: None,
         }
     }
 }
@@ -49,10 +52,23 @@ pub struct GuestManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_presentation: Option<ChatPresentation>,
     pub api_version: u32,
+    #[serde(default)]
     pub module: String,
+    #[serde(default = "crate::parts::default_entry_point")]
+    pub entry_point: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<crate::parts::ExtensionParts>,
+    #[serde(skip)]
+    pub(crate) selected_host: Option<crate::parts::ExecutionHost>,
     #[serde(default)]
     pub execution_side: ExecutionSide,
+    #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supported_actions: Option<Vec<String>>,
+    #[serde(default)]
     pub services: Vec<String>,
     #[serde(default)]
     pub secret_fields: std::collections::BTreeMap<String, String>,
@@ -94,7 +110,30 @@ impl ChatPresentation {
     }
 }
 impl GuestManifest {
+    pub fn settings_config(
+        &self,
+        overrides: &std::collections::BTreeMap<String, String>,
+    ) -> std::collections::BTreeMap<String, String> {
+        let mut config: std::collections::BTreeMap<_, _> = self
+            .settings
+            .iter()
+            .filter_map(|s| s.default_value.clone().map(|v| (s.id.clone(), v)))
+            .collect();
+        config.extend(overrides.clone());
+        config
+    }
+
     pub fn validate(&self) -> Result<(), String> {
+        if self.parts.is_some() {
+            return crate::parts::validate_package(self);
+        }
+        if self.parts_version.is_some() {
+            return Err("parts_version requires declared extension parts".into());
+        }
+        if !crate::parts::valid_entry_point(&self.entry_point) {
+            return Err("invalid WASM entry point".into());
+        }
+        crate::parts::validate_actions(self.supported_actions.as_deref())?;
         if self.source_types.len() > 16
             || (!self.source_types.is_empty() && self.execution_side != ExecutionSide::Server)
         {
@@ -186,6 +225,12 @@ impl GuestManifest {
                 || !ids.insert(&setting.id)
                 || setting.label.len() > 128
                 || setting.help.len() > 1024
+                || setting.default_value.as_ref().is_some_and(|value| {
+                    setting.secret
+                        || value.len() > setting.max_length
+                        || value.chars().any(char::is_control)
+                        || (setting.toggle && !matches!(value.as_str(), "true" | "false"))
+                })
                 || !(1..=8192).contains(&setting.max_length)
             {
                 return Err("invalid extension setting".into());

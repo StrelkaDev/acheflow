@@ -15,11 +15,12 @@ pub enum Permission {
     InteractiveManage,
     ExtensionsConfigure,
     ExtensionsRun,
+    ExtensionsUpload,
     ExtensionsInstall,
     AccessManage,
 }
 impl Permission {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::StudioView,
         Self::InteractiveView,
         Self::ChatRead,
@@ -30,6 +31,7 @@ impl Permission {
         Self::InteractiveManage,
         Self::ExtensionsConfigure,
         Self::ExtensionsRun,
+        Self::ExtensionsUpload,
         Self::ExtensionsInstall,
         Self::AccessManage,
     ];
@@ -45,6 +47,7 @@ impl Permission {
             Self::InteractiveManage => "Control interactive",
             Self::ExtensionsConfigure => "Configure extensions",
             Self::ExtensionsRun => "Run extensions",
+            Self::ExtensionsUpload => "Upload extension packages",
             Self::ExtensionsInstall => "Install extensions",
             Self::AccessManage => "Manage device access",
         }

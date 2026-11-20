@@ -61,6 +61,17 @@ cargo test -p acheflow-composition --features headless --locked -- --ignored --n
 
 Some native credential tests use the OS vault and should run with isolated fixture
 records. A sandbox blocking local listeners cannot validate process/IPC tests.
+The production-server HTTPS integration can also be run directly:
+
+```sh
+cargo test -p acheflow-server --test shared_https --locked
+```
+
+It needs OpenSSL and local listeners. It creates an ephemeral test CA without
+installing system trust, then checks cookie pairing, device grants, revocation and
+restart recovery with two real fixture WASM collectors. It does not replace
+physical-device or live-provider authorization checks.
+
 Run affected checks after changes; reuse successful evidence only for unchanged
 code/dependencies/environment. Documentation-only edits need link, command, content
 and privacy checks rather than an unrelated media-suite rerun.

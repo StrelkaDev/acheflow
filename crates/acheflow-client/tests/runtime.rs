@@ -4,7 +4,14 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 fn runtime(id: &str, network: Option<String>) -> ProviderRuntime {
-    let manifest:GuestManifest=serde_json::from_value(json!({"id":id,"name":id,"api_version":2,"module":"fixture.wasm","execution_side":"client","capabilities":if network.is_some(){vec!["http"]}else{vec!["channel","chat","delivery","poll","donation","interaction"]},"services":network.iter().collect::<Vec<_>>(),"subscriptions":["chat.send"]})).unwrap();
+    runtime_with_actions(id, network, None)
+}
+fn runtime_with_actions(
+    id: &str,
+    network: Option<String>,
+    actions: Option<Vec<&str>>,
+) -> ProviderRuntime {
+    let manifest:GuestManifest=serde_json::from_value(json!({"id":id,"name":id,"api_version":2,"module":"fixture.wasm","execution_side":"client","capabilities":if network.is_some(){vec!["http"]}else{vec!["channel","chat","delivery","poll","donation","interaction"]},"services":network.iter().collect::<Vec<_>>(),"subscriptions":["chat.send"],"supported_actions":actions})).unwrap();
     let connection = Connection {
         id: "local".into(),
         provider: id.into(),
@@ -112,6 +119,10 @@ async fn real_provider_guests_keep_oauth_and_authorization_ui_on_the_client() {
             .join(id);
         let manifest: GuestManifest =
             serde_json::from_slice(&std::fs::read(root.join("manifest.json")).unwrap()).unwrap();
+        let manifest = manifest
+            .select_part(acheflow_extension_api::parts::ExecutionHost::Client)
+            .unwrap()
+            .unwrap();
         let module = std::fs::read(root.join(&manifest.module)).unwrap();
         let identity = Identity {
             workspace_id: "workspace".into(),
@@ -122,7 +133,7 @@ async fn real_provider_guests_keep_oauth_and_authorization_ui_on_the_client() {
                 provider: id.into(),
                 account_id: "bot".into(),
                 channel_id: "channel".into(),
-                capabilities: [Capability::ChatRead].into(),
+                capabilities: [Capability::ChatSend].into(),
             },
         };
         let mut runtime = ProviderRuntime::new(
@@ -148,5 +159,38 @@ async fn real_provider_guests_keep_oauth_and_authorization_ui_on_the_client() {
                 .iter()
                 .all(|e| e["type"] != "http" && e["type"] != "websocket")
         );
+    }
+}
+
+#[tokio::test]
+async fn a_part_cannot_execute_an_action_it_did_not_declare() {
+    for allowed in [vec![], vec!["chat.send"]] {
+        let mut runtime = runtime_with_actions("alpha", None, Some(allowed.clone()));
+        let claim = ClaimedInstruction {
+            lease: 1,
+            instruction: Instruction {
+                connection: runtime.identity().connection.clone(),
+                id: "1000:declared".into(),
+                request_id: None,
+                workspace_id: "workspace".into(),
+                client_id: "client".into(),
+                generation: 1,
+                connection_id: "local".into(),
+                action: ClientAction::SendChat {
+                    text: "hello".into(),
+                },
+                created_at_ms: 1000,
+                expires_at_ms: 2000,
+                state: InstructionState::InFlight,
+                external_id: None,
+            },
+        };
+        let (receipt, effects) = runtime.execute(claim, 1001).await.unwrap();
+        if allowed.is_empty() {
+            assert_eq!(receipt.outcome, ExecutionOutcome::Rejected);
+            assert!(effects.is_empty());
+        } else {
+            assert_eq!(receipt.outcome, ExecutionOutcome::Sent);
+        }
     }
 }

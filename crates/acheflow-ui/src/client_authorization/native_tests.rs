@@ -59,6 +59,7 @@ fn app() -> Element {
     });
     let signals = PanelSignals {
         client,
+        server: false,
         sessions: use_signal(Sessions::new),
         panel: use_signal(|| None),
         error,

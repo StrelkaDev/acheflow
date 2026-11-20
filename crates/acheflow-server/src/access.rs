@@ -1,6 +1,7 @@
 //! Device authentication is required even for requests arriving over loopback.
+mod direct_actions;
+mod packages;
 mod personal_accounts;
-mod personal_send;
 mod policy;
 mod registry;
 mod server_accounts;
@@ -27,7 +28,8 @@ pub(crate) struct Access {
     host: Arc<crate::control::ControlHost>,
     origins: BTreeSet<String>,
     account_checks: tokio::sync::Semaphore,
-    personal_sends: std::sync::Mutex<personal_send::Ledger>,
+    package_checks: Arc<tokio::sync::Semaphore>,
+    pub(crate) package_store: Arc<acheflow_client::package::Store>,
 }
 impl Access {
     pub fn server_id(&self) -> String {
@@ -37,6 +39,7 @@ impl Access {
         path: PathBuf,
         host: Arc<crate::control::ControlHost>,
     ) -> Result<Arc<Self>, String> {
+        let package_root = path.with_extension("packages");
         let registry = Registry::open(path).map_err(|e| e.1.to_owned())?;
         let origins = std::env::var("ACHEFLOW_UI_ORIGINS")
             .unwrap_or_default()
@@ -46,21 +49,49 @@ impl Access {
             .map(|v| url::Url::parse(v).map(|url| url.origin().ascii_serialization()))
             .collect::<Result<_, _>>()
             .map_err(|_| "Invalid UI origin.".to_owned())?;
+        let package_store = Arc::new(acheflow_client::package::Store::open(
+            package_root,
+            acheflow_extension_api::parts::ExecutionHost::Server,
+        )?);
+        for package in package_store.installed()? {
+            host.replace_package(package);
+        }
+        *host.packages.lock().unwrap() = Some(package_store.clone());
         Ok(Arc::new(Self {
             registry,
+            package_store,
+            package_checks: Arc::new(tokio::sync::Semaphore::new(1)),
             host,
             origins,
             account_checks: tokio::sync::Semaphore::new(2),
-            personal_sends: std::sync::Mutex::new(
-                personal_send::Ledger::new().map_err(|e| e.1.to_owned())?,
-            ),
         }))
     }
     pub fn routes(self: &Arc<Self>) -> Router {
         Router::new()
             .route(
+                "/api/extensions/server-providers",
+                get(server_accounts::catalog),
+            )
+            .route(
+                "/api/extensions/server-providers/{provider}/module",
+                get(server_accounts::module),
+            )
+            .route(
+                "/api/access/actions/authorize",
+                post(direct_actions::authorize),
+            )
+            .route("/api/extensions/packages", get(packages::list))
+            .route(
+                "/api/extensions/packages/stage",
+                post(packages::stage).layer(axum::extract::DefaultBodyLimit::max(
+                    acheflow_client::package::MAX_ARCHIVE_BYTES,
+                )),
+            )
+            .route("/api/extensions/packages/install", post(packages::install))
+            .route("/api/extensions/packages/allow", post(packages::allow))
+            .route(
                 "/api/access/personal-send/{workspace}/{provider}/{channel}",
-                post(personal_send::send),
+                post(personal_accounts::retired),
             )
             .route(
                 "/api/access/personal-accounts/{workspace}",
@@ -68,7 +99,7 @@ impl Access {
             )
             .route(
                 "/api/access/personal-accounts/{workspace}/{provider}",
-                post(personal_accounts::connect).delete(personal_accounts::disconnect),
+                post(personal_accounts::retired).delete(personal_accounts::disconnect),
             )
             .route("/api/access/pair", post(pair))
             .route("/api/access/session", get(session))
@@ -81,7 +112,10 @@ impl Access {
             .route("/api/access/logout", post(logout))
             .route(
                 "/api/access/server-accounts/{provider}",
-                post(server_accounts::connect).delete(server_accounts::disconnect),
+                get(server_accounts::settings)
+                    .post(server_accounts::connect)
+                    .put(server_accounts::configure)
+                    .delete(server_accounts::disconnect),
             )
             .with_state(self.clone())
     }
@@ -195,11 +229,37 @@ async fn authorize(
             .authenticate(&token, now())
             .ok_or(Error(401, "Device session is invalid or expired."))?,
     );
+    if mutation && path == "/api/extensions/packages/stage" {
+        if !principal.allows(P::ExtensionsUpload) {
+            return Err(Error(403, "This device cannot upload extension packages."));
+        }
+        let permit = access
+            .package_checks
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Error(429, "Another package operation is in progress."))?;
+        request.extensions_mut().insert(Arc::new(permit));
+    }
     let body = if mutation {
         let (parts, body) = request.into_parts();
-        let bytes = to_bytes(body, 1024 * 1024)
-            .await
-            .map_err(|_| Error(413, "Request exceeds limit."))?;
+        let limit = if path == "/api/extensions/packages/stage" {
+            if !principal.allows(P::ExtensionsUpload) {
+                return Err(Error(403, "This device cannot upload extension packages."));
+            }
+            acheflow_client::package::MAX_ARCHIVE_BYTES
+        } else {
+            1024 * 1024
+        };
+        let bytes = if path == "/api/extensions/packages/stage" {
+            tokio::time::timeout(std::time::Duration::from_secs(30), to_bytes(body, limit))
+                .await
+                .map_err(|_| Error(408, "Package upload timed out."))?
+                .map_err(|_| Error(413, "Request exceeds limit."))?
+        } else {
+            to_bytes(body, limit)
+                .await
+                .map_err(|_| Error(413, "Request exceeds limit."))?
+        };
         // A slow body must not carry an expired/revoked session into a handler.
         principal = Principal(
             access
@@ -213,6 +273,24 @@ async fn authorize(
         None
     };
     let allowed = match (request.method(), path.as_str()) {
+        (&Method::GET, "/api/extensions/server-providers") => {
+            principal.allows(P::ExtensionsConfigure)
+        }
+        (&Method::GET, path) if path.starts_with("/api/extensions/server-providers/") => {
+            principal.server_accounts()
+        }
+        (&Method::POST, "/api/access/actions/authorize") => principal.allows(P::ChatSend),
+        (&Method::GET, "/api/extensions/packages") => {
+            principal.any(&[P::ExtensionsUpload, P::ExtensionsInstall, P::ExtensionsRun])
+        }
+        (&Method::POST, "/api/extensions/packages/stage") => principal.allows(P::ExtensionsUpload),
+        (&Method::POST, "/api/extensions/packages/install") => {
+            principal.allows(P::ExtensionsInstall)
+        }
+        (&Method::POST, "/api/extensions/packages/allow") => principal.allows(P::ExtensionsRun),
+        (&Method::GET | &Method::PUT, path) if path.starts_with("/api/access/server-accounts/") => {
+            principal.allows(P::ExtensionsConfigure)
+        }
         (&Method::POST | &Method::DELETE, path)
             if path.starts_with("/api/access/server-accounts/") =>
         {

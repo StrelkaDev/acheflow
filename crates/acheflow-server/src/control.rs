@@ -53,18 +53,23 @@ pub struct ControlHost {
     pub extension_storage: Mutex<std::collections::BTreeMap<(String, String), Value>>,
     pub extension_owner: Mutex<Option<String>>,
     pub(crate) command_lock: AsyncMutex<()>,
-    pub installed: std::collections::BTreeMap<String, crate::extension_registry::Installed>,
+    pub installed:
+        std::sync::RwLock<std::collections::BTreeMap<String, crate::extension_registry::Installed>>,
     pub guests: AsyncMutex<std::collections::HashMap<String, crate::extension_host::Running>>,
     pub events: tokio::sync::broadcast::Sender<Value>,
-    pub provider_catalog: acheflow_client::catalog::ClientCatalog,
+    pub provider_catalog: std::sync::RwLock<acheflow_client::catalog::ClientCatalog>,
+    pub(crate) packages: std::sync::Mutex<Option<std::sync::Arc<acheflow_client::package::Store>>>,
     pub providers: crate::providers::Manager,
 }
 impl ControlHost {
     pub fn new(runtime: RuntimeState) -> Arc<Self> {
         let host = Arc::new(Self {
-            provider_catalog: acheflow_client::catalog::ClientCatalog::discover_at(
-                &crate::extension_registry::root(),
+            provider_catalog: std::sync::RwLock::new(
+                acheflow_client::catalog::ClientCatalog::discover_server_at(
+                    &crate::extension_registry::root(),
+                ),
             ),
+            packages: std::sync::Mutex::new(None),
             providers: Default::default(),
             runtime,
             client_execution: Mutex::new(Default::default()),
@@ -72,12 +77,56 @@ impl ControlHost {
             extension_storage: Mutex::new(Default::default()),
             extension_owner: Mutex::new(None),
             command_lock: AsyncMutex::new(()),
-            installed: crate::extension_registry::discover(),
+            installed: std::sync::RwLock::new(crate::extension_registry::discover()),
             guests: AsyncMutex::new(std::collections::HashMap::new()),
             events: tokio::sync::broadcast::channel(512).0,
         });
         *host.runtime.visual_services.write().unwrap() = Some(host.services.clone());
         host
+    }
+    pub fn installed_ids(&self) -> Vec<String> {
+        self.installed.read().unwrap().keys().cloned().collect()
+    }
+    pub fn extension(&self, id: &str) -> Option<crate::extension_registry::Installed> {
+        self.installed.read().unwrap().get(id).cloned()
+    }
+    pub fn provider(&self, id: &str) -> Option<acheflow_client::catalog::Installed> {
+        self.provider_catalog
+            .read()
+            .unwrap()
+            .installed
+            .get(id)
+            .cloned()
+    }
+    pub(crate) fn package_execution_allowed(&self, id: &str) -> bool {
+        self.packages
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_none_or(|store| store.execution_allowed(id))
+    }
+    pub(crate) fn replace_package(&self, package: acheflow_client::package::Prepared) {
+        let id = package.review().id.clone();
+        match package.review().kind {
+            acheflow_extension_api::parts::PartKind::Logic => {
+                self.provider_catalog.write().unwrap().installed.remove(&id);
+                self.installed.write().unwrap().insert(
+                    id,
+                    crate::extension_registry::Installed {
+                        manifest: package.manifest().clone(),
+                        module: package.module().to_vec(),
+                    },
+                );
+            }
+            acheflow_extension_api::parts::PartKind::Provider => {
+                self.installed.write().unwrap().remove(&id);
+                self.provider_catalog
+                    .write()
+                    .unwrap()
+                    .installed
+                    .insert(id, package.into_installed());
+            }
+        }
     }
     pub fn snapshot(&self, after: u64, limit: usize) -> ControlSnapshot {
         let workspace = self.runtime.workspace.read().unwrap();
@@ -95,6 +144,8 @@ impl ControlHost {
                 owner: owner.clone(),
                 extensions: self
                     .installed
+                    .read()
+                    .unwrap()
                     .values()
                     .map(|e| ExtensionStatus {
                         id: e.manifest.id.clone(),
@@ -119,12 +170,14 @@ impl ControlHost {
         ControlSnapshot {
             server_providers: self
                 .providers
-                .snapshot(&self.provider_catalog, workspace.as_ref()),
+                .snapshot(&self.provider_catalog.read().unwrap(), workspace.as_ref()),
             workspace_fingerprint: workspace
                 .as_ref()
                 .and_then(|w| acheflow_media_api::server_workspace::fingerprint(w).ok()),
             source_types: self
                 .installed
+                .read()
+                .unwrap()
                 .iter()
                 .flat_map(|(id, installed)| {
                     installed
@@ -238,31 +291,6 @@ impl ControlHost {
             state.interaction.disconnect(id);
         }
     }
-    #[cfg(test)]
-    pub async fn publish_fixture(
-        &self,
-        owner: &str,
-        origin: &str,
-        effect: Value,
-    ) -> Result<(), String> {
-        self.snapshot(0, 1);
-        self.runtime
-            .workspace
-            .write()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .extensions
-            .entry(origin.into())
-            .or_default()
-            .enabled = true;
-        self.services
-            .lock()
-            .unwrap()
-            .instances
-            .insert(origin.into(), "fixture".into());
-        self.publish_from(owner, origin, "fixture", effect, 0).await
-    }
     pub async fn publish_from(
         &self,
         owner: &str,
@@ -321,7 +349,7 @@ impl ControlHost {
             frame.extension_id = origin.into();
             frame.document.validate()?;
             acheflow_media_api::appearance::validate_css(&frame.document.css)?;
-            let declared = self.installed.get(origin).is_some_and(|installed| {
+            let declared = self.extension(origin).is_some_and(|installed| {
                 installed
                     .manifest
                     .source_types
@@ -417,8 +445,7 @@ impl ControlHost {
                     acheflow_extension_api::ExtensionPanel {
                         extension_id: origin.into(),
                         title: self
-                            .installed
-                            .get(origin)
+                            .extension(origin)
                             .map(|e| e.manifest.name.clone())
                             .unwrap_or_else(|| origin.into()),
                         widgets: vec![acheflow_extension_api::PanelWidget::Label {
@@ -939,6 +966,8 @@ pub(crate) mod tests {
         let manifest = &mut Arc::get_mut(&mut host)
             .unwrap()
             .installed
+            .get_mut()
+            .unwrap()
             .get_mut("sample")
             .unwrap()
             .manifest;
@@ -970,9 +999,10 @@ pub(crate) mod tests {
             .activated
             .store(true, std::sync::atomic::Ordering::Release);
         let mut host = ControlHost::new(runtime);
-        Arc::get_mut(&mut host).unwrap().installed = crate::extension_registry::discover_at(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions"),
-        );
+        Arc::get_mut(&mut host).unwrap().installed =
+            std::sync::RwLock::new(crate::extension_registry::discover_at(
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions"),
+            ));
         host.snapshot(0, 1);
         (host, workspace)
     }

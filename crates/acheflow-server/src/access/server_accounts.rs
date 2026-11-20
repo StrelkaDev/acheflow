@@ -32,6 +32,12 @@ pub(super) async fn connect(
     Path(provider): Path<String>,
     Json(request): Json<ConnectServerAccount>,
 ) -> Result<Json<ServerAccountConnected>, Error> {
+    if !access.host.package_execution_allowed(&provider) {
+        return Err(Error(
+            403,
+            "Approve this server package before authorizing it.",
+        ));
+    }
     if !request.trust_server {
         return Err(Error(
             400,
@@ -46,9 +52,7 @@ pub(super) async fn connect(
     )?;
     let installed = access
         .host
-        .provider_catalog
-        .installed
-        .get(&provider)
+        .provider(&provider)
         .ok_or(Error(404, "Provider is not installed on this server."))?;
     if request.config.len() > 32
         || request.config.iter().any(|(key, value)| {
@@ -115,9 +119,7 @@ pub(super) async fn verify(
 ) -> Result<authorization::AuthorizedAccount, Error> {
     let installed = access
         .host
-        .provider_catalog
-        .installed
-        .get(provider)
+        .provider(provider)
         .ok_or(Error(404, "Provider is not installed on this server."))?;
     if config.len() > 32
         || config.iter().any(|(key, value)| {
@@ -291,7 +293,7 @@ fn prepare(workspace: &mut Workspace, provider: &str, binding: &ServerIntegratio
         provider: provider.into(),
         account_id: binding.account_id.clone(),
         channel_id: binding.channel_id.clone(),
-        capabilities: [Capability::ChatRead].into(),
+        capabilities: [Capability::ChatRead, Capability::AudienceRead].into(),
     });
 }
 pub(super) async fn disconnect(
@@ -348,3 +350,126 @@ async fn disconnect_with(
 
 #[cfg(test)]
 mod tests;
+
+/// Only public declarations and approved WASM, never persisted account state.
+pub(super) async fn catalog(
+    State(access): State<Arc<Access>>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Json<Vec<acheflow_extension_api::integration::GuestManifest>>, Error> {
+    let current = access.registry.current(&principal.0, now())?;
+    if !current.device.permissions.contains(&P::ExtensionsConfigure) {
+        return Err(denied());
+    }
+    Ok(Json(
+        access
+            .host
+            .provider_catalog
+            .read()
+            .unwrap()
+            .installed
+            .values()
+            .map(|p| p.manifest.clone())
+            .collect(),
+    ))
+}
+pub(super) async fn module(
+    State(access): State<Arc<Access>>,
+    Extension(principal): Extension<Principal>,
+    Path(provider): Path<String>,
+) -> Result<axum::response::Response, Error> {
+    let current = Principal(access.registry.current(&principal.0, now())?);
+    if !current.server_accounts() || !access.host.package_execution_allowed(&provider) {
+        return Err(denied());
+    }
+    let installed = access
+        .host
+        .provider(&provider)
+        .ok_or(Error(404, "Server integration is not installed."))?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/wasm")],
+        installed.module,
+    )
+        .into_response())
+}
+
+pub(super) async fn configure(
+    State(access): State<Arc<Access>>,
+    Extension(principal): Extension<Principal>,
+    Path(provider): Path<String>,
+    Json(request): Json<ConfigureServerIntegration>,
+) -> Result<Json<ServerAccountConnected>, Error> {
+    let _command = access.host.command_lock.lock().await;
+    let current = Principal(access.registry.current(&principal.0, now())?);
+    if !current.allows(P::ExtensionsConfigure) {
+        return Err(denied());
+    }
+    let (revision, saved) = access.host.runtime.saved_state();
+    if revision != request.expected_revision {
+        return Err(Error(409, "Server settings changed."));
+    }
+    let mut workspace = saved
+        .filter(|w| w.id == request.workspace_id)
+        .ok_or(Error(409, "The server workspace changed."))?;
+    let previous = workspace
+        .server_integrations
+        .get(&provider)
+        .ok_or(Error(404, "Connect a server account first."))?;
+    if previous.enabled != request.enabled && !current.allows(P::ExtensionsRun) {
+        return Err(denied());
+    }
+    if request.enabled && !previous.enabled && !access.host.package_execution_allowed(&provider) {
+        return Err(denied());
+    }
+    let binding = workspace
+        .server_integrations
+        .get_mut(&provider)
+        .ok_or(Error(404, "Connect a server account first."))?;
+    // Application identity chooses a credential slot and cannot be changed by a
+    // settings write. Reauthorization is required for a different application.
+    if binding.config.get("client_id") != request.config.get("client_id") {
+        return Err(Error(
+            409,
+            "Reauthorize the server account after changing its application Client ID.",
+        ));
+    }
+    binding.enabled = request.enabled;
+    binding.config = request.config;
+    let result = binding.clone();
+    crate::providers::validate(&access.host, &workspace)
+        .map_err(|_| Error(422, "Invalid server provider settings."))?;
+    crate::live::validate(&workspace).map_err(|_| Error(422, "Invalid server settings."))?;
+    access
+        .host
+        .runtime
+        .update_workspace(&request.workspace_id, |w| {
+            w.server_integrations
+                .insert(provider.clone(), result.clone());
+            Ok(())
+        })
+        .map_err(|_| Error(409, "Server settings changed."))?;
+    access.host.providers.reconcile(&access.host).await;
+    Ok(Json(ServerAccountConnected {
+        revision: access.host.runtime.saved_state().0,
+        binding: result,
+    }))
+}
+
+pub(super) async fn settings(
+    State(access): State<Arc<Access>>,
+    Extension(principal): Extension<Principal>,
+    Path(provider): Path<String>,
+) -> Result<Json<ServerIntegrationSettings>, Error> {
+    let current = access.registry.current(&principal.0, now())?;
+    if !current.device.permissions.contains(&P::ExtensionsConfigure) {
+        return Err(denied());
+    }
+    if access.host.provider(&provider).is_none() {
+        return Err(Error(404, "Provider is not installed on this server."));
+    }
+    let (revision, workspace) = access.host.runtime.saved_state();
+    Ok(Json(ServerIntegrationSettings {
+        workspace_id: workspace.as_ref().map(|w| w.id.clone()),
+        revision,
+        binding: workspace.and_then(|w| w.server_integrations.get(&provider).cloned()),
+    }))
+}

@@ -69,20 +69,23 @@ checks, the server WASM collector and its lifecycle/receipt safeguards. Local
 vaults already group extension slots. These are foundations, not proof that the
 new ownership model is complete.
 
-The current tree still has local collectors, **Studio chat / My messages** UI,
-shared-account copying, and server-hosted personal-account APIs and sending code
-(`/api/access/personal-accounts/...`, `/api/access/personal-send/...`). The manifest
-still selects a single `execution_side`; the trusted server loader separately
-accepts provider packages marked client-side. These transitional mechanisms must
-be migrated rather than treated as the finished dual-part contract.
+Repository packages declare independent client/server parts. Authorized ZIP
+installation, server-only common-feed collection, direct device sends, independent
+server authorization and Client / Server settings are implemented. Old personal
+upload/send APIs are retired (410); owner-scoped metadata and explicit cleanup
+remain for safe reauthorization. Vaults use stable server identity and cached,
+locked workspace containers. Browser client packages remain bundled; native
+client package activation requires restart.
 
 The execution order below is authoritative; task numbers identify scope, not
-sequence. **SHARED-07 and SHARED-08 remain unfinished and must not be skipped.**
-The next task is **SHARED-09**. Keep receive/send usable during each transition.
+sequence. **SHARED-07 implementation and automated acceptance are complete. SHARED-08 is
+still the final qualification gate.** Code for SHARED-10–13 is implemented; the
+physical-phone, live-provider and signed-build Keychain checks below remain explicit
+release checks and must not be mistaken for completed end-to-end qualification.
 
 | Order | Task | Completion required before moving on |
 | --- | --- | --- |
-| 1 | [SHARED-09](#shared-09-declare-client-and-server-extension-parts--first) | Define extension parts and compatibility before changing loaders/installers |
+| 1 | [SHARED-09](#shared-09-declare-client-and-server-extension-parts--complete) | Define extension parts and compatibility before changing loaders/installers |
 | 2 | [SHARED-07](#shared-07-install-extension-packages-through-authorized-clients) | Install the declared parts on the selected host with package validation and permission checks |
 | 3 | [SHARED-10](#shared-10-collect-shared-chat-only-on-the-server) | Keep the server as the sole shared-chat collector and preserve client reads |
 | 4 | [SHARED-11](#shared-11-execute-personal-actions-on-the-originating-device) | Move personal sending to the device; provide explicit reauthorization before retiring server personal execution |
@@ -158,24 +161,25 @@ Depends on SHARED-02 and SHARED-03. Owner: generic executor host and extension c
 - [x] Verify receive/send with two real WASM providers, renewal, late events,
   reconnect and uncertain delivery receipts without repeating external writes.
 
-### SHARED-06: Server authorization and personal identity — migration required
+### SHARED-06: Server authorization and personal identity — migrated
 
 Depends on SHARED-01, SHARED-02 and SHARED-05. Owner: workspace vault, auth UI and guests.
 
-User/device identities, own-device linking, verified server-hosted personal bindings,
-explicit shared-account copying and isolated vault slots exist in the current tree.
-Their presence does not complete the newly agreed device-local authorization model.
+User/device identities, own-device linking and isolated vault slots are retained.
+Former server-hosted personal accounts and account copying are replaced by
+independent device/server authorization, direct device actions and an explicit
+legacy-copy cleanup path.
 
 - [x] Separate server-local users from devices; linking is explicit and does not
   infer identity from names or workspace membership.
-- [ ] Replace the former server-hosted personal-account plan with SHARED-09–13.
+- [x] Replace the former server-hosted personal-account plan with SHARED-09–13.
   Do not expand per-user server credential uploads, personal execution or delegation.
-- [ ] Authorize the server part independently through extension-owned flows;
+- [x] Authorize the server part independently through extension-owned flows;
   it may use a different platform account from every client. Preserve an existing
   working server binding until an explicit successful replacement/disconnection.
-- [ ] Keep device-local platform authorization independent on every device;
+- [x] Keep device-local platform authorization independent on every device;
   linked user identity never implies credential copying or shared platform rights.
-- [ ] Migrate existing server-held personal bindings through an explicit safe
+- [x] Migrate existing server-held personal bindings through an explicit safe
   disconnect/reauthorization flow. Never download secrets or delete the only
   recoverable copy before the user chooses and completes the transition.
 
@@ -184,13 +188,13 @@ Their presence does not complete the newly agreed device-local authorization mod
 Depends on SHARED-02, SHARED-05 and SHARED-09. Execution order: second, before
 SHARED-10–13. Owner: package installer and generic settings UI.
 
-- [ ] Separate upload/install/configure/execute grants. Bound archive expansion,
+- [x] Separate upload/install/configure/execute grants. Bound archive expansion,
   reject traversal/symlinks and validate manifests, WASM and contract versions.
-- [ ] Install only the declared client/server parts on their selected host under
+- [x] Install only the declared client/server parts on their selected host under
   SHARED-09; connecting a client must not implicitly install or execute packages.
-- [ ] Persist accepted packages and expose generic settings without granting new
+- [x] Persist accepted packages and expose generic settings without granting new
   capabilities implicitly. Failed upgrades preserve the previous usable installation.
-- [ ] Test malicious archives, incompatible packages, unauthorized installation,
+- [x] Test malicious archives, incompatible packages, unauthorized installation,
   replacement cancellation and two independent provider packages.
 
 ### SHARED-08: Qualify the shared studio workflow
@@ -198,43 +202,64 @@ SHARED-10–13. Owner: package installer and generic settings UI.
 Depends on SHARED-04, SHARED-06, SHARED-07 and SHARED-09–13. This is the final
 qualification gate in the migration order, not a completed foundation task.
 
+- [x] Open the deployed UI on a physical phone through trusted HTTPS; verify the
+  native keyboard and commit/dismiss the input editor on blur or an outside tap.
+- [x] Authorize a real Twitch server account and verify that an operator-sent
+  platform message appears once on both desktop and physical phone in shared chat.
 - [ ] Verify desktop plus phone through trusted HTTPS: viewer, chat moderator,
   scene operator and administrator roles, including denied direct API calls.
 - [ ] Verify two devices linked to one Acheflow user with different local platform
   accounts: shared receive from the server, direct sends with correct attribution,
   denied Acheflow/platform rights, and no account or credential synchronization.
   Personal authorization must not create another collector or widen server access.
-- [ ] Qualify future moderation separately once provider guests implement it;
+- [x] Qualify future moderation separately once provider guests implement it;
   missing moderation is not a blocker for the receive/send migration.
-- [ ] Verify restart, session revocation, workspace switch and one provider
+- [x] Verify restart, session revocation, workspace switch and one provider
   connection per binding; document backup/restore and operator trust.
-- [ ] Run the affected development checks and real-WASM lifecycle tests; update
+- [x] Run the affected development checks and real-WASM lifecycle tests; update
   current guides to describe only implemented behavior.
 
-### SHARED-09: Declare client and server extension parts — first
+Automated qualification includes real WASM receive/send isolation, archive attacks,
+permission denial/revocation, two independent collectors, native/browser builds,
+and actual loopback FFmpeg/libx264 and VideoToolbox RTMP video/audio delivery.
+The production-server HTTPS integration also covers trusted test certificates,
+cookie pairing, distinct device grants, revocation and collector restart recovery.
+Physical-phone HTTPS loading, keyboard dismissal and real Twitch shared receive
+have been verified separately, including server OAuth consent and account storage.
+These checks do not prove a public broadcast, the complete physical-device role
+matrix, personal direct sending or live token renewal. Other providers still need
+live authorization/receive checks. Complete the remaining checks with the operator's
+own accounts before calling SHARED-08 finished. Do not publish test chat or go live
+automatically.
+
+### SHARED-09: Declare client and server extension parts — complete
 
 Owner: extension API/SDK, manifests, loaders and contract. Dependencies: SHARED-05.
 
-- [ ] Define part-specific entry points, settings, auth, storage, capabilities and
+- [x] Define part-specific entry points, settings, auth, storage, capabilities and
   supported actions. Support client-only, server-only and dual-part packages
   without provider-specific host branches; select a part explicitly at load time.
-- [ ] Specify compatibility/versioning for existing single-side manifests and the
+- [x] Specify compatibility/versioning for existing single-side manifests and the
   trusted provider loader. Migrate repository guests and build their WASM before
   host checks; reject unsupported combinations with actionable errors.
-- [ ] Test discovery/loading with two real WASM providers and prevent a part from
+- [x] Test discovery/loading with two real WASM providers and prevent a part from
   obtaining the other host's credentials or capabilities.
+
+Verification: workspace and guest tests, native/browser Clippy, web bundling and
+macOS artifact-copy tests pass with real provider WASM. Package installation,
+server-only collection and the settings/account migration remain separate tasks.
 
 ### SHARED-10: Collect shared chat only on the server
 
 Owner: server provider reactor, client execution lifecycle and live feed.
 Dependencies: SHARED-09 and SHARED-07.
 
-- [ ] Retain one server collector per enabled binding/provider/channel; remove
+- [x] Retain one server collector per enabled binding/provider/channel; remove
   client chat subscriptions, normalized-chat publication and automatic collector
   startup. Retain client execution for actual device integrations/actions.
-- [ ] Read the authenticated common feed on desktop/browser/phone. Missing server
+- [x] Read the authenticated common feed on desktop/browser/phone. Missing server
   authorization is a visible disconnected state, never a local collection fallback.
-- [ ] Verify two clients and two real providers: no duplicate subscriptions,
+- [x] Verify two clients and two real providers: no duplicate subscriptions,
   reconnect, disable, replacement, server restart and workspace cancellation.
 
 ### SHARED-11: Execute personal actions on the originating device
@@ -242,16 +267,19 @@ Dependencies: SHARED-09 and SHARED-07.
 Owner: client runtime, chat composer, provider guests and action permissions.
 Dependencies: SHARED-09 and SHARED-10.
 
-- [ ] Resolve a shared channel to a provider target through the extension/domain
+- [x] Resolve a shared channel to a provider target through the extension/domain
   contract, validate current Acheflow grants, then send directly with this device's
   validated local account. Reuse read-only preparation and bounded action execution
   where applicable; opening a sender must never start collection.
-- [ ] Preserve sender attribution, cancellation, account/workspace fencing and
+- [x] Preserve sender attribution, cancellation, account/workspace fencing and
   uncertain-delivery receipts; never blindly resend or fall back to a server account.
-- [ ] Replace the personal composer endpoints and retire server personal-account
+- [x] Replace the personal composer endpoints and retire server personal-account
   storage/execution APIs after the explicit SHARED-06 migration. Keep server
   service-account actions separate from the personal sending path.
-- [ ] Verify native and browser feasibility per provider (OAuth, CORS and transport).
+- [ ] Qualify live native/browser provider accounts and browser CORS support on the intended devices.
+  The action-only WASM paths for all three bundled providers and failure handling
+  are tested; external OAuth consent/renewal and physical browser permissions are
+  not inferred from synthetic protocol responses.
   Report unsupported device actions explicitly; do not work around restrictions by
   uploading personal tokens to the server. Keep future moderation capability-gated.
 
@@ -259,14 +287,18 @@ Dependencies: SHARED-09 and SHARED-10.
 
 Owner: local/server vaults and device-session persistence. Dependencies: SHARED-11.
 
-- [ ] Use one workspace credential container on each executing host with separate
+- [x] Use one workspace credential container on each executing host with separate
   extension/application/account slots. A server is its own trust boundary even when
   client and server run on one Mac. Never merge host access merely to reduce prompts.
-- [ ] Specify the device-to-server session's separate server-scoped lifetime;
+- [x] Specify the device-to-server session's separate server-scoped lifetime;
   document that it is not a provider credential or a per-extension record.
-- [ ] Avoid repeatedly reopening the same container per extension. Reuse an unlocked
+- [x] Avoid repeatedly reopening the same container per extension. Reuse an unlocked
   session safely while preserving cross-process locking, refresh, revocation and
   isolated writes. Record count and OS permission prompt count are separate criteria.
+- [x] Retain client authorization panels across scope changes, reuse bound storage,
+  persist retirement of per-extension legacy records and skip unchanged vault writes.
+- [x] Label host containers with the workspace name, a shared stable identity suffix
+  and Client/Server role; keep full storage IDs independent of display names.
 - [ ] Migrate old namespaces without losing tokens or neighboring slots. Verify
   locked/denied Keychain, two providers, restart, concurrent client/server processes
   and actual prompt behavior using the intended signed build; do not promise one
@@ -277,15 +309,19 @@ Owner: local/server vaults and device-session persistence. Dependencies: SHARED-
 Owner: extension cards, account UI and server permission checks.
 Dependencies: SHARED-09, SHARED-11 and SHARED-12.
 
-- [ ] Restore **Client / Server** tabs based on installed/available extension parts.
+- [x] Restore **Client / Server** tabs based on installed/available extension parts.
   Remove **Studio chat / My messages** and the extra **Shared server account** copy
   panel after migration; show each part's own account, settings, state and errors.
-- [ ] Client authorization belongs to this device; server authorization belongs to
+- [x] Client authorization belongs to this device; server authorization belongs to
   the server and can select a different account. Opening settings never copies tokens.
-- [ ] Apply view/configure/install/execute grants to server UI and every underlying
+- [x] Apply view/configure/install/execute grants to server UI and every underlying
   endpoint; deny direct unauthorized calls and redact secrets from readable settings.
-- [ ] Verify mouse, keyboard, touch/IME and mobile pairing; preserve drafts when
-  switching tabs and show collection and local-action availability separately.
+- [x] Verify mouse/keyboard tabs and preserve public drafts when switching scopes;
+  show collection and device-local sending separately. Browser visual checks and
+  native layout/IME bridge regressions pass.
+- [x] Verify physical-phone keyboard entry and dismissal through trusted HTTPS.
+- [ ] Finish physical-phone pairing/role and real-account checks in SHARED-08;
+  viewport emulation is not physical-device evidence.
 
 ## Existing-logic backlog
 

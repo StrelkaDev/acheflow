@@ -27,6 +27,7 @@ struct WireData {
 #[derive(Default)]
 pub struct VkLive {
     authorization: guest_sdk::authorization::Authorization,
+    action_only: bool,
     channel: String,
     authorized: bool,
     stopped: bool,
@@ -155,10 +156,17 @@ impl VkLive {
     }
     pub fn handle(&mut self, mut input: Value) -> Vec<Value> {
         if input["type"] == "prepare_action" {
+            *self = Self::default();
+            self.action_only = true;
             input["type"] = json!("start");
             input["config"]["channel"] = input["channel_id"].clone();
             input["config"]["read_chat"] = json!("false");
             input["config"]["read_audience"] = json!("false");
+        }
+        if self.action_only {
+            input["config"]["read_chat"] = json!("false");
+            input["config"]["read_audience"] = json!("false");
+            input["config"]["send_chat"] = json!("true");
         }
 
         if input["type"] == "stop" {
@@ -166,7 +174,7 @@ impl VkLive {
             self.stopped = true;
             return vec![];
         }
-        if input["type"] == "start" {
+        if input["type"] == "start" && !self.action_only {
             *self = Self::default();
         } else if self.stopped {
             return vec![];
@@ -449,3 +457,6 @@ mod tests {
         assert!(guest.handle(message).iter().all(|e| e["type"] != "chat"));
     }
 }
+
+guest_sdk::export_part!(client_handle, VkLive, WireInput, handle_wire);
+guest_sdk::export_part!(server_handle, VkLive, WireInput, handle_wire);

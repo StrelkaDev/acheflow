@@ -17,8 +17,7 @@ pub async fn deliver(
     let link =
         ForwardLink::parse_for(raw_url, ForwardRecipient::Server).map_err(|e| e.to_string())?;
     let installed = host
-        .installed
-        .get(&link.extension_id)
+        .extension(&link.extension_id)
         .ok_or("not_found: forwarding extension")?;
     if link.declaration(&installed.manifest)?.mode != ForwardMode::Event {
         return Err("forbidden: callbacks belong to clients".into());

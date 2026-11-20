@@ -41,3 +41,19 @@ macro_rules! export {
         pub extern "C" fn handle() {let input: $input=$crate::serde_json::from_slice(&$crate::input_bytes()).expect("valid host JSON");STATE.with(|state|{for effect in state.borrow_mut().$method(input){$crate::emit(&effect);}});}
     };
 }
+
+/// Export a named part with independent guest state, even when both parts share
+/// one WASM artifact. Hosts choose an entry point before supplying any secrets.
+#[macro_export]
+macro_rules! export_part {
+    ($entry:ident, $state:ty) => {$crate::export_part!($entry,$state,$crate::serde_json::Value,handle);};
+    ($entry:ident, $state:ty, $input:ty, $method:ident) => {
+        #[cfg(target_arch="wasm32")]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $entry() {
+            std::thread_local! {static STATE:std::cell::RefCell<$state>=std::cell::RefCell::new(<$state>::default());}
+            let input:$input=$crate::serde_json::from_slice(&$crate::input_bytes()).expect("valid host JSON");
+            STATE.with(|state|{for effect in state.borrow_mut().$method(input){$crate::emit(&effect);}});
+        }
+    };
+}

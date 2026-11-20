@@ -18,6 +18,7 @@ pub struct LocalState {
 
 pub struct LocalSession {
     pub manifest: GuestManifest,
+    host: acheflow_extension_api::parts::ExecutionHost,
     guest: Guest,
     pub config: BTreeMap<String, String>,
     state: LocalState,
@@ -35,14 +36,44 @@ impl LocalSession {
         module: &[u8],
         config: BTreeMap<String, String>,
     ) -> Result<Self, String> {
+        Self::new_for_host(
+            manifest,
+            module,
+            config,
+            acheflow_extension_api::parts::ExecutionHost::Client,
+        )
+    }
+    /// Ephemeral authorization for a separately selected server account. This
+    /// session cannot open the device vault or execute personal device actions.
+    pub fn new_server_authorization(
+        manifest: GuestManifest,
+        module: &[u8],
+        config: BTreeMap<String, String>,
+    ) -> Result<Self, String> {
+        Self::new_for_host(
+            manifest,
+            module,
+            config,
+            acheflow_extension_api::parts::ExecutionHost::Server,
+        )
+    }
+    pub(crate) fn new_for_host(
+        manifest: GuestManifest,
+        module: &[u8],
+        config: BTreeMap<String, String>,
+        host: acheflow_extension_api::parts::ExecutionHost,
+    ) -> Result<Self, String> {
+        manifest.require_host(host)?;
         manifest.validate()?;
+        let config = manifest.settings_config(&config);
         if manifest.execution_side != acheflow_extension_api::integration::ExecutionSide::Client {
             return Err("Local panels require a client installation.".into());
         }
         let mut forwarding = forwarding::LocalForwarding::default();
         forwarding.start()?;
         Ok(Self {
-            guest: Guest::load(module, manifest.capabilities.clone())?,
+            guest: Guest::load_part(module, &manifest)?,
+            host,
             manifest,
             config,
             state: LocalState::default(),
@@ -73,6 +104,9 @@ impl LocalSession {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn use_system_storage(&mut self, server: &str, workspace: &str) -> Result<(), String> {
         self.bind_workspace(workspace)?;
+        if self.host != acheflow_extension_api::parts::ExecutionHost::Client {
+            return Err("server authorization cannot open a device credential container".into());
+        }
         let key = crate::vault::key(
             server,
             workspace,
@@ -98,6 +132,34 @@ impl LocalSession {
         }
         self.vault_key = Some(key);
         Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn use_server_workspace_storage(
+        &mut self,
+        server_id: &str,
+        endpoint: &str,
+        workspace: &str,
+        workspace_name: &str,
+    ) -> Result<(), String> {
+        if self.host != acheflow_extension_api::parts::ExecutionHost::Client
+            || !acheflow_extension_api::integration::valid_id(server_id, 128)
+        {
+            return Err("A verified server identity is required for device storage.".into());
+        }
+        let namespace = format!("client:{server_id}");
+        crate::vault::name_workspace(&namespace, workspace, workspace_name, "Client")?;
+        let application = self
+            .config
+            .get("client_id")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let old = crate::vault::key(endpoint, workspace, &self.manifest.id, application)?;
+        let new = crate::vault::key(&namespace, workspace, &self.manifest.id, application)?;
+        if self.vault_key.as_ref() == Some(&new) {
+            return Ok(());
+        }
+        crate::vault::migrate(&old, &new)?;
+        self.use_system_storage(&namespace, workspace)
     }
     pub fn flush_storage(&mut self) -> Result<(), String> {
         if !self.dirty {
@@ -125,6 +187,48 @@ impl LocalSession {
             .to_owned()
     }
     /// Presence only; local form rendering never receives credential values.
+    /// Fork credentials into an action-only instance on this device. Never bind
+    /// the fork to a vault, register a collector, or send its state to a server.
+    pub fn direct_action(
+        &self,
+        module: &[u8],
+        channel: &str,
+    ) -> Result<crate::direct_action::DirectAction, String> {
+        self.manifest
+            .require_host(acheflow_extension_api::parts::ExecutionHost::Client)?;
+        if self.staged.is_some()
+            || self.credential_revision().is_none()
+            || self.account_id() == "local-account"
+        {
+            return Err("Finish authorizing this device's account first.".into());
+        }
+        let mut verifier = Self::new(self.manifest.clone(), module, self.config.clone())?;
+        verifier.step(
+            json!({"type":"local_start"}),
+            &json!({"browser":cfg!(target_arch="wasm32")}),
+            0,
+        )?;
+        for (key, value) in &self.state.secrets {
+            verifier.set_secret(key, value.clone())?;
+        }
+        crate::direct_action::DirectAction::new(verifier, module, self.account_id(), channel)
+    }
+    pub(crate) fn http_context(&mut self) -> (&GuestManifest, &mut Secrets) {
+        (
+            &self.manifest,
+            match self.staged.as_mut() {
+                Some(staged) => staged,
+                None => &mut self.state.secrets,
+            },
+        )
+    }
+    pub(crate) fn action_state(&self) -> Result<LocalState, String> {
+        self.server_credentials_unbound()?;
+        Ok(LocalState {
+            secrets: self.state.secrets.clone(),
+            storage: self.state.storage.clone(),
+        })
+    }
     pub fn has_secret(&self, key: &str) -> bool {
         self.staged
             .as_ref()
@@ -228,6 +332,7 @@ impl LocalSession {
                 self.manifest.id
             ));
             input["now_ms"] = json!(now);
+            input["execution_host"] = json!(self.host);
             input["api_version"] = json!(acheflow_extension_api::API_VERSION);
             input["workspace_id"] = json!(self.workspace_id);
             input["extension_id"] = json!(self.manifest.id);
@@ -339,7 +444,8 @@ impl LocalSession {
     /// Restores only into the matching local provider runtime, never through MCP.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn install(&self, runtime: &mut crate::runtime::ProviderRuntime) -> Result<(), String> {
-        if runtime.identity().connection.provider != self.manifest.id
+        if runtime.execution_host() != self.host
+            || runtime.identity().connection.provider != self.manifest.id
             || self.workspace_id.as_deref() != Some(runtime.identity().workspace_id.as_str())
         {
             return Err("Provider identity mismatch.".into());

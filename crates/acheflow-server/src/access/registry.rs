@@ -182,7 +182,7 @@ impl Registry {
                 }
                 let bytes = std::fs::read(&path).map_err(|_| unavailable())?;
                 let mut disk: Disk = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
-                if !matches!(disk.version, 1 | 2)
+                if !matches!(disk.version, 1..=3)
                     || !hexadecimal(&disk.server_id, 32)
                     || !hexadecimal(&disk.owner_key, 64)
                     || disk.devices.len() > 128
@@ -203,6 +203,22 @@ impl Registry {
                 disk.validate_personal()?;
                 if disk.version == 1 {
                     disk.migrate_users()?;
+                }
+                if disk.version < 3 {
+                    // Existing administrators retain their full package-management
+                    // role. A user who only installed extensions gains no upload grant.
+                    for stored in &mut disk.devices {
+                        if [Permission::AccessManage, Permission::ExtensionsInstall]
+                            .iter()
+                            .all(|p| stored.device.permissions.contains(p))
+                        {
+                            stored
+                                .device
+                                .permissions
+                                .insert(Permission::ExtensionsUpload);
+                        }
+                    }
+                    disk.version = 3;
                     persist(&path, &disk)?;
                 }
                 disk
@@ -213,7 +229,7 @@ impl Registry {
                     name: "Server owner".into(),
                 };
                 let disk = Disk {
-                    version: 2,
+                    version: 3,
                     owner_user: user.id.clone(),
                     users: vec![user],
                     server_id: random(16)?,

@@ -5,9 +5,18 @@ export function installMobileInput(open, update) {
   let editor = null;
   let active = null;
   const close = () => {
-    if (editor) editor.value = '';
-    if (panel) panel.remove();
+    const previousEditor = editor;
+    const previousPanel = panel;
+    // Removing a focused element may synchronously emit blur.
     panel = editor = active = null;
+    if (previousEditor) previousEditor.value = '';
+    if (previousPanel) previousPanel.remove();
+  };
+  const finish = () => {
+    if (!editor) return;
+    const token = active, value = editor.value;
+    close();
+    update(token, value, true);
   };
   const position = () => {
     if (!panel) return;
@@ -15,6 +24,7 @@ export function installMobileInput(open, update) {
     panel.style.bottom = `${view ? Math.max(0, window.innerHeight - view.height - view.offsetTop) : 0}px`;
   };
   const down = e => {
+    if (panel && e.isPrimary && !panel.contains(e.target)) finish();
     if (e.target.tagName === 'CANVAS' && e.isPrimary && (e.pointerType === 'touch' || e.pointerType === 'pen')) {
       start = {id: e.pointerId, x: e.clientX, y: e.clientY};
     } else start = null;
@@ -45,18 +55,22 @@ export function installMobileInput(open, update) {
     editor.spellcheck = false;
     editor.inputMode = field.input_mode;
     editor.style.fontSize = '16px'; // Avoid iOS focus zoom.
+    const fieldEditor = editor;
+    const finishField = () => { if (editor === fieldEditor) finish(); };
     editor.addEventListener('keydown', e => {
       e.stopPropagation();
-      if (e.key === 'Escape') { update(active, editor.value, true); close(); }
+      if (e.key === 'Escape') finishField();
     });
     editor.addEventListener('keyup', e => e.stopPropagation());
+    editor.addEventListener('blur', finishField);
     editor.addEventListener('input', () => {
+      if (editor !== fieldEditor) return;
       if (!update(active, editor.value, false)) close();
     });
     const done = document.createElement('button');
     done.type = 'button';
     done.textContent = 'Done';
-    done.addEventListener('click', () => { update(active, editor.value, true); close(); });
+    done.addEventListener('click', finishField);
     label.append(title, editor);
     panel.append(label, done);
     document.body.append(panel);

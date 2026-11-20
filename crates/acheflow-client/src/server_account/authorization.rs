@@ -14,22 +14,6 @@ impl AuthorizedAccount {
     pub fn account_id(&self) -> &str {
         &self.account
     }
-    pub fn save_personal(
-        &self,
-        server: &str,
-        workspace: &str,
-        user: &str,
-        provider: &str,
-        slot: &str,
-    ) -> Result<(), String> {
-        if provider != self.provider {
-            return Err("Account belongs to another provider.".into());
-        }
-        crate::vault::save(
-            &super::personal_storage_key(server, workspace, user, provider, slot, &self.account)?,
-            &self.state,
-        )
-    }
     pub fn save(
         &self,
         server: &str,
@@ -69,7 +53,12 @@ async fn authorize_with(
         return Err("Invalid account credentials.".into());
     }
     let provider = manifest.id.clone();
-    let mut session = LocalSession::new(manifest, module, config)?;
+    let mut session = LocalSession::new_for_host(
+        manifest,
+        module,
+        config,
+        acheflow_extension_api::parts::ExecutionHost::Server,
+    )?;
     let environment = json!({"browser":false});
     session.step(json!({"type":"local_start"}), &environment, now())?;
     for (key, value) in credentials {
@@ -130,7 +119,9 @@ mod tests {
     }
     #[tokio::test]
     async fn two_real_wasm_providers_verify_identity_without_starting_collectors() {
-        let catalog = crate::catalog::ClientCatalog::bundled();
+        let catalog = crate::catalog::ClientCatalog::discover_server_at(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions"),
+        );
         for id in ["youtube", "vklive"] {
             let installed = &catalog.installed[id];
             let response = payload(id);
@@ -171,7 +162,9 @@ mod tests {
     }
     #[tokio::test]
     async fn invalid_identity_scope_application_or_http_status_never_produces_a_saved_account() {
-        let catalog = crate::catalog::ClientCatalog::bundled();
+        let catalog = crate::catalog::ClientCatalog::discover_server_at(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions"),
+        );
         for id in ["youtube", "vklive"] {
             let installed = &catalog.installed[id];
             let mut cases = vec![(401, payload(id)), (200, json!({})), (0, json!({}))];

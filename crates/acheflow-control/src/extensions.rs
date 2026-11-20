@@ -23,15 +23,27 @@ struct Host {
 pub struct Guest {
     store: Store<Host>,
     handle: TypedFunc<(), ()>,
+    host: Option<acheflow_extension_api::parts::ExecutionHost>,
 }
 
 impl Guest {
     pub fn load(bytes: &[u8], capabilities: Vec<String>) -> Result<Self, String> {
+        Self::load_entry_point(bytes, capabilities, "handle")
+    }
+    pub fn load_entry_point(
+        bytes: &[u8],
+        capabilities: Vec<String>,
+        entry_point: &str,
+    ) -> Result<Self, String> {
+        if !acheflow_extension_api::parts::valid_entry_point(entry_point) {
+            return Err("invalid WASM entry point".into());
+        }
         if bytes.len() > 4 * MAX_BYTES {
             return Err("extension module exceeds 4 MiB".into());
         }
         let mut config = Config::default();
         config.consume_fuel(true);
+        config.enforced_limits(wasmi::EnforcedLimits::strict());
         let engine = Engine::new(&config);
         let module = Module::new(&engine, bytes).map_err(|e| e.to_string())?;
         let host = Host {
@@ -130,12 +142,29 @@ impl Guest {
             .instantiate_and_start(&mut store, &module)
             .map_err(|e| e.to_string())?;
         let handle = instance
-            .get_typed_func::<(), ()>(&store, "handle")
+            .get_typed_func::<(), ()>(&store, entry_point)
             .map_err(|e| e.to_string())?;
-        Ok(Self { store, handle })
+        Ok(Self {
+            store,
+            handle,
+            host: None,
+        })
     }
 
-    pub fn call(&mut self, input: Value) -> Result<Vec<Value>, String> {
+    pub fn load_part(bytes: &[u8], manifest: &GuestManifest) -> Result<Self, String> {
+        if manifest.parts.is_some() {
+            return Err("Select a host part before loading WASM.".into());
+        }
+        manifest.validate()?;
+        let mut guest =
+            Self::load_entry_point(bytes, manifest.capabilities.clone(), &manifest.entry_point)?;
+        guest.host = manifest.selected_host();
+        Ok(guest)
+    }
+    pub fn call(&mut self, mut input: Value) -> Result<Vec<Value>, String> {
+        if let Some(host) = self.host {
+            input["execution_host"] = serde_json::json!(host);
+        }
         let input_bytes = serde_json::to_vec(&input).map_err(|e| e.to_string())?;
         if input_bytes.len() > MAX_BYTES {
             return Err("extension input limit reached".into());
@@ -299,10 +328,17 @@ mod tests {
     fn twitch_guest_normalizes_actual_eventsub_shape_and_generates_requests() {
         let manifest: GuestManifest =
             serde_json::from_str(include_str!("../../../extensions/twitch/manifest.json")).unwrap();
-        manifest.validate().unwrap();
-        let mut guest = Guest::load(
+        let manifest = manifest
+            .select_part(acheflow_extension_api::parts::ExecutionHost::Server)
+            .unwrap()
+            .unwrap();
+        let manifest = manifest
+            .select_part(acheflow_extension_api::parts::ExecutionHost::Server)
+            .unwrap()
+            .unwrap();
+        let mut guest = Guest::load_part(
             include_bytes!("../../../extensions/twitch/twitch.wasm"),
-            manifest.capabilities,
+            &manifest,
         )
         .unwrap();
         let effects=guest.call(json!({"type":"websocket","now_ms":1000,"payload":{"metadata":{"message_type":"notification","subscription_type":"channel.chat.message"},"payload":{"event":{"broadcaster_user_id":"b","message_id":"m","chatter_user_id":"u","chatter_user_name":"User","message":{"text":"!vote 1"},"badges":[{"set_id":"moderator","id":"1"}]}}}})).unwrap();
@@ -345,9 +381,13 @@ mod tests {
     fn rust_provider_creates_refreshes_and_closes_its_native_poll() {
         let manifest: GuestManifest =
             serde_json::from_str(include_str!("../../../extensions/twitch/manifest.json")).unwrap();
-        let mut guest = Guest::load(
+        let manifest = manifest
+            .select_part(acheflow_extension_api::parts::ExecutionHost::Server)
+            .unwrap()
+            .unwrap();
+        let mut guest = Guest::load_part(
             include_bytes!("../../../extensions/twitch/twitch.wasm"),
-            manifest.capabilities,
+            &manifest,
         )
         .unwrap();
         let mut call = |mut input: Value| {

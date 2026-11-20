@@ -57,6 +57,21 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(info["CFBundleExecutable"], "acheflow")
             self.assertEqual(info["CFBundleURLTypes"][0]["CFBundleURLSchemes"], ["acheflow"])
             self.assertIn("NSUserActivityTypeBrowsingWeb", info["NSUserActivityTypes"])
+    def test_dual_part_artifacts_are_copied_without_losing_server_only_modules(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source" / "independent"
+            source.mkdir(parents=True)
+            parts = {"client": {"module": "client.wasm", "authentication": {"browser_module": "auth.js"}},
+                     "server": {"module": "server.wasm"}}
+            (source / "manifest.json").write_text(json.dumps({"id": "independent", "parts_version": 1, "parts": parts}))
+            for module in ["client.wasm", "server.wasm"]:
+                (source / module).write_bytes(b"\0asm\x01\0\0\0")
+            (source / "auth.js").write_text("export const fixture = true;")
+            copy_extensions(root / "source", root / "output")
+            self.assertEqual({p.name for p in (root / "output" / "independent").iterdir()},
+                             {"manifest.json", "client.wasm", "server.wasm", "auth.js"})
+
     def test_wrong_binary_version_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             binary = Path(temporary) / "server with spaces"

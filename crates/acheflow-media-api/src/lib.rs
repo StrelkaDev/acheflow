@@ -220,3 +220,5 @@ mod tests {
 pub mod server_provider;
 
 pub mod personal_account;
+
+pub mod direct_action;

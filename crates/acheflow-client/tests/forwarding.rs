@@ -331,9 +331,9 @@ fn disconnect_revokes_pending_callbacks_and_late_results_cannot_restore_the_acco
             )
             .unwrap();
         let payload = if provider == "twitch" {
-            json!({"client_id":"public-id","user_id":"existing-user","login":"existing-account","scopes":["user:read:chat"],"expires_in":3600})
+            json!({"client_id":"public-id","user_id":"existing-user","login":"existing-account","scopes":["user:write:chat"],"expires_in":3600})
         } else {
-            json!({"aud":"public-id","sub":"existing-account","scope":"https://www.googleapis.com/auth/youtube.readonly","expires_in":3600})
+            json!({"aud":"public-id","sub":"existing-account","scope":"https://www.googleapis.com/auth/youtube.force-ssl","expires_in":3600})
         };
         let authorized = attempt
             .session

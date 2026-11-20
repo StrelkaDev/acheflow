@@ -11,9 +11,14 @@ struct Memory {
     fail_write: Cell<bool>,
     fail_delete: Cell<bool>,
     fail_read: Cell<bool>,
+    legacy_reads: Cell<usize>,
+    writes: Cell<usize>,
 }
 impl Backend for Memory {
     fn read(&self, service: &str, key: &str) -> Result<Option<Vec<u8>>, String> {
+        if service == LEGACY_SERVICE {
+            self.legacy_reads.set(self.legacy_reads.get() + 1);
+        }
         if self.fail_read.get() {
             return Err("test vault locked".into());
         }
@@ -24,6 +29,7 @@ impl Backend for Memory {
             .cloned())
     }
     fn write(&self, service: &str, key: &str, bytes: &[u8]) -> Result<(), String> {
+        self.writes.set(self.writes.get() + 1);
         if self.fail_write.get() {
             return Err("test save failed".into());
         }
@@ -423,4 +429,60 @@ fn server_accounts_never_adopt_local_credentials_and_share_only_their_workspace_
     assert_token(&backend, &first, "server-a-renewed");
     assert_token(&backend, &second, "server-b");
     assert_eq!(backend.records.borrow().len(), 2);
+}
+
+#[test]
+fn endpoint_alias_migration_preserves_conflicts_neighbors_and_failed_writes() {
+    let backend = Memory::default();
+    let old = fixture_key("alpha", "app");
+    let neighbor = fixture_key("beta", "app");
+    let stable = key(
+        "client:verified-server",
+        "workspace-fixture",
+        "alpha",
+        "app",
+    )
+    .unwrap();
+    store::save(&backend, &old, &state("old")).unwrap();
+    store::save(&backend, &neighbor, &state("neighbor")).unwrap();
+    backend.fail_write.set(true);
+    assert!(store::migrate(&backend, &old, &stable).is_err());
+    backend.fail_write.set(false);
+    assert_token(&backend, &old, "old");
+    store::migrate(&backend, &old, &stable).unwrap();
+    assert!(store::load(&backend, &old).unwrap().is_none());
+    assert_token(&backend, &stable, "old");
+    assert_token(&backend, &neighbor, "neighbor");
+    store::save(&backend, &old, &state("different")).unwrap();
+    store::migrate(&backend, &old, &stable).unwrap();
+    assert_token(&backend, &old, "different");
+    assert_token(&backend, &stable, "old");
+}
+
+#[test]
+fn migrated_slots_stop_reopening_per_extension_records_and_identical_saves_do_not_write() {
+    let backend = Memory::default();
+    let first = fixture_key("alpha", "app");
+    let second = fixture_key("beta", "app");
+    legacy(&backend, &first, "one");
+    assert_token(&backend, &first, "one");
+    store::save(&backend, &second, &state("two")).unwrap();
+    let reads = backend.legacy_reads.get();
+    let writes = backend.writes.get();
+    for _ in 0..3 {
+        assert_token(&backend, &first, "one");
+        assert_token(&backend, &second, "two");
+        store::save(&backend, &first, &state("one")).unwrap();
+    }
+    assert_eq!(
+        backend.legacy_reads.get(),
+        reads,
+        "retired records must not be reopened"
+    );
+    assert_eq!(
+        backend.writes.get(),
+        writes,
+        "unchanged credentials must not invalidate the OS cache"
+    );
+    assert_eq!(backend.records.borrow().len(), 1);
 }

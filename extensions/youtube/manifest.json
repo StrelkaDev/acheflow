@@ -2,185 +2,350 @@
   "id": "youtube",
   "name": "YouTube",
   "api_version": 2,
-  "module": "youtube.wasm",
-  "capabilities": [
-    "http",
-    "chat",
-    "audience",
-    "delete",
-    "delivery",
-    "failure",
-    "panel",
-    "channel",
-    "status",
-    "crypto",
-    "browser",
-    "browser_module",
-    "secret_clear",
-    "storage",
-    "secret_begin",
-    "secret_commit",
-    "secret_discard",
-    "forward_wait",
-    "http_stream"
-  ],
-  "services": [
-    "https://www.googleapis.com",
-    "https://accounts.google.com",
-    "https://oauth2.googleapis.com",
-    "https://youtube.googleapis.com"
-  ],
-  "subscriptions": [
-    "chat.send"
-  ],
-  "settings": [
-    {
-      "id": "client_id",
-      "label": "Application Client ID",
-      "help": "Public OAuth application identifier. Required for Connect with; manual tokens can be entered without it.",
-      "max_length": 256
-    },
-    {
-      "id": "video_id",
-      "label": "Video ID override (optional)",
-      "help": "Leave empty to follow your active broadcasts automatically. If several are live, choose one below. Enter a video ID only to pin a specific broadcast.",
-      "max_length": 128
-    },
-    {
-      "id": "read_chat",
-      "label": "Read chat",
-      "toggle": true,
-      "max_length": 5
-    },
-    {
-      "id": "read_audience",
-      "label": "Read audience",
-      "toggle": true,
-      "max_length": 5
-    },
-    {
-      "id": "send_chat",
-      "label": "Send chat",
-      "toggle": true,
-      "max_length": 5
-    }
-  ],
-  "secret_fields": {
-    "access_token": "/access_token",
-    "refresh_token": "/refresh_token",
-    "authorization_code": "/code",
-    "code_verifier": "/code_verifier",
-    "client_secret": "/client_secret"
-  },
-  "unique_viewers": false,
-  "execution_side": "client",
-  "authentication": {
-    "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
-    "help": "Enable YouTube Data API v3. Native: use a Desktop OAuth client with PKCE; enter its application secret in local Application setup. Browser: use a Web OAuth client with this page origin authorized; sign-in uses Google Identity Services without an application secret. Sending requires youtube.force-ssl; read-only uses youtube.readonly.",
-    "features": [
-      {
-        "id": "read_chat",
-        "label": "Read chat",
-        "default_enabled": true
-      },
-      {
-        "id": "read_audience",
-        "label": "Read audience",
-        "default_enabled": true
-      },
-      {
-        "id": "send_chat",
-        "label": "Send chat",
-        "default_enabled": true
-      }
-    ],
-    "permissions": [
-      {
-        "scope": "https://www.googleapis.com/auth/youtube.force-ssl",
-        "any": [
-          "send_chat"
-        ]
-      },
-      {
-        "scope": "https://www.googleapis.com/auth/youtube.readonly",
-        "unless": [
-          "send_chat"
-        ]
-      }
-    ],
-    "token_url": "https://oauth2.googleapis.com/token",
-    "native_pkce": true,
-    "browser_module": "youtube-oauth.js",
-    "validation": {
-      "request": {
-        "url": "https://oauth2.googleapis.com/tokeninfo",
-        "query": {
-          "access_token": {
-            "secret": "access_token",
-            "prefix": ""
-          }
-        }
-      },
-      "scope_path": "/scope",
-      "client_path": "/aud",
-      "expires_path": "/expires_in",
-      "account_path": "/sub"
-    },
-    "scope_implies": {
-      "https://www.googleapis.com/auth/youtube.readonly": [
-        "https://www.googleapis.com/auth/youtube.force-ssl",
-        "https://www.googleapis.com/auth/youtube"
-      ]
-    }
-  },
-  "forwarding": [
-    {
-      "id": "oauth",
-      "mode": "callback"
-    }
-  ],
-  "application_setup": {
-    "links": [
-      {
-        "label": "Google Auth Platform clients",
-        "url": "https://console.cloud.google.com/auth/clients"
-      },
-      {
-        "label": "Enable YouTube Data API v3",
-        "url": "https://console.cloud.google.com/apis/library/youtube.googleapis.com"
-      },
-      {
-        "label": "OAuth consent and test users",
-        "url": "https://console.cloud.google.com/auth/audience"
-      }
-    ],
-    "native": {
-      "instructions": "Select a Cloud project and enable YouTube Data API v3. Configure the OAuth consent screen and add your account as a test user while the app is in Testing. Create a Desktop app OAuth client. Copy its Client ID into Application Client ID above Connect. PKCE uses a temporary loopback redirect; do not create a Web client or a hosted redirect for native sign-in. Copy its application secret into the local Application secret field; it is stored on this device unless you explicitly copy this account to a trusted server. A read-only connection needs youtube.readonly; sending chat needs youtube.force-ssl.",
-      "address": {
-        "source": "callback_uri",
-        "label": "Active Desktop loopback redirect"
-      },
-      "secrets": [
+  "parts_version": 1,
+  "parts": {
+    "client": {
+      "module": "youtube.wasm",
+      "capabilities": [
+        "http",
+        "chat",
+        "audience",
+        "delete",
+        "delivery",
+        "failure",
+        "panel",
+        "channel",
+        "status",
+        "crypto",
+        "browser",
+        "browser_module",
+        "secret_clear",
+        "storage",
+        "secret_begin",
+        "secret_commit",
+        "secret_discard",
+        "forward_wait"
+      ],
+      "services": [
+        "https://www.googleapis.com",
+        "https://accounts.google.com",
+        "https://oauth2.googleapis.com",
+        "https://youtube.googleapis.com"
+      ],
+      "subscriptions": [
+        "chat.send"
+      ],
+      "settings": [
         {
-          "id": "client_secret",
-          "label": "Application secret",
-          "required": true
+          "id": "client_id",
+          "label": "Application Client ID",
+          "help": "Public OAuth application identifier. Required for Connect with; manual tokens can be entered without it.",
+          "max_length": 256
         }
-      ]
+      ],
+      "secret_fields": {
+        "access_token": "/access_token",
+        "refresh_token": "/refresh_token",
+        "authorization_code": "/code",
+        "code_verifier": "/code_verifier",
+        "client_secret": "/client_secret"
+      },
+      "unique_viewers": false,
+      "authentication": {
+        "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "help": "Enable YouTube Data API v3. Native: use a Desktop OAuth client with PKCE; enter its application secret in local Application setup. Browser: use a Web OAuth client with this page origin authorized; sign-in uses Google Identity Services without an application secret. Sending requires youtube.force-ssl; read-only uses youtube.readonly. This device authorizes sending only; shared chat is read from the server.",
+        "features": [
+          {
+            "id": "read_chat",
+            "label": "Read chat",
+            "default_enabled": true
+          },
+          {
+            "id": "read_audience",
+            "label": "Read audience",
+            "default_enabled": true
+          },
+          {
+            "id": "send_chat",
+            "label": "Send chat",
+            "default_enabled": true
+          }
+        ],
+        "permissions": [
+          {
+            "scope": "https://www.googleapis.com/auth/youtube.force-ssl"
+          }
+        ],
+        "token_url": "https://oauth2.googleapis.com/token",
+        "native_pkce": true,
+        "browser_module": "youtube-oauth.js",
+        "validation": {
+          "request": {
+            "url": "https://oauth2.googleapis.com/tokeninfo",
+            "query": {
+              "access_token": {
+                "secret": "access_token",
+                "prefix": ""
+              }
+            }
+          },
+          "scope_path": "/scope",
+          "client_path": "/aud",
+          "expires_path": "/expires_in",
+          "account_path": "/sub"
+        },
+        "scope_implies": {
+          "https://www.googleapis.com/auth/youtube.readonly": [
+            "https://www.googleapis.com/auth/youtube.force-ssl",
+            "https://www.googleapis.com/auth/youtube"
+          ]
+        }
+      },
+      "forwarding": [
+        {
+          "id": "oauth",
+          "mode": "callback"
+        }
+      ],
+      "application_setup": {
+        "links": [
+          {
+            "label": "Google Auth Platform clients",
+            "url": "https://console.cloud.google.com/auth/clients"
+          },
+          {
+            "label": "Enable YouTube Data API v3",
+            "url": "https://console.cloud.google.com/apis/library/youtube.googleapis.com"
+          },
+          {
+            "label": "OAuth consent and test users",
+            "url": "https://console.cloud.google.com/auth/audience"
+          }
+        ],
+        "native": {
+          "instructions": "Select a Cloud project and enable YouTube Data API v3. Configure the OAuth consent screen and add your account as a test user while the app is in Testing. Create a Desktop app OAuth client. Copy its Client ID into Application Client ID above Connect. PKCE uses a temporary loopback redirect; do not create a Web client or a hosted redirect for native sign-in. Copy its application secret into the local Application secret field; it stays on this device. This device’s sender requests youtube.force-ssl.",
+          "address": {
+            "source": "callback_uri",
+            "label": "Active Desktop loopback redirect"
+          },
+          "secrets": [
+            {
+              "id": "client_secret",
+              "label": "Application secret",
+              "required": true
+            }
+          ]
+        },
+        "browser": {
+          "instructions": "Select a Cloud project, enable YouTube Data API v3, configure OAuth consent and add test users while in Testing. Create a Web application OAuth client. Add the exact origin below to Authorized JavaScript origins and copy its Client ID into Application Client ID above Connect. Google Identity Services opens a popup; no redirect URI or application secret is used for this token flow. Allow popups. This device’s sender requests youtube.force-ssl.",
+          "address": {
+            "source": "origin",
+            "label": "Authorized JavaScript origin"
+          }
+        },
+        "settings": [
+          "client_id"
+        ]
+      },
+      "chat_presentation": {
+        "icon_path": "M22 7c0-2-1-3-3-3H5C3 4 2 5 2 7v10c0 2 1 3 3 3h14c2 0 3-1 3-3ZM10 8l6 4-6 4Z",
+        "help": "Chat for the selected live broadcast. Sending uses the authorized channel and is subject to live chat permissions and restrictions."
+      },
+      "kind": "provider",
+      "supported_actions": [
+        "chat.send"
+      ],
+      "entry_point": "client_handle"
     },
-    "browser": {
-      "instructions": "Select a Cloud project, enable YouTube Data API v3, configure OAuth consent and add test users while in Testing. Create a Web application OAuth client. Add the exact origin below to Authorized JavaScript origins and copy its Client ID into Application Client ID above Connect. Google Identity Services opens a popup; no redirect URI or application secret is used for this token flow. Allow popups. A read-only connection needs youtube.readonly; sending chat needs youtube.force-ssl.",
-      "address": {
-        "source": "origin",
-        "label": "Authorized JavaScript origin"
-      }
-    },
-    "settings": [
-      "client_id"
-    ]
-  },
-  "chat_presentation": {
-    "icon_path": "M22 7c0-2-1-3-3-3H5C3 4 2 5 2 7v10c0 2 1 3 3 3h14c2 0 3-1 3-3ZM10 8l6 4-6 4Z",
-    "help": "Chat for the selected live broadcast. Sending uses the authorized channel and is subject to live chat permissions and restrictions."
+    "server": {
+      "module": "youtube.wasm",
+      "capabilities": [
+        "http",
+        "chat",
+        "audience",
+        "delete",
+        "delivery",
+        "failure",
+        "panel",
+        "channel",
+        "status",
+        "crypto",
+        "browser",
+        "browser_module",
+        "secret_clear",
+        "storage",
+        "secret_begin",
+        "secret_commit",
+        "secret_discard",
+        "forward_wait",
+        "http_stream"
+      ],
+      "services": [
+        "https://www.googleapis.com",
+        "https://accounts.google.com",
+        "https://oauth2.googleapis.com",
+        "https://youtube.googleapis.com"
+      ],
+      "subscriptions": [
+        "chat.send"
+      ],
+      "settings": [
+        {
+          "id": "client_id",
+          "label": "Application Client ID",
+          "help": "Public OAuth application identifier. Required for Connect with; manual tokens can be entered without it.",
+          "max_length": 256
+        },
+        {
+          "id": "video_id",
+          "label": "Video ID override (optional)",
+          "help": "Leave empty to follow your active broadcasts automatically. If several are live, choose one below. Enter a video ID only to pin a specific broadcast.",
+          "max_length": 128
+        },
+        {
+          "id": "read_chat",
+          "label": "Read chat",
+          "toggle": true,
+          "max_length": 5,
+          "default_value": "true"
+        },
+        {
+          "id": "read_audience",
+          "label": "Read audience",
+          "toggle": true,
+          "max_length": 5,
+          "default_value": "true"
+        },
+        {
+          "id": "send_chat",
+          "label": "Send chat",
+          "toggle": true,
+          "max_length": 5,
+          "default_value": "false"
+        }
+      ],
+      "secret_fields": {
+        "access_token": "/access_token",
+        "refresh_token": "/refresh_token",
+        "authorization_code": "/code",
+        "code_verifier": "/code_verifier",
+        "client_secret": "/client_secret"
+      },
+      "unique_viewers": false,
+      "authentication": {
+        "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "help": "Enable YouTube Data API v3. Native: use a Desktop OAuth client with PKCE; enter its application secret in local Application setup. Browser: use a Web OAuth client with this page origin authorized; sign-in uses Google Identity Services without an application secret. Sending requires youtube.force-ssl; read-only uses youtube.readonly.",
+        "features": [
+          {
+            "id": "read_chat",
+            "label": "Read chat",
+            "default_enabled": true
+          },
+          {
+            "id": "read_audience",
+            "label": "Read audience",
+            "default_enabled": true
+          },
+          {
+            "id": "send_chat",
+            "label": "Send chat",
+            "default_enabled": true
+          }
+        ],
+        "permissions": [
+          {
+            "scope": "https://www.googleapis.com/auth/youtube.force-ssl",
+            "any": [
+              "send_chat"
+            ]
+          },
+          {
+            "scope": "https://www.googleapis.com/auth/youtube.readonly",
+            "unless": [
+              "send_chat"
+            ]
+          }
+        ],
+        "token_url": "https://oauth2.googleapis.com/token",
+        "native_pkce": true,
+        "browser_module": "youtube-oauth.js",
+        "validation": {
+          "request": {
+            "url": "https://oauth2.googleapis.com/tokeninfo",
+            "query": {
+              "access_token": {
+                "secret": "access_token",
+                "prefix": ""
+              }
+            }
+          },
+          "scope_path": "/scope",
+          "client_path": "/aud",
+          "expires_path": "/expires_in",
+          "account_path": "/sub"
+        },
+        "scope_implies": {
+          "https://www.googleapis.com/auth/youtube.readonly": [
+            "https://www.googleapis.com/auth/youtube.force-ssl",
+            "https://www.googleapis.com/auth/youtube"
+          ]
+        }
+      },
+      "forwarding": [
+        {
+          "id": "oauth",
+          "mode": "callback"
+        }
+      ],
+      "application_setup": {
+        "links": [
+          {
+            "label": "Google Auth Platform clients",
+            "url": "https://console.cloud.google.com/auth/clients"
+          },
+          {
+            "label": "Enable YouTube Data API v3",
+            "url": "https://console.cloud.google.com/apis/library/youtube.googleapis.com"
+          },
+          {
+            "label": "OAuth consent and test users",
+            "url": "https://console.cloud.google.com/auth/audience"
+          }
+        ],
+        "native": {
+          "instructions": "Select a Cloud project and enable YouTube Data API v3. Configure the OAuth consent screen and add your account as a test user while the app is in Testing. Create a Desktop app OAuth client. Copy its Client ID into Application Client ID above Connect. PKCE uses a temporary loopback redirect; do not create a Web client or a hosted redirect for native sign-in. Copy its application secret into the local Application secret field; it is stored on this device unless you explicitly copy this account to a trusted server. A read-only connection needs youtube.readonly; sending chat needs youtube.force-ssl.",
+          "address": {
+            "source": "callback_uri",
+            "label": "Active Desktop loopback redirect"
+          },
+          "secrets": [
+            {
+              "id": "client_secret",
+              "label": "Application secret",
+              "required": true
+            }
+          ]
+        },
+        "browser": {
+          "instructions": "Select a Cloud project, enable YouTube Data API v3, configure OAuth consent and add test users while in Testing. Create a Web application OAuth client. Add the exact origin below to Authorized JavaScript origins and copy its Client ID into Application Client ID above Connect. Google Identity Services opens a popup; no redirect URI or application secret is used for this token flow. Allow popups. A read-only connection needs youtube.readonly; sending chat needs youtube.force-ssl.",
+          "address": {
+            "source": "origin",
+            "label": "Authorized JavaScript origin"
+          }
+        },
+        "settings": [
+          "client_id"
+        ]
+      },
+      "chat_presentation": {
+        "icon_path": "M22 7c0-2-1-3-3-3H5C3 4 2 5 2 7v10c0 2 1 3 3 3h14c2 0 3-1 3-3ZM10 8l6 4-6 4Z",
+        "help": "Chat for the selected live broadcast. Sending uses the authorized channel and is subject to live chat permissions and restrictions."
+      },
+      "kind": "provider",
+      "supported_actions": [
+        "chat.send"
+      ],
+      "entry_point": "server_handle"
+    }
   }
 }

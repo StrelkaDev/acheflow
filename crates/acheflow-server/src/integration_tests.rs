@@ -9,11 +9,11 @@ fn host(ids: &[&str]) -> (Arc<ControlHost>, acheflow_media_api::workspace::Works
     workspace.migrate_spatial();
     *host.runtime.workspace.write().unwrap() = Some(workspace.clone());
     let inner = Arc::get_mut(&mut host).unwrap();
-    inner.installed.clear();
+    inner.installed.get_mut().unwrap().clear();
     for id in ids {
         let manifest:GuestManifest=serde_json::from_value(json!({"id":id,"name":id,"api_version":2,"module":"fixture.wasm","capabilities":["channel","chat","delivery","poll","donation","interaction"],"services":[],"subscriptions":["chat.send","poll.create","poll.close"]})).unwrap();
         manifest.validate().unwrap();
-        inner.installed.insert(
+        inner.installed.get_mut().unwrap().insert(
             id.to_string(),
             crate::extension_registry::Installed {
                 manifest,
@@ -308,9 +308,16 @@ fn production_host_and_ui_do_not_reference_installed_provider_protocols() {
             continue;
         };
         let manifest: GuestManifest = serde_json::from_slice(&bytes).unwrap();
-        if !manifest.services.is_empty() {
-            forbidden.push(format!("\"{}\"", manifest.id));
-            forbidden.extend(manifest.services);
+        for host in [
+            acheflow_extension_api::parts::ExecutionHost::Client,
+            acheflow_extension_api::parts::ExecutionHost::Server,
+        ] {
+            if let Some(part) = manifest.select_part(host).unwrap()
+                && !part.services.is_empty()
+            {
+                forbidden.push(format!("\"{}\"", part.id));
+                forbidden.extend(part.services);
+            }
         }
     }
     for package in ["acheflow-server", "acheflow-ui"] {
@@ -345,6 +352,8 @@ async fn server_rejects_provider_transport_before_starting_a_guest() {
     let extension = Arc::get_mut(&mut host)
         .unwrap()
         .installed
+        .get_mut()
+        .unwrap()
         .get_mut("network")
         .unwrap();
     extension.manifest.capabilities.push("http".into());
@@ -362,9 +371,9 @@ async fn server_rejects_provider_transport_before_starting_a_guest() {
 #[tokio::test]
 async fn server_discovery_lists_only_logic_and_never_publishes_client_provider_metadata() {
     let (host, workspace) = crate::control::tests::host();
-    assert!(host.installed.contains_key("sample"));
+    assert!(host.installed.read().unwrap().contains_key("sample"));
     for id in ["twitch", "youtube", "vklive"] {
-        assert!(!host.installed.contains_key(id));
+        assert!(!host.installed.read().unwrap().contains_key(id));
         let snapshot = host.snapshot(0, 1);
         assert!(!snapshot.extensions.iter().any(|e| e.id == id));
         assert!(
@@ -440,7 +449,13 @@ async fn duplicate_donations_and_interaction_triggers_are_not_rebroadcast() {
 #[tokio::test]
 async fn subscribed_guest_event_cycles_stop_at_the_causal_depth_limit() {
     let (mut host, _) = host(&["alpha", "beta"]);
-    for extension in Arc::get_mut(&mut host).unwrap().installed.values_mut() {
+    for extension in Arc::get_mut(&mut host)
+        .unwrap()
+        .installed
+        .get_mut()
+        .unwrap()
+        .values_mut()
+    {
         extension.manifest.capabilities.push("read.chat".into());
         extension.manifest.subscriptions.push("chat.message".into());
         extension

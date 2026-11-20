@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 pub struct Fixture {
     poll: Option<(u64, usize)>,
     events: u64,
+    direct: Option<(String, String)>,
 }
 impl Fixture {
     pub fn handle(&mut self, input: Value) -> Vec<Value> {
@@ -22,16 +23,52 @@ impl Fixture {
                 json!({"type":"chat","message":{"platform":origin,"channel_id":"channel","message_id":format!("{origin}:{}",self.events),"user_id":"loop","display_name":"Loop","text":"loop","roles":[],"occurred_at_ms":now}}),
             ];
         }
-        if input["config"]["server_authorization_fixture"] == "true" && input["type"] == "local_server_authorize" {
-            return vec![json!({"type":"secret_commit","keep":["access_token"]}), json!({"type":"storage","value":{"account":"verified-bot"}})];
+        if input["config"]["server_authorization_fixture"] == "true"
+            && input["type"] == "local_server_authorize"
+        {
+            return vec![
+                json!({"type":"secret_commit","keep":["access_token"]}),
+                json!({"type":"storage","value":{"account":input["config"]["authorized_account"].as_str().unwrap_or("verified-bot")}}),
+            ];
         }
         if input["type"] == "prepare_action" && input["config"]["action_prepare_write"] == "true" {
-            return vec![json!({"type":"http","method":"POST","id":"forbidden","url":"https://provider.invalid/write"})];
+            return vec![
+                json!({"type":"http","method":"POST","id":"forbidden","url":"https://provider.invalid/write"}),
+            ];
         }
         if input["type"] == "prepare_action" && input["config"]["action_prepare_stream"] == "true" {
-            return vec![json!({"type":"websocket","id":"forbidden","url":"wss://provider.invalid/stream"})];
+            return vec![
+                json!({"type":"websocket","id":"forbidden","url":"wss://provider.invalid/stream"}),
+            ];
         }
-        if input["type"] == "prepare_action" { return vec![json!({"type":"channel","channel":{"id":input["channel_id"],"capabilities":["chat.send"]}})]; }
+        if input["type"] == "prepare_action" {
+            return vec![
+                json!({"type":"channel","channel":{"id":input["channel_id"],"capabilities":["chat.send"]}}),
+            ];
+        }
+        if input["type"] == "command"
+            && input["name"] == "chat.send"
+            && input["config"]["direct_action_url"].is_string()
+        {
+            self.direct = Some((
+                input["request_id"].as_str().unwrap_or_default().into(),
+                input["channel_id"].as_str().unwrap_or_default().into(),
+            ));
+            let effect = json!({"type":"http","id":"direct:write","method":"POST","url":input["config"]["direct_action_url"],"headers":{"Authorization":{"secret":"access_token","prefix":"Bearer "}},"body":{"text":input["text"]}});
+            return if input["config"]["direct_action_twice"] == "true" {
+                vec![effect.clone(), effect]
+            } else {
+                vec![effect]
+            };
+        }
+        if input["type"] == "http_result"
+            && input["id"] == "direct:write"
+            && let Some((request, channel)) = self.direct.take()
+        {
+            return vec![
+                json!({"type":"delivery","request_id":request,"channel_id":channel,"sent":input["status"]==200,"external_id":input["payload"]["id"]}),
+            ];
+        }
         match input["type"].as_str().unwrap_or_default() {
             "start" if input["config"]["server_fixture"] == "true" => vec![
                 json!({"type":"channel","channel":{"id":"channel","label":origin,"capabilities":["chat.read","chat.send"]}}),

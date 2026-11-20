@@ -20,7 +20,7 @@ impl Integrations {
             || channel.capabilities.iter().any(|c| {
                 !matches!(
                     c.as_str(),
-                    "chat.send" | "poll.create" | "interaction.triggered"
+                    "chat.read" | "chat.send" | "poll.create" | "interaction.triggered"
                 )
             })
         {

@@ -715,7 +715,21 @@ async fn youtube_connect_requires_public_id_and_local_secret_without_leaking_the
         "another application cannot reuse an unsubmitted credential draft"
     );
 }
+fn open_client_settings(doc: &mut DioxusDocument, provider: &str) {
+    if !exists(doc, &format!("#client-extension-{provider}[hidden]")) {
+        return;
+    }
+    let button = doc
+        .inner
+        .borrow()
+        .query_selector(&format!("#client-settings-{provider}"))
+        .unwrap()
+        .unwrap();
+    doc.inner.borrow_mut().set_focus_to(button);
+    press_tab_key(doc, NamedKey::Enter, Code::Enter);
+}
 fn open_application_credentials(doc: &mut DioxusDocument, provider: &str) {
+    open_client_settings(doc, provider);
     let disclosure = doc
         .inner
         .borrow()
@@ -793,6 +807,7 @@ async fn local_guest_panel_keeps_manual_tokens_out_of_workspace_and_server_paylo
     doc.initial_build();
     settle(&mut doc);
     toggle(&mut doc);
+    open_client_settings(&mut doc, "twitch");
     assert!(!exists(
         &doc,
         ".client-authorization input[type='password']"
@@ -823,6 +838,12 @@ async fn local_guest_panel_keeps_manual_tokens_out_of_workspace_and_server_paylo
     doc.inner.borrow_mut().set_focus_to(input);
     doc.handle_ui_event(UiEvent::Paste("fake-local-token-for-test".into()));
     settle(&mut doc);
+    select_scope(&mut doc, "server");
+    select_scope(&mut doc, "client");
+    assert!(
+        exists(&doc, "#client-extension-twitch:not([hidden])"),
+        "changing scope retains the open account panel"
+    );
     let disclosure = doc
         .inner
         .borrow()
@@ -1169,7 +1190,7 @@ async fn password_editor_preserves_input_but_only_shapes_asterisks() {
     );
 }
 #[tokio::test]
-async fn compact_extension_controls_share_rows_and_wrap_without_horizontal_overflow() {
+async fn client_sender_has_no_collection_toggles_and_setup_fits_narrow_viewports() {
     use blitz_traits::shell::Viewport;
     for width in [1000, 320] {
         let harness = Rc::new(Harness::default());
@@ -1197,32 +1218,17 @@ async fn compact_extension_controls_share_rows_and_wrap_without_horizontal_overf
             .or_default()
             .enabled = true;
         settle(&mut doc);
-        let document = doc.inner.borrow();
-        let controls = document
-            .query_selector_all("#client-extension-youtube .extension-functions button")
-            .unwrap();
-        let first = document
-            .get_node(controls[0])
-            .unwrap()
-            .absolute_position(0., 0.);
-        let points: Vec<_> = controls
-            .iter()
-            .map(|id| document.get_node(*id).unwrap().absolute_position(0., 0.))
-            .collect();
-        if width == 1000 {
-            assert!(points.iter().all(|point| (point.y - first.y).abs() < 1.));
-        } else {
-            assert!(points.iter().any(|point| point.y > first.y + 10.));
-        }
-        for id in controls {
-            let node = document.get_node(id).unwrap();
-            let right = node.absolute_position(0., 0.).x + node.final_layout().size.width;
-            assert!(
-                right <= width as f32 + 1.,
-                "control extends past viewport: {right}"
-            );
-        }
-        drop(document);
+        assert!(
+            doc.inner
+                .borrow()
+                .query_selector_all("#client-extension-youtube .extension-functions button")
+                .unwrap()
+                .is_empty()
+        );
+        let html = doc.inner.borrow().root_element().outer_html();
+        assert!(!html.contains("Studio chat"));
+        assert!(!html.contains("My messages"));
+        assert!(!html.contains("Shared server account"));
         open_application_credentials(&mut doc, "youtube");
         let document = doc.inner.borrow();
         for id in document.query_selector_all("#client-extension-youtube .field, #client-extension-youtube .extension-copy-field button").unwrap() {

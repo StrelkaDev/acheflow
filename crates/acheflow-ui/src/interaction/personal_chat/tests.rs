@@ -2,6 +2,7 @@ use super::*;
 use acheflow_media_api::access::{Device, Permission as P, Session, User};
 use blitz_dom::{Document, DocumentConfig};
 use dioxus_native::DioxusDocument;
+use serde_json::json;
 use std::{
     cell::Cell,
     sync::{Arc, Mutex},
@@ -51,10 +52,52 @@ fn app() -> Element {
         request_generation: use_signal(|| 0),
     };
     use_context_provider(|| client);
+    let catalog = use_hook(|| {
+        let mut catalog = ClientCatalog::default();
+        let manifest=serde_json::from_value(json!({"id":"alpha","name":"Alpha","api_version":2,"module":"fixture.wasm","execution_side":"client","capabilities":["channel","http","delivery","secret_commit","storage"],"services":["https://provider.example"],"secret_fields":{"access_token":"/access_token"},"subscriptions":["chat.send"],"supported_actions":["chat.send"]})).unwrap();
+        catalog.installed.insert(
+            "alpha".into(),
+            acheflow_client::catalog::Installed {
+                manifest,
+                module: include_bytes!("../../../../acheflow-server/tests/fixtures/domain.wasm")
+                    .to_vec(),
+                browser_auth: None,
+            },
+        );
+        Rc::new(catalog)
+    });
+    use_context_provider(|| catalog.clone());
+    let sessions = use_signal(|| {
+        let installed = &catalog.installed["alpha"];
+        let mut local = acheflow_client::local::LocalSession::new(
+            installed.manifest.clone(),
+            &installed.module,
+            std::collections::BTreeMap::from([(
+                "server_authorization_fixture".into(),
+                "true".into(),
+            )]),
+        )
+        .unwrap();
+        local.bind_workspace("workspace").unwrap();
+        local
+            .set_secret("access_token", "device-only".into())
+            .unwrap();
+        local
+            .step(
+                json!({"type":"local_server_authorize"}),
+                &json!({"browser":false}),
+                100,
+            )
+            .unwrap();
+        Sessions::from([(
+            ("workspace".into(), h.endpoint.clone(), "alpha".into()),
+            local,
+        )])
+    });
+    use_context_provider(|| sessions);
     let draft = ChatDraft {
         text: use_signal(String::new),
-        targets: use_signal(Vec::new),
-        personal_mode: use_signal(|| true),
+        targets: use_signal(|| vec!["alpha:channel".into()]),
         personal_pending: use_signal(|| None),
     };
     use_context_provider(|| draft);
@@ -97,44 +140,24 @@ fn click(d: &mut DioxusDocument) {
     settle(d);
 }
 #[tokio::test]
-async fn personal_sender_uses_own_endpoint_and_preserves_uncertain_request_across_navigation() {
-    let requests = Arc::new(Mutex::new(Vec::<SendPersonalChat>::new()));
+async fn device_sender_checks_server_permission_without_uploading_credentials_or_falling_back() {
+    let requests = Arc::new(Mutex::new(Vec::<AuthorizeDirectAction>::new()));
     let captured = requests.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let task = tokio::spawn(async move {
-        let app = axum::Router::new()
-            .route(
-                "/api/access/personal-accounts/{workspace}",
-                axum::routing::get(|| async {
-                    axum::Json(PersonalAccounts {
-                        send_epoch: "epoch".into(),
-                        server_time_ms: 1,
-                        accounts: vec![PersonalAccount {
-                            provider: "alpha".into(),
-                            account_id: "mine".into(),
-                            version: "version".into(),
-                        }],
-                    })
-                }),
-            )
-            .route(
-                "/api/access/personal-send/workspace/alpha/channel",
-                axum::routing::post(move |axum::Json(r): axum::Json<SendPersonalChat>| {
+        let app = axum::Router::new().route(
+            "/api/access/actions/authorize",
+            axum::routing::post(
+                move |axum::Json(request): axum::Json<AuthorizeDirectAction>| {
                     let captured = captured.clone();
                     async move {
-                        let mut requests = captured.lock().unwrap();
-                        requests.push(r);
-                        axum::Json(PersonalDelivery {
-                            outcome: if requests.len() == 1 {
-                                ExecutionOutcome::Unknown
-                            } else {
-                                ExecutionOutcome::Sent
-                            },
-                        })
+                        captured.lock().unwrap().push(request);
+                        axum::http::StatusCode::FORBIDDEN
                     }
-                }),
-            );
+                },
+            ),
+        );
         axum::serve(listener, app).await.unwrap();
     });
     let h = Rc::new(Harness {
@@ -146,52 +169,35 @@ async fn personal_sender_uses_own_endpoint_and_preserves_uncertain_request_acros
         DocumentConfig::default(),
     );
     d.initial_build();
+    settle(&mut d);
     h.text.get().unwrap().set("Hello".into());
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        settle(&mut d);
-        if d.inner
-            .borrow()
-            .query_selector(".personal-chat-compose button.primary[disabled]")
-            .unwrap()
-            .is_none()
-        {
-            break;
-        }
-        assert!(Instant::now() < deadline);
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    click(&mut d);
-    loop {
-        settle(&mut d);
-        if d.inner
+    settle(&mut d);
+    assert!(
+        d.inner
             .borrow()
             .root_element()
             .outer_html()
-            .contains("Delivery is uncertain")
-        {
-            break;
-        }
+            .contains("verified-bot")
+    );
+    click(&mut d);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while requests.lock().unwrap().is_empty() {
+        settle(&mut d);
         assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    for _ in 0..5 {
+        settle(&mut d);
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     h.visible.get().unwrap().set(false);
     settle(&mut d);
     h.visible.get().unwrap().set(true);
     settle(&mut d);
+    assert_eq!(h.text.get().unwrap().peek().as_str(), "Hello");
     assert_eq!(requests.lock().unwrap().len(), 1);
-    click(&mut d);
-    loop {
-        settle(&mut d);
-        if h.text.get().unwrap().peek().is_empty() {
-            break;
-        }
-        assert!(Instant::now() < deadline);
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
     let requests = requests.lock().unwrap();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].request_id, requests[1].request_id);
-    assert_eq!(requests[0].text, requests[1].text);
+    assert_eq!(requests[0].provider, "alpha");
+    assert_eq!(requests[0].channel_id, "channel");
     task.abort();
 }

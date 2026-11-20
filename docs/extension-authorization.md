@@ -6,10 +6,11 @@ panel and handles its buttons. Reusable OAuth guest code is in
 `extensions/guest-sdk/src/authorization.rs`; the client does not implement an
 OAuth controller or choose provider scopes.
 
-This guide describes device-local authorization. The trusted server executor uses
-a separate account namespace and never adopts these accounts automatically. Explicit shared and personal account copying is implemented. Action execution
-through personal accounts and per-user delegation remain SHARED-06. See
-[server execution](client-executor.md#trusted-server-execution).
+The **Client** tab authorizes the personal sender on this device. The **Server**
+tab authorizes a separate collector account, which may be different. Personal
+tokens are never copied to the server. Server authorization runs in a temporary
+isolated session until you explicitly save it to the trusted server; it cannot
+open this device's credential container. See [server execution](client-executor.md#trusted-server-execution).
 
 The client supplies bounded HTTPS, cryptographic randomness/S256, a browser callback,
 generic panel/secret-input rendering and local secret storage. A callback or token
@@ -33,7 +34,8 @@ Enable an installed extension and enter its fields under **Application credentia
 Expand **Application setup instructions** when registering the application.
 Each provider declares console/documentation links, platform-specific instructions
 and public fields bound to its own setting IDs. Enter your application's public
-Client ID in **Application credentials** and enable only the functions you need.
+Client ID in **Application credentials**. Client authorization requests sending
+rights; server collection starts with read functions and write functions disabled.
 The guest displays the requested permissions and the exact active callback or authorized origin with
 **Copy**. If the clipboard is unavailable, select the read-only address manually.
 These declarations use the shared typed application-setup contract; the UI has no
@@ -98,7 +100,7 @@ YouTube requests `youtube.readonly` for reading and `youtube.force-ssl` when cha
 sending is enabled. VK Video Live sending requests `chat:message:send` and
 requires an active stream; reconnect an older read-only account after enabling
 **Send chat**. For an existing workspace restricted to reading, open
-**Extensions → Server → Saved permissions** and choose **Allow sending** for
+**Extensions → Server → Advanced permissions → Review permissions** and choose **Allow sending** for
 the account. This changes only that account/channel’s workspace chat permission;
 platform authorization is still required. Native VK polls remain unavailable.
 Turning off a function also disables the corresponding guest operation. Enabling
@@ -116,10 +118,10 @@ without a refresh mechanism require reconnection after expiry.
 ## Storage and lifetime
 
 On macOS, committed native credentials use Keychain. One record contains the
-accounts for a selected server address and workspace, with isolated slots for each
+accounts for a verified server identity and workspace, with isolated slots for each
 extension and public application ID. One account is active per slot. Disconnect
 removes only that slot; the last disconnect removes the empty workspace record.
-Disable stops the local instance without deleting the saved account. A locked or
+Disabling the client part removes its active session without deleting the saved account. A locked or
 unavailable keychain produces an error; there is no plaintext-file fallback. Other
 native platforms need their own OS vault adapter before durable use.
 
@@ -127,7 +129,12 @@ Existing per-extension records migrate when that account is next opened or saved
 The new workspace record is saved before the old record is removed; interrupted
 cleanup is retried without restoring an older token over the new one. Unused old
 accounts remain in their original records until accessed. Native processes serialize
-read/modify/write operations with an OS file lock containing no credentials.
+read/modify/write operations with an OS file lock containing no credentials. URL
+slots migrate to the verified server namespace after a recoverable destination
+exists; conflicting accounts are preserved. A process-memory cache and shared
+revision marker avoid repeated OS reads while invalidating records before writes.
+Keychain prompt counts depend on signing and access policy, separately from record
+counts. Device-to-server login has its own single container and session lifetime.
 Storage is bounded to 64 slots and 4 MiB per workspace, with the existing 256-KiB
 per-account limit. An unsuccessful save reports an error and preserves saved data.
 
@@ -136,105 +143,67 @@ The explicit [trusted-server connection](#connect-a-trusted-server-account) belo
 uses its own server/workspace namespace.
 
 Browser credentials live only in memory. They are never written to localStorage,
-IndexedDB or workspace export. They reach a server only through the explicit
-trusted-server connection below. Disable/workspace/server changes dispose
+IndexedDB or workspace export. Personal browser credentials never reach the server. Server authorization uses
+its own temporary session. Disable/workspace/server changes dispose
 the local instance and discard browser credentials. Late results cannot restore it.
 
 ## Connect a trusted server account
 
-First open the shared server workspace, authorize the account locally in
-**Extensions → Client**, then choose **Connect this account to the server…**.
-Select a discovered channel or enter its exact extension channel ID. Review the
-trust notice and confirm that the server may store and use this account. The copy
-includes committed access/refresh credentials and any application secret needed
-for renewal. It does not include drafts, arbitrary local storage or browser callbacks.
-Use trusted HTTPS for a remote server; loopback HTTP is allowed for development.
+Open the shared workspace, then **Extensions → Server → Configure**. Select the
+needed read functions and sign in to the server's own account. Application setup
+and OAuth remain extension-owned; native callbacks terminate on the authorizing
+device, while browser flows use that page's origin. Select the exact shared channel
+ID, review the trust notice and explicitly save the authorization to the server.
+The trusted server can access its stored access/refresh tokens and application
+secrets required for renewal. Use trusted HTTPS for remote servers; loopback HTTP
+is allowed for development. Your Client account remains separate.
 
-The server revalidates credentials through its installed WASM guest, obtains the
-platform account identity and requires it to match the selected local account.
-The operation requires all Apply grants plus **Manage device access** and **Read
-chat**, rechecked after validation. The workspace ID and expected revision prevent
-an account from being connected to a different or concurrently edited workspace.
-Validation is bounded to thirty seconds, eight HTTPS effects and two concurrent
-checks. No collector runs during account verification.
+The server revalidates identity and current rights through its installed guest,
+then saves a fresh isolated slot. Validation is bounded to thirty seconds, eight
+HTTPS effects and two concurrent checks, with no collector during validation.
+The workspace ID and expected revision protect concurrent changes. Configuration
+rights permit reading/saving nonsecret settings; execution rights are additionally
+required for account authorization, module execution, starting/stopping collection
+and disconnection. No scene/media/access-administration grant is required merely
+to manage the server integration.
 
-Only after validation does the server save a fresh isolated account slot and
-publish a primary server binding. Initial capability is **chat.read** only. A saved
-account starts collection when the studio is active; connection never starts media
-outputs. Replacement fences and joins the old collector before using the new
-binding. Storage/configuration failure preserves the previous account and local
-copy. The local account remains available until explicitly disconnected locally.
-
-**Disconnect server account** removes the server copy after stopping its collector.
-Its server-owned channel binding remains reserved and shows authorization required,
-so local clients do not silently resume collection. Reconnect explicitly to resume.
-macOS uses the OS workspace vault; other server platforms currently fail closed
-without an implemented credential-store adapter. An unused or retired slot that cannot be
-removed is retained without execution authority and produces a generic server warning.
-
-This flow connects a workspace/server account. Personal accounts use the separate
-flow below. Per-action authority, delegation and moderation remain unfinished.
-Reading shared chat does not grant access to credentials or permission to act
-through the server account.
+The saved collector receives chat/audience under read grants, resumes after server
+restart, and runs independently of video output. Saving never starts a stream.
+Replacement cancels the old collector before using the new binding; failed storage
+preserves the previous usable binding. The temporary authorization session is
+cleared after saving. **Save server settings** updates public parameters; changing
+the application Client ID requires reauthorization. **Stop collecting** preserves
+the account. **Disconnect server account** stops it and removes its credential slot.
+macOS has the OS vault adapter; other native server platforms fail closed until
+their adapter is implemented.
 
 ## Personal accounts on the trusted server
 
-Any authenticated participant can use **Your personal server account** in
-**Extensions → Client**. Authorize locally, choose **Save this account for my
-profile…**, review the trust notice and confirm. The server revalidates the token
-through its installed guest and derives ownership from the authenticated user.
-The API accepts no owner/user ID and no caller-supplied storage or vault slot.
-
-Only devices explicitly linked to that user can list, replace or disconnect the
-personal binding. An invitation for a new participant creates a different user,
-even when device or display names match. HTTP administrators do not inherit access
-to other users' personal bindings; the trusted machine operator can still access
-its OS vault. A personal connection does not grant device permissions.
-
-There is one personal account per user/workspace/provider. Personal and shared
-accounts use disjoint slots in the same server/workspace vault container. Private
-ownership, public provider settings and opaque slot references are saved in the
-protected access registry, never in workspace JSON, snapshots or exports. The
-registry retains at most 256 personal bindings and its existing 1-MiB size bound.
-Existing access files without personal metadata load with an empty account list.
-
-Connecting a personal account does not start a runtime, register a channel, change
-the workspace revision or capability policy, or restart the shared collector.
-Sending/moderation through personal accounts is a separate unfinished step; the
-saved account does not yet select the authority of existing chat commands.
-
-A version precondition protects replacement and disconnect from concurrent edits
-on linked devices. User/session ownership and the current server workspace are
-rechecked after platform validation. Failed vault or registry writes preserve the
-previous binding and local account. Successful replacement retires its old slot.
-**Disconnect my account** durably removes the binding before deleting credentials;
-if the vault cannot delete them, the UI reports that cleanup failed. The old slot
-has no personal binding and cannot be selected for actions. Accounts from previous
-workspaces can still be listed and disconnected by their owner.
+This is a migration-only section. Earlier server-held personal copies remain
+listable/deletable by their authenticated owner in **Client → Old personal accounts
+stored on this server**. Reauthorize in Client on each device before deleting a
+copy. The UI never downloads secrets or automatically removes the sole copy.
+A locked server vault retains cleanup metadata so deletion can be retried after
+unlocking. Old personal upload/send endpoints return 410 and cannot execute actions.
+Linking devices shares Acheflow identity and permissions, never platform accounts.
 
 ## Execution boundary and verification
 
-These panels authorize local provider sessions. `LocalSession::install` can restore
-their state into a matching native provider runtime in the same workspace. This
-does not create an MCP executor credential, register workspace grants, start an
-always-on executor or implement a browser media executor. Those remain the separate
-client execution boundary described in [client-executor.md](client-executor.md).
-Choose **Studio chat** to receive chat, or **My messages** to connect a personal
-sending account without opening another collector. The card's **Chat connected**
-badge reports a live executor connection or a running server provider.
-**Authorized locally as …** reports OAuth validation separately. For enabled
-Studio integrations, the desktop automatically starts the local provider runtime
-after committed authorization when the workspace is active on its server and
-execution is permitted. A provider assigned to the server uses its shared
-collector. Continuous browser execution is not implemented.
+The server is the sole shared-chat collector. Opening a client or signing in to
+its sender never registers another read subscription. The composer shows this
+device's account and one explicitly selected channel. Sending validates current
+Acheflow rights, the committed platform account and target metadata before one
+direct platform write. Navigation does not retry an in-flight send; unknown delivery
+is terminal. Changing account/workspace, revocation or disconnection fences the
+request. There is no server-account fallback. Future moderation is not implemented.
 
-Regression coverage exercises the actual provider WASM artifacts, read-only scopes,
-disabled sends, callback-state rejection, staged credentials, workspace exports and
-real loopback callbacks. Workspace vault tests cover isolation, migration failures,
-storage limits and parallel native processes. macOS Keychain has an explicit
-real-system roundtrip test that creates and removes isolated fake-token records. Account consent,
-provider app registration, live renewal and platform permissions still require
-separate testing with configured applications/accounts.
+Native and browser use the same action-only WASM path with bounded HTTPS. Browser
+CORS/OAuth restrictions may prevent a platform request; the UI reports failure and
+never uploads personal credentials to work around it. Use the native client where
+needed. Real-WASM regression tests cover all three provider sender paths, loopback
+writes, revocation, callback fencing and uncertain delivery. Separate live consent,
+renewal, physical-phone keyboard and signed-build Keychain checks still require
+the intended applications/accounts and devices.
 
 Sources: [Twitch OAuth](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/),
 [Twitch app registration](https://dev.twitch.tv/docs/authentication/register-app/),

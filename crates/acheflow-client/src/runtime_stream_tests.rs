@@ -3,9 +3,13 @@ use super::*;
 mod fixture;
 
 fn runtime(id: &str, channel: &str) -> ProviderRuntime {
-    let catalog = crate::catalog::ClientCatalog::bundled();
+    let catalog = crate::catalog::ClientCatalog::discover_server_at(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../extensions")
+            .as_path(),
+    );
     let installed = &catalog.installed[id];
-    ProviderRuntime::new(
+    ProviderRuntime::new_for_host(
         installed.manifest.clone(),
         &installed.module,
         Identity {
@@ -21,6 +25,7 @@ fn runtime(id: &str, channel: &str) -> ProviderRuntime {
             },
         },
         BTreeMap::from([("video_id".into(), "video".into())]),
+        acheflow_extension_api::parts::ExecutionHost::Server,
     )
     .unwrap()
 }

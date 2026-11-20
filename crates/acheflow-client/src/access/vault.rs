@@ -1,14 +1,6 @@
-//! A distinct Keychain service: no imported workspace or guest can name this slot.
-const SERVICE: &str = "Acheflow server access v1";
+//! Device sessions stay separate from workspace provider credentials.
 pub(super) fn load(server: &str) -> Result<Option<String>, String> {
-    let bytes = match security_framework::passwords::get_generic_password(SERVICE, server) {
-        Ok(bytes) => bytes,
-        Err(error) if error.code() == -25300 => return Ok(None),
-        Err(_) => return Err("Cannot read device session from Keychain.".into()),
-    };
-    let token = String::from_utf8(bytes).map_err(|_| "Invalid stored device session.")?;
-    validate(&token)?;
-    Ok(Some(token))
+    crate::vault::device_session(server, None)
 }
 fn validate(token: &str) -> Result<(), String> {
     if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -18,15 +10,12 @@ fn validate(token: &str) -> Result<(), String> {
 }
 pub(super) fn save(server: &str, token: &str) -> Result<(), String> {
     validate(token)?;
-    security_framework::passwords::set_generic_password(SERVICE, server, token.as_bytes())
-        .map_err(|_| "Cannot save device session in Keychain.".into())
+    crate::vault::device_session(server, Some(Some(token)))?;
+    Ok(())
 }
 pub(super) fn remove(server: &str) -> Result<(), String> {
-    match security_framework::passwords::delete_generic_password(SERVICE, server) {
-        Ok(()) => Ok(()),
-        Err(error) if error.code() == -25300 => Ok(()),
-        Err(_) => Err("Cannot remove device session from Keychain.".into()),
-    }
+    crate::vault::device_session(server, Some(None))?;
+    Ok(())
 }
 #[cfg(test)]
 mod tests {

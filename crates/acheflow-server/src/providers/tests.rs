@@ -3,12 +3,12 @@ use acheflow_media_api::control::{ControlAction, ControlRequest};
 fn fixture() -> (Arc<ControlHost>, Workspace) {
     let (mut host, mut workspace) = crate::control::tests::host();
     let inner = Arc::get_mut(&mut host).unwrap();
-    inner.installed.clear();
-    inner.provider_catalog.installed.clear();
+    inner.installed.get_mut().unwrap().clear();
+    inner.provider_catalog.get_mut().unwrap().installed.clear();
     inner.providers.set_server("fixture-server").unwrap();
     for id in ["alpha", "beta"] {
         let manifest=serde_json::from_value(serde_json::json!({"id":id,"name":id,"api_version":2,"module":"fixture.wasm","execution_side":"client","services":[],"capabilities":["channel","chat","delivery","status"],"settings":[{"id":"server_fixture","label":"Fixture"},{"id":"server_auth_lost","label":"Expired"}],"subscriptions":["chat.send"]})).unwrap();
-        inner.provider_catalog.installed.insert(
+        inner.provider_catalog.get_mut().unwrap().installed.insert(
             id.into(),
             acheflow_client::catalog::Installed {
                 manifest,
@@ -459,6 +459,8 @@ fn a_missing_server_package_is_visible_without_falling_back_to_a_client_account(
     Arc::get_mut(&mut host)
         .unwrap()
         .provider_catalog
+        .get_mut()
+        .unwrap()
         .installed
         .remove("alpha");
     let status = host
@@ -494,4 +496,31 @@ async fn disconnecting_one_provider_fences_it_without_restarting_the_other_colle
     ready(&host).await;
     assert_eq!(host.providers.running.lock().await["beta"].actor, beta);
     host.providers.suspend(&host).await;
+}
+
+#[tokio::test]
+async fn saved_collectors_run_without_media_activation_and_stop_on_workspace_removal() {
+    let (host, _workspace) = fixture();
+    host.runtime
+        .activated
+        .store(false, std::sync::atomic::Ordering::Release);
+    host.providers.reconcile(&host).await;
+    ready(&host).await;
+    assert!(
+        !host
+            .runtime
+            .activated
+            .load(std::sync::atomic::Ordering::Acquire)
+    );
+    assert_eq!(
+        host.snapshot(0, 20)
+            .server_providers
+            .iter()
+            .filter(|p| p.state == "running")
+            .count(),
+        2
+    );
+    *host.runtime.workspace.write().unwrap() = None;
+    host.providers.reconcile(&host).await;
+    assert!(host.providers.running.lock().await.is_empty());
 }

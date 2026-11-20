@@ -22,8 +22,10 @@ Reading the shared feed does not require another platform subscription.
 - Extensions declare client and/or server parts, their settings, capabilities,
   authorization and entry points. Each installed host executes its own part.
   Provider authentication, targets and protocols stay under `extensions/`.
-  The exact manifest/SDK change and compatibility policy are SHARED-09 work,
-  not an already supported contract field.
+  SHARED-09 implements `parts_version: 1`, per-host entry points and isolated
+  declarations with explicit legacy compatibility; see the
+  [package contract](../extension-contract.md#package-parts-and-compatibility).
+  Installation and the remaining execution/settings migration are unfinished.
 - The server part authorizes an independent platform account and collects the
   common chat feed once per enabled binding/provider/channel. Clients consume
   the authenticated server feed; there is no client collection fallback.

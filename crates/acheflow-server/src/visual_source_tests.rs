@@ -10,7 +10,7 @@ use std::{
 async fn visual_sources_are_declared_owned_and_withdrawn_with_the_instance() {
     let (mut host, workspace) = crate::control::tests::host();
     let inner = Arc::get_mut(&mut host).unwrap();
-    inner.installed.clear();
+    inner.installed.get_mut().unwrap().clear();
     for (id, type_id, module) in [
         (
             "alpha",
@@ -25,7 +25,7 @@ async fn visual_sources_are_declared_owned_and_withdrawn_with_the_instance() {
     ] {
         let manifest:GuestManifest=serde_json::from_value(json!({"id":id,"name":id,"api_version":2,"module":"source.wasm","execution_side":"server","capabilities":["panel","source"],"services":[],"source_types":[{"id":type_id,"name":type_id}]})).unwrap();
         manifest.validate().unwrap();
-        inner.installed.insert(
+        inner.installed.get_mut().unwrap().insert(
             id.into(),
             crate::extension_registry::Installed {
                 manifest,

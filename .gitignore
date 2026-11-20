@@ -20,3 +20,5 @@
 /extensions/target/
 # Compiled WebAssembly artifacts.
 *.wasm
+
+*.packages/

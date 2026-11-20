@@ -26,6 +26,7 @@ pub struct Identity {
 type AccountSink = Box<dyn Fn(&Identity, &Secrets, &Value) -> Result<(), String> + Send + Sync>;
 pub struct ProviderRuntime {
     manifest: GuestManifest,
+    host: acheflow_extension_api::parts::ExecutionHost,
     guest: Guest,
     identity: Identity,
     config: BTreeMap<String, String>,
@@ -46,16 +47,34 @@ impl ProviderRuntime {
         identity: Identity,
         config: BTreeMap<String, String>,
     ) -> Result<Self, String> {
+        Self::new_for_host(
+            manifest,
+            module,
+            identity,
+            config,
+            acheflow_extension_api::parts::ExecutionHost::Client,
+        )
+    }
+    pub fn new_for_host(
+        manifest: GuestManifest,
+        module: &[u8],
+        identity: Identity,
+        config: BTreeMap<String, String>,
+        host: acheflow_extension_api::parts::ExecutionHost,
+    ) -> Result<Self, String> {
+        manifest.require_host(host)?;
         manifest.validate()?;
+        let config = manifest.settings_config(&config);
         if manifest.execution_side != ExecutionSide::Client
             || manifest.id != identity.connection.provider
             || identity.generation == 0
         {
             return Err("invalid client execution identity".into());
         }
-        let guest = Guest::load(module, manifest.capabilities.clone())?;
+        let guest = Guest::load_part(module, &manifest)?;
         Ok(Self {
             manifest,
+            host,
             guest,
             identity,
             config,
@@ -125,6 +144,9 @@ impl ProviderRuntime {
         )?;
         self.checkpoint_account()
     }
+    pub fn execution_host(&self) -> acheflow_extension_api::parts::ExecutionHost {
+        self.host
+    }
     pub fn identity(&self) -> &Identity {
         &self.identity
     }
@@ -172,6 +194,7 @@ impl ProviderRuntime {
             if turns > 512 {
                 return Err("client event queue exceeded".into());
             }
+            input["execution_host"] = json!(self.host);
             input["api_version"] = json!(acheflow_extension_api::API_VERSION);
             input["workspace_id"] = json!(self.identity.workspace_id);
             input["extension_id"] = json!(self.manifest.id);
@@ -399,6 +422,9 @@ impl ProviderRuntime {
             return Err("instruction expiry is invalid".into());
         }
         let capability = &i.action.capability();
+        if !self.manifest.allows_action(i.action.name()) {
+            return Err("action is not declared by the selected extension part".into());
+        }
         if !c.capabilities.contains(capability) || !i.connection.capabilities.contains(capability) {
             return Err("instruction capability is not allowed locally".into());
         }

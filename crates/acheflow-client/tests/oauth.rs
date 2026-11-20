@@ -51,7 +51,7 @@ fn desktop_youtube_requires_its_local_application_secret_and_uses_pkce() {
     assert_eq!(fields["code_challenge"].len(), 43);
     assert_eq!(
         fields["scope"],
-        "https://www.googleapis.com/auth/youtube.readonly"
+        "https://www.googleapis.com/auth/youtube.force-ssl"
     );
     let effects = session
         .step(
@@ -226,11 +226,14 @@ fn provider_setup_uses_active_platform_addresses_and_only_required_local_secrets
 fn real_wasm_guests_respect_disabled_write_functions_and_read_only_tokens() {
     use acheflow_control::extensions::Guest;
     use serde_json::json;
-    let catalog = ClientCatalog::bundled();
+    let catalog = ClientCatalog::discover_server_at(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../extensions")
+            .as_path(),
+    );
     for provider in ["twitch", "youtube"] {
         let installed = &catalog.installed[provider];
-        let mut guest =
-            Guest::load(&installed.module, installed.manifest.capabilities.clone()).unwrap();
+        let mut guest = Guest::load_part(&installed.module, &installed.manifest).unwrap();
         let config = json!({"client_id":"public-id","send_chat":"false","manage_polls":"false","read_audience":"false","read_chat":"true","video_id":"video"});
         guest
             .call(json!({"type":"start","config":config,"secrets":["access_token"],"now_ms":1000}))
@@ -306,9 +309,10 @@ fn local_panels_and_scopes_are_emitted_by_two_independent_wasm_guests() {
             .map(|(_, v)| v.into_owned())
             .unwrap_or_default();
         match provider {
-            "twitch" => assert_eq!(scopes, "user:read:chat"),
-            "youtube" => assert_eq!(scopes, "https://www.googleapis.com/auth/youtube.readonly"),
-            _ => assert!(scopes.is_empty()),
+            "twitch" => assert_eq!(scopes, "user:write:chat"),
+            "youtube" => assert_eq!(scopes, "https://www.googleapis.com/auth/youtube.force-ssl"),
+            "vklive" => assert_eq!(scopes, "chat:message:send"),
+            _ => panic!("Unexpected provider"),
         }
         let effects = session
             .step(

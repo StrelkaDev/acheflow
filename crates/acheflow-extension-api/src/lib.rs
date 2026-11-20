@@ -9,6 +9,8 @@ pub mod client_execution;
 pub mod forwarding;
 pub mod integration;
 pub mod interaction;
+pub mod package;
+pub mod parts;
 pub mod visual;
 
 pub const API_VERSION: u32 = 2;
@@ -187,3 +189,6 @@ mod panel_layout_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod parts_tests;

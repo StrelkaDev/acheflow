@@ -77,7 +77,12 @@ pub(crate) fn provide(project: Signal<Workspace>) {
                 return;
             };
             #[cfg(not(target_arch = "wasm32"))]
-            let storage_error = acheflow_client::access::restore(&endpoint).err();
+            let storage_error = {
+                let endpoint = endpoint.clone();
+                crate::native_credentials::run(move || acheflow_client::access::restore(&endpoint))
+                    .await
+                    .err()
+            };
             #[cfg(target_arch = "wasm32")]
             let storage_error: Option<String> = None;
             loop {
@@ -177,7 +182,13 @@ async fn pair_device(endpoint: &str, code: String, name: String) -> Result<Sessi
     .await?;
     if let Some(token) = paired.token {
         #[cfg(not(target_arch = "wasm32"))]
-        acheflow_client::access::remember(endpoint, &token)?;
+        {
+            let endpoint = endpoint.to_owned();
+            crate::native_credentials::run(move || {
+                acheflow_client::access::remember(&endpoint, &token)
+            })
+            .await?;
+        }
         #[cfg(target_arch = "wasm32")]
         TOKENS.with(|tokens| {
             tokens
@@ -412,7 +423,13 @@ pub(crate) fn Panel(project: Signal<Workspace>) -> Element {
                     return Err("Cannot disconnect this device.".to_owned());
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                acheflow_client::access::forget(&target)?;
+                {
+                    let target = target.clone();
+                    crate::native_credentials::run(move || {
+                        acheflow_client::access::forget(&target)
+                    })
+                    .await?;
+                }
                 #[cfg(target_arch = "wasm32")]
                 TOKENS.with(|tokens| {
                     tokens

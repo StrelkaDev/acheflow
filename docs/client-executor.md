@@ -3,10 +3,11 @@
 The server owns workspace state, policy and rules. Provider WASM can execute in an
 explicitly configured trusted server reactor or in a device-owned native runtime.
 Both hosts use the same bounded transport and typed event/instruction contract.
-Accounts remain separate: configuring server execution never imports a device's
-local credentials. Explicit [account copying](extension-authorization.md#connect-a-trusted-server-account)
-is available. Execution through personal accounts and per-user delegation remain
-[SHARED-06](roadmap.md#shared-06-authorize-server-accounts-and-migrate-credentials).
+Accounts remain separate. The server collects the common feed with its own
+[authorization](extension-authorization.md#connect-a-trusted-server-account).
+Personal sends use `acheflow-client::direct_action::DirectAction` on the originating
+device, with no executor registration or credential upload. Future moderation and
+per-action delegation remain separate work.
 
 ## Implemented pieces
 
@@ -20,35 +21,18 @@ is available. Execution through personal accounts and per-user delegation remain
 - Common `send_chat`: queues one instruction per authorized channel; receipts
   and provider echoes update the normal shared chat history.
 
-With **Studio chat** selected, the desktop automatically starts a native runtime
-for an enabled, locally authorized provider in the active server workspace. It
-schedules provider ticks, socket/stream receives, normalized event publication
-and instruction claims independently of the visible page. **My messages** keeps
-personal authorization separate and does not start collection. Account removal,
-disable and workspace/server changes cancel the runtime and unregister its
-channels; failed cleanup expires under the registration TTL. There is no
-standalone executor binary. Local collection is suppressed when the provider is
-assigned to the server.
+Desktop/browser clients read the authenticated common feed and never start local
+collectors. Their `POST /api/control/executor` adapter retains device-scoped typed
+registration for actual local integrations, but rejects chat/audience read
+registrations and shared-feed publication. Revocation withdraws device authority.
+Explicitly configured MCP executors below are trusted server workers with their
+own pinned credentials; a device login never becomes an MCP credential.
 
-Studio uses `POST /api/control/executor` with an authenticated device session and
-the **Run extensions** grant, the same API body limit and configured UI origins.
-The server namespaces executor identity by the authenticated device; a caller
-cannot impersonate another device by choosing its `client_id`. Device revocation
-withdraws its registrations. See [device access](server-access.md).
-Its typed envelope contains `workspace_id`, a `studio-` client identity and an
-`ExecutorRequest`; it accepts no provider credentials or raw platform effects.
-External executors still use the separately authenticated MCP endpoint described
-below. Both adapters use the same workspace, generation, policy and source checks.
-The first discovered channel of an enabled local integration creates its workspace
-capability grant through a separate operator command. Existing narrower grants are
-preserved; registration itself never changes policy. A live revocation is not
-silently reversed by a connection retry. The server workspace must be applied
-before its live chat can connect. See [extension authorization](extension-authorization.md).
-Continuous browser execution, live provider-operation qualification, durable intent
-storage, native poll instructions and generic external MCP tool registration remain
-unfinished. Native macOS local account panels already use the system vault.
-Moderation DTOs exist; the built-in provider runtime rejects unsupported moderation
-actions. Separately implemented executors must advertise only handlers they support.
+Direct device actions do not use the server instruction queue. They resolve a
+shared target through the guest, freshly check app/platform permission, and issue
+one external write with the device account. Uncertain outcomes are not retried or
+rerouted to the server account. Browser CORS limits remain explicit. Moderation
+DTOs exist; built-in guests do not implement moderation.
 
 ## Trusted server execution
 
@@ -87,18 +71,17 @@ the normal management grants and expected revision. Settings must match nonsecre
 manifest declarations. One primary binding per provider is supported. A collector
 requires `chat.read`; sending additionally requires `chat.send`. The discovered
 channel must match the binding; channel discovery never expands workspace grants.
-Personal moderation/action-only sessions are separate SHARED-06 work.
+Personal sends use the direct device action path; moderation remains future work.
 
 The server uses a dedicated server-ID/workspace vault namespace with isolated
 provider/application/account slots. It never falls back to a local device account.
 A missing/locked account or provider authorization loss yields `needs_authorization`
 and withdraws live authority; configuring a binding cannot manufacture credentials.
 Use the explicit [trusted-server account connection](extension-authorization.md#connect-a-trusted-server-account)
-to revalidate and copy an authorized account. `application` is the server-issued
+to independently authorize and revalidate the server account. `application` is the server-issued
 opaque slot handle; public OAuth application settings remain in `config`.
-Personal user-to-account ownership is implemented through the separate
-[personal account flow](extension-authorization.md#personal-accounts-on-the-trusted-server).
-Per-action authority and delegation remain unfinished. macOS uses the existing OS
+Personal device accounts remain on their device. Old server-held personal copies
+have a read/delete-only migration path. macOS uses the existing OS
 vault adapter; other platforms still need their server credential adapter.
 
 Provider URLs, OAuth validation/renewal, subscriptions and protocol mapping remain

@@ -1,6 +1,7 @@
 //! Host-rendered local guest panels. All account logic is executed by the extension.
-mod personal_account;
+pub(crate) mod legacy_accounts;
 mod server_account;
+pub(crate) mod server_settings;
 use acheflow_client::{catalog::ClientCatalog, local::LocalSession};
 use acheflow_extension_api::{ExtensionPanel, PanelWidget};
 use dioxus_core::Task;
@@ -10,15 +11,23 @@ use std::{
     collections::{BTreeMap, VecDeque},
     rc::Rc,
 };
-type Sessions = BTreeMap<(String, String, String), LocalSession>;
+type ConfigDrafts = BTreeMap<(String, String, String), BTreeMap<String, String>>;
+#[derive(Clone, Copy)]
+pub(crate) struct ServerDrafts(pub Signal<ConfigDrafts>);
+pub(crate) type Sessions = BTreeMap<(String, String, String), LocalSession>;
 fn session_key(owner: &Owner, extension: &str) -> (String, String, String) {
     (owner.0.clone(), owner.1.clone(), extension.into())
 }
 pub(crate) fn provide_accounts(project: Signal<crate::project::Workspace>) {
     let mut sessions = use_signal(Sessions::new);
     use_context_provider(|| sessions);
+    let mut server_drafts = use_signal(ConfigDrafts::new);
+    use_context_provider(|| ServerDrafts(server_drafts));
     use_effect(move || {
         let project = project.read();
+        server_drafts
+            .write()
+            .retain(|(owner, server, _), _| owner == &project.id && server == &project.server_url);
         sessions.write().retain(|(owner, server, id), _| {
             owner == &project.id
                 && server == &project.server_url
@@ -62,7 +71,7 @@ fn environment() -> Value {
 pub(crate) fn ClientAuthorization(
     id: String,
     name: String,
-    #[props(default = false)] personal: bool,
+    #[props(default = false)] server: bool,
 ) -> Element {
     let client = use_context::<crate::control_client::ControlClient>();
     let catalog = use_context::<Rc<ClientCatalog>>();
@@ -103,6 +112,7 @@ pub(crate) fn ClientAuthorization(
     });
     let signals = PanelSignals {
         client,
+        server,
         sessions,
         panel,
         error,
@@ -156,10 +166,25 @@ pub(crate) fn ClientAuthorization(
             h3{"{panel.title}"}
             for widget in panel.widgets.clone(){{render_widget(widget,id.clone(),signals,action)}}
         }
-        p{class:"form-help extension-storage-note",if cfg!(target_arch="wasm32"){"Tokens stay in this browser session unless you explicitly connect the account to a trusted server."}else{"Local tokens are kept in the system credential store. Disconnect account removes the local copy."}}
-        if personal {personal_account::PersonalAccountPanel {id:id.clone()}} else {server_account::ServerAccount {id:id.clone()}}
+        p{class:"form-help extension-storage-note",if server{"This authorization is for the server account. It is kept temporarily here until you explicitly save it to the trusted server."}else if cfg!(target_arch="wasm32"){"Your account stays in this browser session. Messages are sent directly from this device."}else{"Your account is stored in this device’s workspace credential container. Messages are sent directly from this device."}}
+        if server {server_account::ServerAccount {id:id.clone(),on_saved:{let id=id.clone();move |_|{let mut sessions=sessions;sessions.write().remove(&session_key(&identity(),&id));restart+=1;}}}}
         if busy(){p{role:"status","Waiting for {name}…"}if task.read().is_some(){button{onclick:move|_|{if let Some(task)=task.take(){task.cancel();}busy.set(false);restart+=1;error.set("Operation cancelled.".into());},"Cancel"}}}
         if !error().is_empty(){p{class:"field-error",role:"alert","{error}"}}
+    }}
+}
+
+#[component]
+pub(crate) fn AccountSummary(id: String) -> Element {
+    let client = use_context::<crate::control_client::ControlClient>();
+    let sessions = use_context::<Signal<Sessions>>();
+    let project = client.project.read();
+    let key = (project.id.clone(), project.server_url.clone(), id);
+    let account = sessions
+        .read()
+        .get(&key)
+        .and_then(|session| session.credential_revision().map(|_| session.account_id()));
+    rsx! {span{class:if account.is_some(){"badge account-connected"}else{"badge"},
+        if let Some(ref account)=account {"{account}"}else{"Account not connected"}
     }}
 }
 
@@ -167,6 +192,7 @@ type Owner = (String, String, BTreeMap<String, String>);
 #[derive(Clone, Copy)]
 struct PanelSignals {
     client: crate::control_client::ControlClient,
+    server: bool,
     sessions: Signal<Sessions>,
     panel: Signal<Option<ExtensionPanel>>,
     error: Signal<String>,
@@ -199,6 +225,9 @@ fn use_initialization(
         move || {
             let _version = restart();
             let owner = identity();
+            #[cfg(all(not(target_arch = "wasm32"), not(test)))]
+            let storage_server = try_consume_context::<crate::server_access::AccessState>()
+                .and_then(|state| state.session.read().as_ref().map(|s| s.server_id.clone()));
             let id = id.clone();
             let manifest = manifest.clone();
             let module = module.clone();
@@ -208,13 +237,36 @@ fn use_initialization(
             busy.set(true);
             async move {
                 let result = async {
-                    let mut session = existing
-                        .map(Ok)
-                        .unwrap_or_else(|| LocalSession::new(manifest, &module, owner.2.clone()))?;
-                    session.config = owner.2.clone();
+                    let mut session = existing.map(Ok).unwrap_or_else(|| {
+                        if signals.server {
+                            LocalSession::new_server_authorization(
+                                manifest,
+                                &module,
+                                owner.2.clone(),
+                            )
+                        } else {
+                            LocalSession::new(manifest, &module, owner.2.clone())
+                        }
+                    })?;
+                    session.config = session.manifest.settings_config(&owner.2);
                     session.bind_workspace(&owner.0)?;
                     #[cfg(all(not(target_arch = "wasm32"), not(test)))]
-                    session.use_system_storage(&owner.1, &owner.0)?;
+                    if !signals.server {
+                        let server = storage_server
+                            .ok_or("Connect to the server before opening device credentials.")?;
+                        let workspace_name = signals.client.project.peek().name.clone();
+                        let storage_owner = owner.clone();
+                        session = crate::native_credentials::run(move || {
+                            session.use_server_workspace_storage(
+                                &server,
+                                &storage_owner.1,
+                                &storage_owner.0,
+                                &workspace_name,
+                            )?;
+                            Ok(session)
+                        })
+                        .await?;
+                    }
                     let effects =
                         session.step(json!({"type":"local_start"}), &environment(), now())?;
                     drive(
@@ -636,7 +688,7 @@ mod native;
 #[cfg(not(target_arch = "wasm32"))]
 use native::drive;
 
-#[cfg(not(target_arch = "wasm32"))]
+// A test driver for callback/lease protocol fixtures. Production clients do not
+// mount a reader/reactor; shared chat is delivered by the server.
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod execution;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use execution::ClientExecutionPanel;

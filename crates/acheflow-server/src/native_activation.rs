@@ -118,8 +118,7 @@ fn request(host: &ControlHost, url: &str) -> Result<ControlRequest, ActivationEr
     let link = ForwardLink::parse_for(url, ForwardRecipient::Server)
         .map_err(|_| ActivationError::InvalidLink)?;
     let installed = host
-        .installed
-        .get(&link.extension_id)
+        .extension(&link.extension_id)
         .ok_or(ActivationError::NotFound)?;
     if link
         .declaration(&installed.manifest)

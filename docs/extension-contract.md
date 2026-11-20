@@ -2,12 +2,13 @@
 
 Status: accepted; the governing contract for client integrations and server logic.
 
-Credential ownership follows [ADR-003](decisions/003-trusted-server-workspace.md).
-A dedicated trusted server reactor now supports explicitly configured provider
-bindings, while ordinary server logic remains credential-free. Local integrations
-retain device-owned accounts. Server account connection, verified user ownership
-and migration UI remain SHARED-06; no client credential is transferred merely by
-connecting or enabling a server binding. See [execution hosts](client-executor.md).
+Credential ownership targets [ADR-004](decisions/004-extension-client-server-ownership.md),
+which refines [ADR-003](decisions/003-trusted-server-workspace.md). Part selection
+and separate runtime authority are implemented, including authorized ZIP install,
+server-only shared collection, direct device actions and host-specific settings.
+Final real-device qualification is tracked by SHARED-08 in
+[the roadmap](roadmap.md#shared-server-workspace). Connecting or enabling a client
+never implicitly transfers credentials.
 
 ## Ownership
 
@@ -19,25 +20,94 @@ provider names, service URLs, OAuth response fields or transport implementations
 in production server/UI code. Discover installations from manifests, not an
 in-code list of providers. Provider code lives under extensions/.
 
-Manifests declare `execution_side: "server"` or `"client"`. The default is `server`,
-which rejects service origins, secret captures/settings and HTTP/WebSocket capabilities.
-There is no compatibility execution mode. A server logic guest may handle pure domain
-rules, bounded private noncredential storage and panels, without platform I/O.
+## Package parts and compatibility
 
-The ordinary server logic loader skips client manifests. A separate, explicit
-trusted provider loader reads those manifests from the server's own extension
-installation. Client discovery still uses native installation directories or the
-browser bundle. `execution_side: "client"` retains the provider/reactor ABI label;
-the host may be the trusted server when a workspace binding authorizes it. It is
-never a relaxation of the pure server-logic capability boundary.
+New packages use `api_version: 2`, `parts_version: 1` and an explicit `parts`
+object. Declare `client`, `server`, or both; omitted parts are unavailable, never
+substituted by the sibling. Only `id`, `name`, API/parts versions and `parts` belong
+at package level. Mixing legacy runtime fields into this root is rejected.
+
+```json
+{
+  "id": "example",
+  "name": "Example integration",
+  "api_version": 2,
+  "parts_version": 1,
+  "parts": {
+    "client": {
+      "kind": "provider",
+      "module": "integration.wasm",
+      "entry_point": "client_handle",
+      "capabilities": ["http", "panel", "delivery"],
+      "services": ["https://platform.example"],
+      "supported_actions": ["chat.send"]
+    },
+    "server": {
+      "kind": "provider",
+      "module": "integration.wasm",
+      "entry_point": "server_handle",
+      "capabilities": ["http", "channel", "chat"],
+      "services": ["https://platform.example"],
+      "supported_actions": []
+    }
+  }
+}
+```
+
+Each part independently declares `module`, `entry_point` (default `handle`),
+`kind`, `capabilities`, `supported_actions`, `services`, `settings`, `secret_fields`,
+`authentication`, `application_setup`, `forwarding`, `subscriptions`, `source_types`,
+`chat_presentation` and `unique_viewers`. There is no root/sibling inheritance.
+Service origins, settings and captured secret slots are validated separately.
+Actions are bounded to `chat.send`, `chat.delete`, `user.timeout`, `poll.create`
+and `poll.close`; declaration alone does not implement an action, authorize an
+account or grant platform rights. The native provider instruction path rejects
+personal writes absent from the selected part's declared actions. Channel/domain
+capabilities still describe current availability and permissions.
+
+A client part uses `kind: "provider"` (the local reactor interface), including for
+local features without network capabilities. A server part uses `provider` for
+the explicit trusted reactor or `logic` for the ordinary credential-free domain
+host. Logic parts cannot request transport, credentials, OAuth setup or callback
+forwarding. Visual source declarations remain server-logic functionality.
+
+Loaders call `GuestManifest::select_part(ExecutionHost)` before opening the module,
+settings or credentials. The resolved manifest contains only that part, records
+its host in memory and cannot be reselected for another host. Server logic and
+trusted providers have separate catalogs. A missing declared WASM export fails
+loading; module paths remain bounded local filenames inside the installation.
+`ProviderRuntime::new` opens client authority; `new_for_host` selects explicit host
+authority. Local sessions and server account installation reject cross-host use.
+Credentials/private storage remain host-owned: part names cannot choose another
+host's vault namespace. Existing workspace and account fencing still applies.
+
+The ABI remains JSON through `acheflow` imports and a no-argument WASM export.
+`guest_sdk::export_part!(client_handle, State)` and the corresponding server export
+create independent state; a package may use the same artifact or separate artifacts.
+The host overwrites `execution_host` on every provider/auth turn; SDK authorization
+selects the matching embedded manifest part. Never infer host authority from a
+caller-supplied action or account identifier.
+
+Legacy single-side manifests without `parts`/`parts_version` remain readable:
+`execution_side: "server"` (the default) means pure server logic; `client` means
+the provider interface. Only the explicit trusted server provider loader continues
+to admit legacy client manifests during migration. New client-only packages are
+not admitted there. Legacy actions omitted from manifests retain their existing
+runtime checks. Unknown parts versions and mixed declarations fail closed. Older
+hosts reject new package fields; update the host and rebuild guests together.
+
+Bundling, guest builds and macOS packaging include declared part artifacts and
+browser authorization modules. Generated WASM stays ignored and untracked. See [package installation](extensions.md#install-packages) for host approval and
+client/browser limitations.
 
 Both provider hosts use the bounded native reactor, opaque handles and declared
 service origins with no redirects. Server bindings reserve collection authority;
 opening a second client cannot create another subscriber for that channel. Server
 snapshots distinguish provider execution status from pure logic extensions. Public
 workspace settings contain binding references and grants, never credentials.
-Server accounts live in the server's own workspace vault; local accounts remain in
-the device vault until explicit authenticated migration/re-authorization.
+Server accounts live in the server's own workspace vault; personal accounts remain exclusively in
+the originating device vault/session. A server authorizer uses a separate temporary
+session and cannot open the device credential container.
 Local auth panels and token exchange responses never enter server
 snapshots or MCP events. Client account panels and manual secret inputs are emitted
 by provider WASM guests; shared UI only renders their generic controls. OAuth flow,
@@ -243,3 +313,17 @@ response. A separate server runtime starts only after validation and durable sav
 New server connections grant only `chat.read`; sending requires separate policy.
 See [the connection flow](extension-authorization.md#connect-a-trusted-server-account)
 for trust, migration and disconnect behavior.
+
+## Device-local actions
+
+Client sender parts declare `chat.send` in both subscriptions and supported actions.
+They authorize the sender without opening read subscriptions. The action host
+validates the committed account again, then calls `prepare_action {channel_id}`.
+Preparation permits only bounded GET/HEAD metadata requests, private storage and
+channel discovery; it rejects subscriptions and writes. It must resolve the exact
+shared target and advertise `chat.send`. Cleanup-only transport closes are allowed.
+The host calls a fresh server permission check immediately before one bounded
+external write, then dispatches typed `command` with a correlated request ID.
+No collector registration, server personal secret storage or server-account fallback
+participates. Lost/uncertain receipts are terminal; never repeat the write. Future
+moderation needs separately declared actions and platform checks.

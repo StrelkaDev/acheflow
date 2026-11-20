@@ -14,6 +14,7 @@ fn app() -> Element {
     let harness = use_context::<Rc<Harness>>();
     use_context_provider(|| Rc::new(acheflow_client::catalog::ClientCatalog::bundled()));
     let project = use_signal(Workspace::default);
+    crate::client_authorization::provide_accounts(project);
     crate::live_client::use_live_client(project);
     crate::interaction::use_chat_draft(project);
     let client = ControlClient {
@@ -138,7 +139,7 @@ fn exists(doc: &DioxusDocument, selector: &str) -> bool {
         .is_some()
 }
 #[tokio::test]
-async fn chat_targets_support_multiple_channels_and_never_fan_out_after_disconnect() {
+async fn chat_targets_keep_one_explicit_recipient_and_never_redirect_after_disconnect() {
     use acheflow_extension_api::{
         integration::Channel,
         interaction::{ChatEntry, ChatMessage},
@@ -197,12 +198,12 @@ async fn chat_targets_support_multiple_channels_and_never_fan_out_after_disconne
             .outer_html()
             .contains("Example broadcast")
     );
-    assert!(exists(&doc, ".chat-targets button[disabled]"));
+    assert!(!exists(&doc, ".chat-targets button[disabled]"));
     activate(&mut doc, ".chat-targets button[aria-label^='Twitch']");
     activate(&mut doc, ".chat-targets button[aria-label^='YouTube']");
     assert!(exists(
         &doc,
-        ".chat-targets button[aria-label^='Twitch'][aria-pressed='true']"
+        ".chat-targets button[aria-label^='Twitch'][aria-pressed='false']"
     ));
     assert!(exists(
         &doc,
@@ -222,6 +223,13 @@ async fn chat_targets_support_multiple_channels_and_never_fan_out_after_disconne
     settle(&mut doc);
     assert!(exists(&doc, ".chat-compose input[disabled]"));
     // An available read-only channel must never become a new implicit recipient.
-    activate(&mut doc, ".chat-targets button:not([aria-label])");
+    assert!(
+        doc.inner
+            .borrow()
+            .root_element()
+            .outer_html()
+            .contains("selected channel disconnected")
+    );
+    activate(&mut doc, ".chat-targets button[aria-label^='VK']");
     assert!(exists(&doc, ".chat-targets button[aria-pressed='true']"));
 }

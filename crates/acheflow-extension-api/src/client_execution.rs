@@ -79,6 +79,13 @@ pub enum ClientAction {
     },
 }
 impl ClientAction {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::SendChat { .. } => "chat.send",
+            Self::DeleteChat { .. } => "chat.delete",
+            Self::TimeoutUser { .. } => "user.timeout",
+        }
+    }
     pub fn capability(&self) -> Capability {
         match self {
             Self::SendChat { .. } => Capability::ChatSend,

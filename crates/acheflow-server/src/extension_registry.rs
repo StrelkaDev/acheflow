@@ -2,6 +2,7 @@
 use acheflow_control::extensions::{Guest, GuestManifest};
 use std::{collections::BTreeMap, path::Path};
 
+#[derive(Clone)]
 pub struct Installed {
     pub manifest: GuestManifest,
     pub module: Vec<u8>,
@@ -129,7 +130,11 @@ fn load(directory: &Path) -> Result<Option<Installed>, String> {
         &std::fs::read(manifest_path).map_err(|_| "could not read manifest")?,
     )
     .map_err(|_| "invalid manifest JSON")?;
-    manifest.validate()?;
+    let Some(manifest) =
+        manifest.select_part(acheflow_extension_api::parts::ExecutionHost::Server)?
+    else {
+        return Ok(None);
+    };
     if manifest.execution_side == acheflow_extension_api::integration::ExecutionSide::Client {
         return Ok(None);
     }
@@ -146,7 +151,11 @@ fn load(directory: &Path) -> Result<Option<Installed>, String> {
         return Err("extension module is outside its directory or too large".into());
     }
     let module = std::fs::read(module_path).map_err(|_| "could not read module")?;
-    Guest::load(&module, manifest.capabilities.clone())?;
+    Guest::load_entry_point(
+        &module,
+        manifest.capabilities.clone(),
+        &manifest.entry_point,
+    )?;
     Ok(Some(Installed { manifest, module }))
 }
 

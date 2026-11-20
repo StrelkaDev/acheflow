@@ -1,4 +1,4 @@
-//! Explicit copy to a trusted server; local authorization remains intact.
+//! Save an independently authorized server account; device accounts stay separate.
 use super::*;
 use crate::{server_access, server_settings::ActionButton};
 use acheflow_media_api::{
@@ -6,7 +6,11 @@ use acheflow_media_api::{
 };
 
 #[component]
-pub(super) fn ServerAccount(id: String) -> Element {
+pub(super) fn ServerAccount(
+    id: String,
+    #[props(default)] on_saved: Callback<()>,
+    #[props(default = true)] offer_authorization: bool,
+) -> Element {
     let client = use_context::<crate::control_client::ControlClient>();
     let sessions = use_context::<Signal<Sessions>>();
     let mut expanded = use_signal(|| false);
@@ -40,17 +44,8 @@ pub(super) fn ServerAccount(id: String) -> Element {
         error.set(String::new());
         busy.set(false);
     });
-    let permitted = [
-        P::WorkspaceManage,
-        P::ScenesManage,
-        P::MediaManage,
-        P::ExtensionsConfigure,
-        P::ExtensionsRun,
-        P::AccessManage,
-        P::ChatRead,
-    ]
-    .into_iter()
-    .all(server_access::allows);
+    let permitted = server_access::allows(P::ExtensionsConfigure);
+    let can_execute = server_access::allows(P::ExtensionsRun);
     let owner = scope();
     let key = (owner.0.clone(), owner.1.clone(), id.clone());
     let account = sessions
@@ -108,7 +103,7 @@ pub(super) fn ServerAccount(id: String) -> Element {
                 require_secure(&target)?;
                 let workspace_url = target.trim_end_matches("/access").to_owned()+"/workspace";
                 let workspace = server_access::get::<WorkspaceState>(&workspace_url).await?;
-                if workspace.summary.as_ref().map(|w| &w.id) != Some(&actor.0) || workspace.workspace.is_none() { return Err("Open the shared server workspace first.".into()); }
+                if workspace.summary.as_ref().map(|w| &w.id) != Some(&actor.0) { return Err("Open the shared server workspace first.".into()); }
                 if *scope.peek() != actor || sessions.peek().get(&(actor.0.clone(),actor.1.clone(),id.clone())).and_then(|s|s.credential_revision()) != source { return Err("The account or server changed. Try again.".into()); }
                 server_access::decode::<ServerAccountConnected>(server_access::request(reqwest::Method::POST,&format!("{target}/server-accounts/{id}"))?
                     .json(&ConnectServerAccount { workspace_id:actor.0.clone(),expected_revision:workspace.revision,trust_server:true,expected_account:credentials.account_id,channel_id:selected,config:actor.2.clone(),credentials:credentials.secrets })
@@ -118,9 +113,16 @@ pub(super) fn ServerAccount(id: String) -> Element {
                     return;
                 }
                 match result {
-                    Ok(_) => {
+                    Ok(connected) => {
+                        let mut client = client;
+                        client
+                            .project
+                            .write()
+                            .server_integrations
+                            .insert(id.clone(), connected.binding);
                         trusted.set(false);
-                        message.set("Account saved on the server. Its collector runs when the studio is active. Your local account is unchanged.".into());
+                        on_saved.call(());
+                        message.set("Server account saved. Shared chat collection starts independently of video output.".into());
                     }
                     Err(e) => error.set(e),
                 }
@@ -128,6 +130,62 @@ pub(super) fn ServerAccount(id: String) -> Element {
             });
         }
     };
+    let configure = Callback::new({
+        let id = id.clone();
+        move |enabled: bool| {
+            let actor = scope();
+            let id = id.clone();
+            busy.set(true);
+            error.set(String::new());
+            spawn(async move {
+                let result = async {
+                    let base = crate::media::server_url(&client.project.peek(), "/api/access")?;
+                    require_secure(&base)?;
+                    let workspace = server_access::get::<WorkspaceState>(
+                        &(base.trim_end_matches("/access").to_owned() + "/workspace"),
+                    )
+                    .await?;
+                    if *scope.peek() != actor {
+                        return Err("Server settings changed.".into());
+                    }
+                    server_access::decode::<ServerAccountConnected>(
+                        server_access::request(
+                            reqwest::Method::PUT,
+                            &format!("{base}/server-accounts/{id}"),
+                        )?
+                        .json(&ConfigureServerIntegration {
+                            workspace_id: actor.0.clone(),
+                            expected_revision: workspace.revision,
+                            enabled,
+                            config: actor.2.clone(),
+                        })
+                        .timeout(std::time::Duration::from_secs(15))
+                        .send()
+                        .await
+                        .map_err(|_| "Cannot update server integration.")?,
+                    )
+                    .await
+                }
+                .await;
+                if *scope.peek() != actor {
+                    return;
+                }
+                match result {
+                    Ok(connected) => {
+                        let mut client = client;
+                        client
+                            .project
+                            .write()
+                            .server_integrations
+                            .insert(id, connected.binding);
+                        message.set("Server integration settings saved.".into());
+                    }
+                    Err(reason) => error.set(reason),
+                }
+                busy.set(false);
+            });
+        }
+    });
     let disconnect = {
         let id = id.clone();
         move |_: ()| {
@@ -155,8 +213,7 @@ pub(super) fn ServerAccount(id: String) -> Element {
                     return;
                 }
                 match result {
-                    Ok(()) => message
-                        .set("Server credentials removed. Your local account is unchanged.".into()),
+                    Ok(()) => message.set("Server credentials removed.".into()),
                     Err(e) => error.set(e),
                 }
                 busy.set(false);
@@ -167,24 +224,27 @@ pub(super) fn ServerAccount(id: String) -> Element {
         return rsx! {};
     }
     rsx! {section {class:"server-account-connect",
-        h4 {"Shared server account"}
+        if offer_authorization {h4 {"Save server authorization"}
         if !expanded() {
-            p {class:"form-help","Run one chat connection for everyone, using a copy of your authorized account."}
-            if account.is_none() {p {class:"form-help","Authorize this account locally above to connect it to the server."}}
-            ActionButton {id:"server-account-review",class:"access-text-button",disabled:busy() || account.is_none(),expanded:Some(false),onclick:move |_|expanded.set(true),"Connect this account to the server…"}
+            p {class:"form-help","Save this independently authorized account on the server to collect shared chat."}
+            if account.is_none() {p {class:"form-help","Sign in to the server account above, then save it here."}}
+            ActionButton {id:"server-account-review",class:"access-text-button",disabled:busy() || !can_execute || account.is_none(),expanded:Some(false),onclick:move |_|expanded.set(true),"Connect this account to the server…"}
         }
         if expanded() {
         p {class:"form-help","The server will verify and store a copy of your account credentials, including refresh tokens and application secrets needed for renewal. Its administrator can access them. Only connect to a server you trust."}
-        if let Some(account)=account {p {class:"form-help","Local account: {account}"}
+        if let Some(account)=account {p {class:"form-help","Selected server account: {account}"}
             label {class:"field",span {"Shared chat channel ID"}input {r#type:"text",maxlength:128,value:channel(),disabled:busy(),oninput:move|e|channel.set(e.value())}}
             if !channels.is_empty() {div {class:"row",for (value,label) in channels {ActionButton {class:"access-text-button",disabled:busy(),onclick:move |_|channel.set(value.clone()),"{label}"}}}}
             p {class:"form-help","Use the exact channel ID shown by the extension. Only chat reading is granted to the server; sending and moderation require separate permission."}
             ActionButton {id:"server-account-trust",class:if trusted(){"access-permission selected"}else{"access-permission"},pressed:Some(trusted()),disabled:busy(),onclick:move |_|trusted.set(!trusted()),span {class:"access-check",if trusted(){"✓"}}span {"I trust this server to store and use this account."}}
             ActionButton {id:"server-account-submit",class:"primary",disabled:busy() || !trusted() || channel.read().trim().is_empty(),onclick:connect,if busy(){"Checking account…"}else{"Connect account to server"}}
-        } else {p {class:"form-help","Authorize a local account above, then connect it to the server."}}
+        } else {p {class:"form-help","Sign in to the server account above, then save it here."}}
         ActionButton {class:"access-text-button",disabled:busy(),onclick:move |_|{expanded.set(false);trusted.set(false);},"Cancel"}
         }
-        if let Some(binding)=binding {div {class:"server-account-current",p {"Server account: {binding.account_id} · Channel: {binding.channel_id}"}ActionButton {class:"access-text-button",disabled:busy(),onclick:disconnect,"Disconnect server account"}}}
+        }
+        if let Some(binding)=binding {div {class:"server-account-current",h3{"Collection"}p {class:"form-help","{binding.account_id} · Channel {binding.channel_id}"}
+            div{class:"extension-action-row",ActionButton{class:"primary",disabled:busy(),onclick:move |_|configure.call(binding.enabled),"Save settings"}
+            ActionButton{disabled:busy()||!can_execute,onclick:move |_|configure.call(!binding.enabled),if binding.enabled{"Stop collecting"}else{"Start collecting"}}ActionButton {class:"access-text-button",disabled:busy()||!can_execute,onclick:disconnect,"Disconnect server account"}}}}
         if !message.read().is_empty() {p {class:"form-help",role:"status","{message}"}}
         if !error.read().is_empty() {p {class:"field-error",role:"alert","{error}"}}
     }}

@@ -46,3 +46,19 @@ pub struct ServerAccountConnected {
     pub revision: u64,
     pub binding: ServerIntegration,
 }
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigureServerIntegration {
+    pub workspace_id: String,
+    pub expected_revision: u64,
+    pub enabled: bool,
+    pub config: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ServerIntegrationSettings {
+    pub workspace_id: Option<String>,
+    pub revision: u64,
+    pub binding: Option<ServerIntegration>,
+}

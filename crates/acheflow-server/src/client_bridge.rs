@@ -99,6 +99,26 @@ async fn call_inner(
     server_provider: Option<&str>,
 ) -> Result<Value, String> {
     let _command = host.command_lock.lock().await;
+    if server_provider.is_none() && actor.token.is_empty() {
+        match &request {
+            ExecutorRequest::Register { registration }
+                if registration.connections.iter().any(|c| {
+                    c.capabilities
+                        .iter()
+                        .any(|cap| matches!(cap, Capability::ChatRead | Capability::AudienceRead))
+                }) =>
+            {
+                return Err(
+                    "forbidden: shared feeds are collected by the server, not device clients"
+                        .into(),
+                );
+            }
+            ExecutorRequest::Publish { .. } => {
+                return Err("forbidden: device clients cannot publish the shared feed".into());
+            }
+            _ => {}
+        }
+    }
     if host.runtime.shutdown.is_cancelled() {
         return Err("unavailable: server stopped".into());
     }
@@ -110,10 +130,11 @@ async fn call_inner(
         return Err("forbidden: server provider ownership changed".into());
     }
 
-    if !host
-        .runtime
-        .activated
-        .load(std::sync::atomic::Ordering::Acquire)
+    if server_provider.is_none()
+        && !host
+            .runtime
+            .activated
+            .load(std::sync::atomic::Ordering::Acquire)
     {
         return Err(
             "unavailable: activate the saved workspace before running client integrations".into(),
@@ -143,7 +164,12 @@ async fn call_inner(
                 {
                     return Err("forbidden: this channel is collected by the server".into());
                 }
-                if host.installed.contains_key(&connection.provider) {
+                if host
+                    .installed
+                    .read()
+                    .unwrap()
+                    .contains_key(&connection.provider)
+                {
                     return Err("conflict: provider identity is reserved by server logic".into());
                 }
             }
@@ -335,14 +361,13 @@ pub fn refresh(
             state.analytics.disconnect_channel(id, &channel);
         }
         for c in &connections {
-            let caps = if c
-                .capabilities
-                .contains(&acheflow_extension_api::client_execution::Capability::ChatSend)
-            {
-                vec!["chat.send".into()]
-            } else {
-                vec![]
-            };
+            let mut caps = Vec::new();
+            if c.capabilities.contains(&Capability::ChatRead) {
+                caps.push("chat.read".into());
+            }
+            if c.capabilities.contains(&Capability::ChatSend) {
+                caps.push("chat.send".into());
+            }
             let _ = state.integrations.register_channel(
                 id,
                 acheflow_extension_api::integration::Channel {
@@ -409,7 +434,7 @@ mod tests {
     ) -> (Arc<ControlHost>, Vec<(ExecutorCredential, ProviderRuntime)>) {
         let (mut host, mut workspace) = crate::control::tests::host();
         let inner = Arc::get_mut(&mut host).unwrap();
-        inner.installed.clear();
+        inner.installed.get_mut().unwrap().clear();
         let mut clients = vec![];
         for (n, id) in ["alpha", "beta"].into_iter().enumerate() {
             let manifest:acheflow_control::extensions::GuestManifest=serde_json::from_value(json!({"id":id,"name":id,"api_version":2,"module":"fixture.wasm","execution_side":"client","capabilities":["channel","chat","audience","delivery","poll","donation","interaction"],"services":[],"subscriptions":["chat.send"]})).unwrap();
@@ -455,8 +480,7 @@ mod tests {
         (host, clients)
     }
     #[tokio::test]
-    async fn studio_http_bridge_delivers_two_real_guests_and_rejects_wrong_sources_and_revoked_policy()
-     {
+    async fn studio_http_bridge_rejects_device_collectors_from_two_real_guests() {
         let (host, mut clients) = setup_with_prefix("studio");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -465,15 +489,15 @@ mod tests {
             .with_state(host.clone())
             .layer(axum::Extension(crate::access::Principal(
                 acheflow_media_api::access::Session {
-                    user: acheflow_media_api::access::User {
-                        id: "fixture-user".into(),
-                        name: "Fixture".into(),
-                    },
                     server_id: "fixture".into(),
+                    user: acheflow_media_api::access::User {
+                        id: "user".into(),
+                        name: "User".into(),
+                    },
                     device: acheflow_media_api::access::Device {
-                        user_id: "fixture-user".into(),
-                        id: "bridge-fixture".into(),
-                        name: "Bridge fixture".into(),
+                        user_id: "user".into(),
+                        id: "device".into(),
+                        name: "Device".into(),
                         permissions: acheflow_media_api::access::Permission::ALL
                             .into_iter()
                             .collect(),
@@ -484,84 +508,32 @@ mod tests {
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        let endpoint = format!("http://{address}/api/control/executor");
-        let mut bridges = vec![];
         for (actor, runtime) in &mut clients {
             let bridge = ExecutorConnection::studio(
-                endpoint.clone(),
+                format!("http://{address}/api/control/executor"),
                 actor.workspace_id.clone(),
                 actor.id.clone(),
             )
             .unwrap();
-            bridge.heartbeat(runtime).await.unwrap();
-            runtime
+            assert!(bridge.heartbeat(runtime).await.is_err());
+            let output = runtime
                 .turn(json!({"type":"start"}), now_ms())
                 .await
                 .unwrap();
-            let output=runtime.turn(json!({"type":"command","name":"chat.send","request_id":actor.id,"text":"Studio fixture message"}),now_ms()).await.unwrap();
             bridge.publish(runtime, &output).await.unwrap();
-            bridges.push(bridge);
+            let output=runtime.turn(json!({"type":"command","name":"chat.send","request_id":"fixture","text":"Never publish this device copy"}),now_ms()).await.unwrap();
+            assert!(bridge.publish(runtime, &output).await.is_err());
         }
         let state = host.snapshot(0, 200);
-        assert_eq!(state.client_executors.len(), 2);
-        for id in ["alpha", "beta"] {
-            assert!(state.chat.entries.iter().any(|e| e.message.platform==id && e.message.text=="Studio fixture message"));
-        }
-        host.execute(ControlRequest {
-            workspace_id: state.workspace_id.clone().unwrap(),
-            request_id: format!("{}:studio-fanout", now_ms()),
-            expected_revision: state.revision,
-            action: acheflow_media_api::control::ControlAction::SendChat {
-                targets: vec![],
-                text: "Device-bound Studio reply".into(),
-            },
-        })
-        .await
-        .unwrap();
-        for (bridge, (_, runtime)) in bridges.iter().zip(&mut clients) {
-            assert_eq!(bridge.execute_pending(runtime, now_ms()).await.unwrap(), 1);
-            assert_eq!(bridge.execute_pending(runtime, now_ms()).await.unwrap(), 0);
-        }
-        let wrong_workspace = ExecutorConnection::studio(
-            endpoint.clone(),
-            "foreign-workspace".into(),
-            "studio-foreign".into(),
-        )
-        .unwrap();
-        assert!(wrong_workspace.heartbeat(&clients[0].1).await.is_err());
-        let wrong_actor = ExecutorConnection::studio(
-            endpoint.clone(),
-            clients[0].0.workspace_id.clone(),
-            "client-external".into(),
-        )
-        .unwrap();
-        assert!(wrong_actor.heartbeat(&clients[0].1).await.is_err());
-        let invalid= reqwest::Client::new().post(&endpoint).json(&json!({"workspace_id":clients[0].0.workspace_id,"client_id":"studio-injected","operation":{"type":"publish","generation":1,"connection_id":"local","event":{"type":"chat","access_token":"forbidden"}}})).send().await.unwrap();
-        assert!(!invalid.status().is_success());
-        let request = ControlRequest {
-            workspace_id: clients[0].0.workspace_id.clone(),
-            request_id: format!("{}:studio-revoke", now_ms()),
-            expected_revision: host.snapshot(0, 1).revision,
-            action: ControlAction::SetClientCapabilities { grants: vec![] },
-        };
-        host.execute(request).await.unwrap();
-        let output=clients[0].1.turn(json!({"type":"command","name":"chat.send","request_id":"revoked","text":"must not publish"}),now_ms()).await.unwrap();
-        assert!(bridges[0].publish(&clients[0].1, &output).await.is_err());
-        for bridge in bridges {
-            assert!(
-                bridge.disconnect(1).await.is_err(),
-                "revoked registrations are already inactive"
-            );
-        }
-        assert!(host.snapshot(0, 200).channels.is_empty());
+        assert!(state.client_executors.is_empty());
+        assert!(state.chat.entries.is_empty());
         server.abort();
     }
-
     #[tokio::test]
     async fn real_mcp_and_two_wasm_executors_complete_chat_without_server_provider_io() {
         let (host, mut clients) = setup();
         assert!(
-            host.installed.is_empty(),
+            host.installed.read().unwrap().is_empty(),
             "client providers must not need server installations"
         );
         assert!(host.snapshot(0, 1).extensions.is_empty());

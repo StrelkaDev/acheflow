@@ -26,7 +26,7 @@ impl Installations {
         let mut manifest: Value =
             serde_json::from_slice(&std::fs::read(source.join("manifest.json")).unwrap()).unwrap();
         manifest["id"] = id.into();
-        let module = manifest["module"].as_str().unwrap();
+        let module = manifest["parts"]["server"]["module"].as_str().unwrap();
         std::fs::copy(source.join(module), destination.join(module)).unwrap();
         std::fs::write(
             destination.join("manifest.json"),

@@ -1,7 +1,7 @@
 //! Workspace containers over an OS vault. Callers hold the cross-process lock.
 use crate::local::LocalState;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) const LEGACY_SERVICE: &str = "Acheflow client extension storage v1";
 pub(super) const WORKSPACE_SERVICE: &str = "Acheflow workspace credentials v1";
@@ -16,7 +16,7 @@ pub(super) trait Backend {
 }
 
 // No Debug: these structs contain raw credentials and must never enter diagnostics.
-#[derive(Serialize, Deserialize)]
+#[derive(PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Account {
     secrets: BTreeMap<String, String>,
@@ -28,6 +28,8 @@ struct Account {
 struct WorkspaceVault {
     version: u32,
     accounts: BTreeMap<String, Account>,
+    #[serde(default)]
+    retired_legacy: BTreeSet<String>,
 }
 
 struct Identity {
@@ -62,6 +64,7 @@ fn read_workspace(backend: &impl Backend, key: &str) -> Result<WorkspaceVault, S
         return Ok(WorkspaceVault {
             version: 1,
             accounts: BTreeMap::new(),
+            retired_legacy: BTreeSet::new(),
         });
     };
     if bytes.len() > MAX_WORKSPACE_BYTES {
@@ -69,7 +72,10 @@ fn read_workspace(backend: &impl Backend, key: &str) -> Result<WorkspaceVault, S
     }
     let vault: WorkspaceVault =
         serde_json::from_slice(&bytes).map_err(|_| "Invalid workspace credential record.")?;
-    if vault.version != 1 || vault.accounts.len() > MAX_ACCOUNTS {
+    if vault.version != 1
+        || vault.accounts.len() > MAX_ACCOUNTS
+        || vault.retired_legacy.len() > MAX_ACCOUNTS
+    {
         return Err("Invalid workspace credential record.".into());
     }
     for (key, account) in &vault.accounts {
@@ -111,25 +117,40 @@ fn write_workspace(
 pub(super) fn load(backend: &impl Backend, key: &str) -> Result<Option<LocalState>, String> {
     let identity = Identity::parse(key)?;
     let mut vault = read_workspace(backend, &identity.workspace)?;
-    let account = match vault.accounts.remove(&identity.account) {
-        Some(account) => account,
-        None => {
-            let Some(bytes) = backend.read(LEGACY_SERVICE, key)? else {
-                return Ok(None);
-            };
-            let account = decode_account(&bytes)?;
-            vault.accounts.insert(identity.account.clone(), account);
-            // Never retire the only recoverable copy before the new write succeeds.
-            write_workspace(backend, &identity.workspace, &vault)?;
-            vault.accounts.remove(&identity.account).unwrap()
-        }
-    };
-    // Retry cleanup after interrupted migration; the new container always wins.
-    backend.delete(LEGACY_SERVICE, key)?;
+    if !vault.accounts.contains_key(&identity.account) {
+        let Some(bytes) = backend.read(LEGACY_SERVICE, key)? else {
+            return Ok(None);
+        };
+        vault
+            .accounts
+            .insert(identity.account.clone(), decode_account(&bytes)?);
+        // Never retire the only recoverable copy before the new write succeeds.
+        write_workspace(backend, &identity.workspace, &vault)?;
+    }
+    retire_legacy(backend, key, &identity, &mut vault)?;
+    let account = vault.accounts.remove(&identity.account).unwrap();
     Ok(Some(LocalState {
         secrets: account.secrets,
         storage: account.storage,
     }))
+}
+
+fn retire_legacy(
+    backend: &impl Backend,
+    key: &str,
+    identity: &Identity,
+    vault: &mut WorkspaceVault,
+) -> Result<(), String> {
+    if vault.retired_legacy.contains(&identity.account) {
+        return Ok(());
+    }
+    if backend.read(LEGACY_SERVICE, key)?.is_some() {
+        backend.delete(LEGACY_SERVICE, key)?;
+    }
+    // Persist completion only after deletion succeeds. Later reads of this slot
+    // must not reopen the old per-extension key, including after process restart.
+    vault.retired_legacy.insert(identity.account.clone());
+    write_workspace(backend, &identity.workspace, vault)
 }
 
 pub(super) fn save(backend: &impl Backend, key: &str, state: &LocalState) -> Result<(), String> {
@@ -143,9 +164,11 @@ pub(super) fn save(backend: &impl Backend, key: &str, state: &LocalState) -> Res
     };
     encode_account(&account)?;
     let mut vault = read_workspace(backend, &identity.workspace)?;
-    vault.accounts.insert(identity.account, account);
-    write_workspace(backend, &identity.workspace, &vault)?;
-    backend.delete(LEGACY_SERVICE, key)
+    if vault.accounts.get(&identity.account) != Some(&account) {
+        vault.accounts.insert(identity.account.clone(), account);
+        write_workspace(backend, &identity.workspace, &vault)?;
+    }
+    retire_legacy(backend, key, &identity, &mut vault)
 }
 
 pub(super) fn remove(backend: &impl Backend, key: &str) -> Result<(), String> {
@@ -153,8 +176,30 @@ pub(super) fn remove(backend: &impl Backend, key: &str) -> Result<(), String> {
     let mut vault = read_workspace(backend, &identity.workspace)?;
     // A failed container update must not let an old record resurrect this account.
     backend.delete(LEGACY_SERVICE, key)?;
+    vault.retired_legacy.remove(&identity.account);
     if vault.accounts.remove(&identity.account).is_some() {
         write_workspace(backend, &identity.workspace, &vault)?;
+    }
+    Ok(())
+}
+
+/// Move only this slot after a recoverable destination exists. Conflicting old
+/// accounts remain available for explicit recovery; neighbors are untouched.
+pub(super) fn migrate(backend: &impl Backend, old: &str, new: &str) -> Result<(), String> {
+    if old == new {
+        return Ok(());
+    }
+    let source = load(backend, old)?;
+    let target = load(backend, new)?;
+    if let Some(source) = source {
+        if let Some(target) = target {
+            if source.secrets == target.secrets && source.storage == target.storage {
+                remove(backend, old)?;
+            }
+        } else {
+            save(backend, new, &source)?;
+            remove(backend, old)?;
+        }
     }
     Ok(())
 }

@@ -123,6 +123,8 @@ async fn serve(
         workspace_path,
         &access.server_id(),
     )?)?;
+    // Restoring the saved studio resumes its collectors, never media output.
+    control_host.providers.reconcile(&control_host).await;
     let native_task = receiver.map(|receiver| tokio::spawn(receiver.run(control_host.clone())));
     let mcp_host = control_host.clone();
     let mcp_task = tokio::spawn(async move {

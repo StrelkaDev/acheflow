@@ -425,3 +425,47 @@ fn own_session_revocation_does_not_require_or_inherit_its_grants() {
     );
     assert!(registry.revoke(&phone.session, "owner", NOW).is_err());
 }
+
+#[test]
+fn upload_permission_migration_preserves_admin_roles_without_expanding_install_only_devices() {
+    let (directory, registry, owner) = setup();
+    let admin = registry
+        .invite(
+            &owner,
+            permissions(&[P::AccessManage, P::ExtensionsInstall]),
+            NOW,
+        )
+        .unwrap();
+    let admin = registry
+        .pair(&admin.code, "Administrator", "fixture", NOW)
+        .unwrap();
+    let installer = registry
+        .invite(&owner, permissions(&[P::ExtensionsInstall]), NOW)
+        .unwrap();
+    let installer = registry
+        .pair(&installer.code, "Installer", "fixture", NOW)
+        .unwrap();
+    drop(registry);
+    let path = directory.path();
+    let mut disk: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    disk["version"] = 2.into();
+    std::fs::write(&path, serde_json::to_vec(&disk).unwrap()).unwrap();
+    let restored = Registry::open(path).unwrap();
+    assert!(
+        restored
+            .authenticate(admin.token.as_deref().unwrap(), NOW + 1)
+            .unwrap()
+            .device
+            .permissions
+            .contains(&P::ExtensionsUpload)
+    );
+    assert!(
+        !restored
+            .authenticate(installer.token.as_deref().unwrap(), NOW + 1)
+            .unwrap()
+            .device
+            .permissions
+            .contains(&P::ExtensionsUpload)
+    );
+}

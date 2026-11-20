@@ -46,17 +46,21 @@ def copy_extensions(source, destination):
         if manifest["id"] in ids:
             raise ValueError("Duplicate extension ID")
         ids.add(manifest["id"])
-        names = ["manifest.json", manifest["module"]]
-        browser = manifest.get("authentication", {}).get("browser_module")
-        if browser:
-            names.append(browser)
-        for name in names:
+        parts = list(manifest["parts"].values()) if "parts" in manifest else [manifest]
+        parts = [part for part in parts if part is not None]
+        modules = {part["module"] for part in parts}
+        names = {"manifest.json", *modules}
+        for part in parts:
+            browser = (part.get("authentication") or {}).get("browser_module")
+            if browser:
+                names.add(browser)
+        for name in sorted(names):
             if Path(name).name != name or "\\" in name:
                 raise ValueError("Extension artifact must be a local filename")
             artifact = (manifest_path.parent / name).resolve(strict=True)
             if artifact.parent != manifest_path.parent.resolve():
                 raise ValueError("Extension artifact escapes its installation")
-            if name == manifest["module"] and not artifact.read_bytes().startswith(b"\0asm\x01\0\0\0"):
+            if name in modules and not artifact.read_bytes().startswith(b"\0asm\x01\0\0\0"):
                 raise ValueError("Invalid WASM module")
             target = destination / manifest_path.parent.name / name
             target.parent.mkdir(parents=True, exist_ok=True)

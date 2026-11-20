@@ -44,7 +44,7 @@ fn configure_public_settings(
     id: &str,
     config: &std::collections::BTreeMap<String, String>,
 ) -> Result<(), String> {
-    let extension = host.installed.get(id).ok_or("not_found: extension")?;
+    let extension = host.extension(id).ok_or("not_found: extension")?;
     if config.len() > 32
         || config.iter().any(|(key, value)| {
             extension
@@ -74,7 +74,7 @@ pub(crate) fn validate_public_settings(
         crate::control::now_ms(),
     )?;
     for (id, settings) in &workspace.extensions {
-        if host.installed.contains_key(id) {
+        if host.installed.read().unwrap().contains_key(id) {
             configure_public_settings(host, id, &settings.config)?;
         } else if !settings.config.is_empty() {
             return Err("unknown extension settings cannot be sent to the server".into());
@@ -89,7 +89,7 @@ async fn reconcile(host: &Arc<ControlHost>) {
     // Snapshot reads can already have reset Services to the new workspace.
     let previous = host.extension_owner.lock().unwrap().clone();
     if previous.as_deref() != owner {
-        for id in host.installed.keys() {
+        for id in &host.installed_ids() {
             let _ = extension_host::set_enabled(
                 host.clone(),
                 previous.as_deref().unwrap_or_default(),
@@ -161,6 +161,7 @@ pub async fn deactivate(
     let result = live::deactivate(State(host.runtime.clone()), request).await;
     if result.is_ok() {
         suspend(&host).await;
+        host.providers.reconcile(&host).await;
     }
     result
 }
@@ -175,7 +176,7 @@ pub(crate) async fn suspend(host: &Arc<ControlHost>) {
         .as_ref()
         .map(|w| w.id.clone())
         .unwrap_or_default();
-    for id in host.installed.keys() {
+    for id in &host.installed_ids() {
         let _ = extension_host::set_enabled(host.clone(), &owner, id, false).await;
     }
     host.client_execution
@@ -350,6 +351,8 @@ mod persistence_revision_tests {
         std::sync::Arc::get_mut(&mut host)
             .unwrap()
             .installed
+            .get_mut()
+            .unwrap()
             .get_mut("sample")
             .unwrap()
             .manifest

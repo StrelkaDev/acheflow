@@ -66,3 +66,71 @@ fn bundled_duplicates_are_disabled_with_slot_diagnostics_and_no_auth_module_surv
         );
     }
 }
+
+#[test]
+fn dual_parts_are_discovered_for_the_requested_host_and_cannot_open_the_other_host_session() {
+    use acheflow_extension_api::parts::ExecutionHost::{Client, Server};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions");
+    let local = ClientCatalog::discover_at(&root);
+    let shared = ClientCatalog::discover_server_at(&root);
+    assert!(local.errors.is_empty(), "{:?}", local.errors);
+    assert!(shared.errors.is_empty(), "{:?}", shared.errors);
+    for id in ["youtube", "vklive"] {
+        let client = &local.installed[id];
+        let server = &shared.installed[id];
+        assert_eq!(client.manifest.selected_host(), Some(Client));
+        assert_eq!(server.manifest.selected_host(), Some(Server));
+        assert_eq!(client.manifest.entry_point, "client_handle");
+        assert_eq!(server.manifest.entry_point, "server_handle");
+        assert!(server.browser_auth.is_none());
+        assert!(
+            crate::local::LocalSession::new(
+                server.manifest.clone(),
+                &server.module,
+                Default::default()
+            )
+            .is_err()
+        );
+        let identity = || crate::runtime::Identity {
+            workspace_id: "workspace".into(),
+            client_id: "actor".into(),
+            generation: 1,
+            connection: acheflow_extension_api::client_execution::Connection {
+                id: "channel".into(),
+                provider: id.into(),
+                account_id: "account".into(),
+                channel_id: "channel".into(),
+                capabilities: Default::default(),
+            },
+        };
+        assert!(
+            crate::runtime::ProviderRuntime::new(
+                server.manifest.clone(),
+                &server.module,
+                identity(),
+                Default::default()
+            )
+            .is_err()
+        );
+        assert!(
+            crate::runtime::ProviderRuntime::new_for_host(
+                client.manifest.clone(),
+                &client.module,
+                identity(),
+                Default::default(),
+                Server
+            )
+            .is_err()
+        );
+        assert!(
+            crate::runtime::ProviderRuntime::new_for_host(
+                server.manifest.clone(),
+                &server.module,
+                identity(),
+                Default::default(),
+                Server
+            )
+            .is_ok()
+        );
+    }
+}

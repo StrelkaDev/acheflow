@@ -27,7 +27,7 @@ impl Running {
     }
 }
 pub fn failed(host: &ControlHost, owner: &str, id: &str, error: String) {
-    let Some(extension) = host.installed.get(id) else {
+    let Some(extension) = host.extension(id) else {
         return;
     };
     {
@@ -61,8 +61,12 @@ pub async fn set_enabled(
     id: &str,
     enabled: bool,
 ) -> Result<(), String> {
-    let extension = host.installed.get(id).ok_or("not_found: extension")?;
+    let extension = host.extension(id).ok_or("not_found: extension")?;
+    if enabled && !host.package_execution_allowed(id) {
+        return Err("forbidden: allow execution of this installed package first".into());
+    }
     let manifest = extension.manifest.clone();
+    manifest.require_host(acheflow_extension_api::parts::ExecutionHost::Server)?;
     manifest.validate()?;
     if manifest.execution_side == acheflow_extension_api::integration::ExecutionSide::Client {
         return Err("client integrations cannot be installed or activated on the server".into());
@@ -90,10 +94,7 @@ pub async fn set_enabled(
     if !enabled {
         return Ok(());
     }
-    let guest = Arc::new(Mutex::new(Guest::load(
-        &extension.module,
-        manifest.capabilities.clone(),
-    )?));
+    let guest = Arc::new(Mutex::new(Guest::load_part(&extension.module, &manifest)?));
     let instance = acheflow_media_api::workspace::new_token();
     host.services
         .lock()

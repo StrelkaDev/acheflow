@@ -4,6 +4,7 @@ mod code_editor;
 mod control_client;
 mod dashboard;
 mod diagnostics;
+mod extension_packages;
 pub mod extension_panel;
 #[cfg(test)]
 mod extension_tests;
@@ -19,6 +20,8 @@ mod media;
 mod mobile_input;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_activation;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_credentials;
 #[cfg(target_os = "macos")]
 pub mod native_window;
 mod project;

@@ -2,26 +2,32 @@
   "id": "sample",
   "name": "Sample extension",
   "api_version": 2,
-  "module": "sample.wasm",
-  "capabilities": [
-    "panel",
-    "source"
-  ],
-  "services": [],
-  "subscriptions": [],
-  "settings": [],
-  "execution_side": "server",
-  "forwarding": [
-    {
-      "id": "increment",
-      "mode": "event"
+  "parts_version": 1,
+  "parts": {
+    "server": {
+      "module": "sample.wasm",
+      "capabilities": [
+        "panel",
+        "source"
+      ],
+      "services": [],
+      "subscriptions": [],
+      "settings": [],
+      "forwarding": [
+        {
+          "id": "increment",
+          "mode": "event"
+        }
+      ],
+      "source_types": [
+        {
+          "id": "actions",
+          "name": "Action counter",
+          "settings": []
+        }
+      ],
+      "kind": "logic",
+      "supported_actions": []
     }
-  ],
-  "source_types": [
-    {
-      "id": "actions",
-      "name": "Action counter",
-      "settings": []
-    }
-  ]
+  }
 }

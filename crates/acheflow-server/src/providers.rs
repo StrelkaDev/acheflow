@@ -182,12 +182,7 @@ impl Manager {
     }
     pub async fn reconcile(&self, host: &Arc<ControlHost>) {
         let workspace = host.runtime.workspace.read().unwrap().clone();
-        if !host
-            .runtime
-            .activated
-            .load(std::sync::atomic::Ordering::Acquire)
-            || host.runtime.shutdown.is_cancelled()
-        {
+        if host.runtime.shutdown.is_cancelled() {
             self.suspend(host).await;
             return;
         }
@@ -195,6 +190,13 @@ impl Manager {
             self.suspend(host).await;
             return;
         };
+        let server = self.server.lock().unwrap().clone();
+        if let Some(server) = server
+            && let Err(error) =
+                ServerAccount::name_workspace(&server, &workspace.id, &workspace.name)
+        {
+            eprintln!("Workspace credential label: {error}");
+        }
         let desired: BTreeMap<_, _> = workspace
             .server_integrations
             .iter()
@@ -244,10 +246,13 @@ impl Manager {
             }
         }
         for (provider, spec) in desired {
+            if !host.package_execution_allowed(&provider) {
+                continue;
+            }
             if running.contains_key(&provider) {
                 continue;
             }
-            let Some(installed) = host.provider_catalog.installed.get(&provider) else {
+            let Some(installed) = host.provider(&provider) else {
                 continue;
             };
             let actor = format!(
@@ -368,11 +373,12 @@ async fn worker(
                 capabilities: spec.capabilities.clone(),
             },
         };
-        let Ok(mut runtime) = ProviderRuntime::new(
+        let Ok(mut runtime) = ProviderRuntime::new_for_host(
             manifest.clone(),
             &module,
             identity,
             spec.binding.config.clone(),
+            acheflow_extension_api::parts::ExecutionHost::Server,
         ) else {
             mark("failed", generation);
             return;
@@ -426,22 +432,26 @@ async fn worker(
 }
 pub(crate) fn validate(host: &ControlHost, workspace: &Workspace) -> Result<(), String> {
     for (provider, binding) in &workspace.server_integrations {
-        if host.installed.contains_key(provider) {
+        if host.installed.read().unwrap().contains_key(provider) {
             return Err("Provider identity conflicts with server logic.".into());
         }
         let installed = host
-            .provider_catalog
-            .installed
-            .get(provider)
+            .provider(provider)
             .ok_or("Unknown server provider installation.")?;
-        if binding.config.iter().any(|(key, value)| {
-            installed
-                .manifest
-                .settings
-                .iter()
-                .find(|s| s.id == *key)
-                .is_none_or(|s| s.secret || value.len() > s.max_length)
-        }) {
+        if binding.config.len() > 32
+            || binding.config.iter().any(|(key, value)| {
+                installed
+                    .manifest
+                    .settings
+                    .iter()
+                    .find(|s| s.id == *key)
+                    .is_none_or(|s| {
+                        s.secret
+                            || value.len() > s.max_length
+                            || value.chars().any(char::is_control)
+                    })
+            })
+        {
             return Err("Invalid public server provider settings.".into());
         }
     }

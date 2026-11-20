@@ -595,3 +595,36 @@ button.selected { background:var(--accent-surface); color:var(--accent-text); bo
 .account-purpose > span { display:block; font-size:11px; color:#8c9cb1; margin-bottom:8px; }
 .account-purpose button { padding:8px 14px; }
 .account-purpose button.selected { border-color:#aa5127; background:#2b1d16; color:#ffad7d; }
+
+/* Extension settings use one account card per host; tools stay secondary. */
+.extension-scope-intro { margin-bottom:20px; max-width:760px; }
+.extension-scope-intro h2 { margin:0 0 6px; font-size:18px; }
+.extension-scope-intro p { margin:0; line-height:1.6; }
+.extension-card .panel-heading { gap:16px; align-items:center; }
+.extension-card-heading { min-width:0; flex:1; }
+.extension-card-heading p { margin:6px 0 0; overflow-wrap:anywhere; }
+.extension-card-actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.extension-settings[hidden],.workspace-capabilities [hidden] { display:none; }
+.extension-settings-group { margin-bottom:20px; }
+.extension-settings-group h3,.server-account-current h3 { margin:0 0 8px; font-size:14px; }
+.extension-settings-group .extension-functions { margin:0; }
+.extension-settings-group .extension-fields:not(:empty) { margin-top:14px; }
+.account-connected { border-color:#365c50; background:#172d27; color:#a4ddc5; }
+.extension-card .client-authorization { margin-top:0; border-top:0; padding-top:0; }
+.extension-card .extension-fields:not(:empty) + .extension-functions + .client-authorization { margin-top:18px; }
+.extension-card .server-account-connect { margin-top:0; padding-top:0; border-top:0; }
+.extension-card .server-account-current { margin-top:0; padding-top:0; border-top:0; }
+.extension-card .server-account-current .extension-action-row { margin-top:12px; }
+.extension-card .extension-disclosure-toggle { padding:9px 0; }
+.extension-card .extension-disclosure-content { padding:12px; border:1px solid #303a49; border-radius:8px; background:#0e1622; }
+.package-manager { margin-top:24px; margin-bottom:16px; }
+.package-manager .panel-heading { padding:14px 18px; }
+.package-manager h2,.workspace-capabilities h2 { font-size:14px; }
+.legacy-accounts { margin-top:16px; padding:12px 18px; }
+.legacy-accounts > button { background:transparent; border-color:transparent; color:#a6b2c4; }
+@media (max-width:740px) {
+    .extension-card .panel-heading { flex-wrap:wrap; }
+    .extension-card-actions { width:100%; }
+    .extension-card-actions > button { flex:1; }
+    .server-account-current .extension-action-row > button { flex:1 1 160px; }
+}

@@ -17,7 +17,7 @@ impl Principal {
         permissions.iter().any(|p| self.allows(*p))
     }
     pub fn server_accounts(&self) -> bool {
-        self.workspace_management() && self.all(&[P::AccessManage, P::ChatRead])
+        self.all(&[P::ExtensionsConfigure, P::ExtensionsRun])
     }
     pub fn workspace_management(&self) -> bool {
         self.all(&[
@@ -30,7 +30,9 @@ impl Principal {
     }
     pub fn command(&self, action: &ControlAction) -> bool {
         match action {
-            ControlAction::SendChat { .. } => self.allows(P::ChatSend),
+            ControlAction::SendChat { .. } => {
+                self.all(&[P::ChatSend, P::ExtensionsConfigure, P::ExtensionsRun])
+            }
             ControlAction::SetScene { .. } => self.allows(P::ScenesManage),
             ControlAction::CreatePoll { .. } | ControlAction::ClosePoll { .. } => {
                 self.allows(P::InteractiveManage)

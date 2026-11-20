@@ -8,13 +8,11 @@ Apply grants receive a display projection with keys, transport URLs, extension
 configuration and capability policy removed; scene/source details also require
 studio, scene-control or interactive-view rights.
 
-The server separates users, devices and verified personal account bindings.
-Shared chat reading does not grant moderation. Future moderation uses the
-initiating user's personal account or an explicitly delegated workspace/server
-account, checked for the target channel and operation. Per-action account selection
-and delegation remain unfinished; see
-[ADR-003](decisions/003-trusted-server-workspace.md#shared-chat-and-personal-moderation)
-and [SHARED-06](roadmap.md#shared-06-authorize-server-accounts-and-migrate-credentials).
+The server separates users and devices. Personal provider credentials stay on
+each originating device; sending requires both current Acheflow `chat_send` and
+platform permission. Shared chat reading grants neither sending nor future
+moderation. The server collector has its own independently authorized service
+account. See [extension ownership](extensions.md#connect-chat-and-send).
 
 ## Connect devices
 
@@ -26,8 +24,8 @@ server on localhost grants neither authority nor process ownership.
 In **Settings → Device access**, use **Your profile & devices** to change your
 display name or **Link my other device**. A device link attaches another device to
 your user with the issuing device’s current permissions. Use it only on your own
-devices: linked devices share a personal identity and will share future personal
-account access. Linking never combines device permissions.
+devices: linked devices share an Acheflow identity. Platform accounts remain device-local,
+and linking never combines device permissions.
 
 To add someone else, use **Invite a participant**, choose a role and select
 **Create invitation**. This always creates a separate user, even if names match.
@@ -46,9 +44,11 @@ redirects or use an HTTP proxy. Browser sessions use a host-scoped
 pages restore it after reload. Static clients on a different explicitly allowed
 UI origin keep a Bearer token in memory and need a new invitation after reload.
 No token is put in a URL, workspace export, localStorage or IndexedDB. macOS native
-sessions use a separate OS-vault service with one record per server, inaccessible
+sessions use one separate OS-vault container with endpoint-scoped entries, inaccessible
 through provider workspace storage; native platforms
 without a vault adapter retain device tokens in memory only.
+Native device-session reads and writes run off the UI executor so an OS-vault
+permission prompt does not block the studio interface.
 
 For a standalone headless server, obtain `owner_key` locally from its private
 access file: settings `server.json` use `server.access.json`. Use the setup key in
@@ -88,7 +88,7 @@ The store limits retained users to 1,024 and active devices to 128.
 | Apply workspace configuration | Full Apply/Start, together with scene/media/extension configure/run grants |
 | Control interactive | Create/close polls; scene-driven rules/actions also need scene control |
 | Configure extensions / Run extensions | Separate public configuration and enable/disable/executor rights |
-| Install extensions | Reserved for package installation; no upload endpoint exists yet |
+| Upload extensions / Install extensions | Independent staged ZIP upload and activation grants; execution requires separate approval |
 | Manage device access | Invitations, revocation, server settings and diagnostics |
 
 Full Apply/Start contains sources, outputs and extensions, so it requires every
@@ -130,10 +130,20 @@ Access responses are non-cacheable. Unknown API routes are denied by default.
 | `GET /api/access/devices` | List paired devices and grants without tokens |
 | `DELETE /api/access/devices/{id}` | Revoke a device and its outstanding invitations |
 | `GET /api/access/personal-accounts/{workspace}` | List only the authenticated user’s personal account metadata |
-| `POST /api/access/personal-accounts/{workspace}/{provider}` | Revalidate and save an account for the authenticated user; explicit trust and expected version required |
+| `POST /api/access/personal-accounts/{workspace}/{provider}` | Retired: returns 410; reauthorize locally on each device |
 | `DELETE /api/access/personal-accounts/{workspace}/{provider}` | Disconnect the caller’s binding with `{expected_version}`; report credential cleanup separately |
-| `POST /api/access/server-accounts/{provider}` | Revalidate and connect a workspace account; all Apply grants, AccessManage and ChatRead required |
-| `DELETE /api/access/server-accounts/{provider}` | Remove server credentials after stopping collection; same grants required |
+| `POST /api/access/server-accounts/{provider}` | Revalidate and connect a workspace account; ExtensionsConfigure + ExtensionsRun required |
+| `DELETE /api/access/server-accounts/{provider}` | Remove server credentials after stopping collection; ExtensionsConfigure + ExtensionsRun required |
+| `POST /api/access/personal-send/{workspace}/{provider}/{channel}` | Retired: 410, with no external write |
+| `POST /api/access/actions/authorize` | ChatSend: validate current workspace and connected provider/channel; return short-lived authority metadata, never credentials |
+| `GET /api/extensions/server-providers` | ExtensionsConfigure: list public server manifests |
+| `GET /api/extensions/server-providers/{provider}/module` | Configure + Run: load approved server authorizer WASM, with no saved secret state |
+| `GET /api/access/server-accounts/{provider}` | Configure: read that provider’s public binding/settings and revision, without output/ingest keys |
+| `PUT /api/access/server-accounts/{provider}` | Configure: save public settings; changing enabled state additionally requires Run, with expected workspace revision |
+| `GET /api/extensions/packages` | Upload, Install or Run: inspect package metadata |
+| `POST /api/extensions/packages/stage` | Upload: bounded ZIP validation and staged review |
+| `POST /api/extensions/packages/install` | Install: atomically activate reviewed package with execution disabled |
+| `POST /api/extensions/packages/allow` | Run: approve execution of the exact installed digest |
 | `POST /api/access/logout` | Revoke the caller's session and clear its cookie |
 
 Native pairing adds `X-Acheflow-Client: native` to receive its new token in the

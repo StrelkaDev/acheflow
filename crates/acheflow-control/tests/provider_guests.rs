@@ -10,10 +10,13 @@ fn load(id: &str) -> Guest {
         .join(id);
     let manifest: GuestManifest =
         serde_json::from_slice(&std::fs::read(root.join("manifest.json")).unwrap()).unwrap();
-    manifest.validate().unwrap();
-    Guest::load(
+    let manifest = manifest
+        .select_part(acheflow_extension_api::parts::ExecutionHost::Server)
+        .unwrap()
+        .unwrap();
+    Guest::load_part(
         &std::fs::read(root.join(&manifest.module)).unwrap(),
-        manifest.capabilities,
+        &manifest,
     )
     .unwrap()
 }
@@ -369,5 +372,44 @@ fn personal_action_preparation_never_opens_a_chat_subscription() {
             );
         }
         assert!(effects.iter().any(|e| e["type"] == "http"));
+    }
+}
+
+#[test]
+fn two_real_provider_packages_load_each_declared_entry_without_cross_part_state() {
+    use acheflow_extension_api::parts::ExecutionHost;
+    for id in ["youtube", "vklive"] {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../extensions")
+            .join(id);
+        let package: GuestManifest =
+            serde_json::from_slice(&std::fs::read(root.join("manifest.json")).unwrap()).unwrap();
+        let mut guests = Vec::new();
+        for host in [ExecutionHost::Client, ExecutionHost::Server] {
+            let selected = package.select_part(host).unwrap().unwrap();
+            let bytes = std::fs::read(root.join(&selected.module)).unwrap();
+            assert!(
+                Guest::load_entry_point(&bytes, selected.capabilities.clone(), "missing_part")
+                    .is_err()
+            );
+            let guest =
+                Guest::load_entry_point(&bytes, selected.capabilities, &selected.entry_point)
+                    .unwrap();
+            guests.push(guest);
+        }
+        let client_effects = start(&mut guests[0], id);
+        let server_effects = guests[1]
+            .call(json!({"type":"tick","now_ms":1001}))
+            .unwrap();
+        assert!(client_effects.iter().any(|e| e["type"] == "http"));
+        assert!(!server_effects.iter().any(|e| matches!(
+            e["type"].as_str(),
+            Some("http" | "websocket" | "http_stream" | "chat")
+        )));
+        assert!(
+            start(&mut guests[1], id)
+                .iter()
+                .any(|e| e["type"] == "http")
+        );
     }
 }

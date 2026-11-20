@@ -40,14 +40,15 @@ impl ServerPreferences {
 #[component]
 pub(crate) fn ActionButton(
     #[props(default)] class: String,
-    #[props(default)] id: &'static str,
+    #[props(default)] id: String,
+    #[props(default)] aria_label: Option<String>,
     #[props(default)] disabled: bool,
     expanded: Option<bool>,
     pressed: Option<bool>,
     onclick: EventHandler<()>,
     children: Element,
 ) -> Element {
-    rsx! {button {id,class,disabled,"aria-expanded":expanded.map(|v|v.to_string()),"aria-pressed":pressed.map(|v|v.to_string()),
+    rsx! {button {id,class,disabled,"aria-label":aria_label,"aria-expanded":expanded.map(|v|v.to_string()),"aria-pressed":pressed.map(|v|v.to_string()),
         onclick:move |_|{if !disabled {onclick.call(());}},
         onkeydown:move |event|{
             if !disabled && !event.is_auto_repeating() && (event.key()==Key::Named(NamedKey::Enter)||event.key()==Key::Character(" ".into())) {

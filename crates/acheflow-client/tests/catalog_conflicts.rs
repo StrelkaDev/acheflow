@@ -31,9 +31,10 @@ impl Installations {
         let mut manifest: Value =
             serde_json::from_slice(&std::fs::read(source.join("manifest.json")).unwrap()).unwrap();
         manifest["id"] = id.into();
-        let module = manifest["module"].as_str().unwrap();
+        let module = manifest["parts"]["client"]["module"].as_str().unwrap();
         std::fs::copy(source.join(module), destination.join(module)).unwrap();
-        if let Some(name) = manifest["authentication"]["browser_module"].as_str() {
+        if let Some(name) = manifest["parts"]["client"]["authentication"]["browser_module"].as_str()
+        {
             match browser_source {
                 Some(source) => std::fs::write(destination.join(name), source).unwrap(),
                 None => {

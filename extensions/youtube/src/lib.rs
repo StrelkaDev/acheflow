@@ -23,6 +23,7 @@ struct WirePayload {
 #[derive(Default)]
 pub struct YouTube {
     authorization: guest_sdk::authorization::Authorization,
+    action_only: bool,
     video: String,
     configured_video: String,
     broadcasts: Vec<Value>,
@@ -103,10 +104,16 @@ impl YouTube {
     }
     pub fn handle(&mut self, mut input: Value) -> Vec<Value> {
         if input["type"] == "prepare_action" {
+            self.action_only = true;
             input["type"] = json!("start");
             input["config"]["video_id"] = input["channel_id"].clone();
             input["config"]["read_chat"] = json!("false");
             input["config"]["read_audience"] = json!("false");
+        }
+        if self.action_only {
+            input["config"]["read_chat"] = json!("false");
+            input["config"]["read_audience"] = json!("false");
+            input["config"]["send_chat"] = json!("true");
         }
 
         if let Some(effects) = self
@@ -315,3 +322,6 @@ guest_sdk::export!(YouTube, WireInput, handle_wire);
 
 #[cfg(test)]
 mod tests;
+
+guest_sdk::export_part!(client_handle, YouTube, WireInput, handle_wire);
+guest_sdk::export_part!(server_handle, YouTube, WireInput, handle_wire);

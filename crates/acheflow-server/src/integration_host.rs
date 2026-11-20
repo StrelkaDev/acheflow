@@ -25,7 +25,12 @@ fn dispatch(
     name: &str,
     mut payload: Value,
 ) -> Result<(), String> {
-    if !host.installed.contains_key(&channel.extension_id) {
+    if !host
+        .installed
+        .read()
+        .unwrap()
+        .contains_key(&channel.extension_id)
+    {
         if name != "chat.send" {
             return Err("unavailable: client action is not supported".into());
         }
@@ -325,7 +330,7 @@ pub fn publish(
 }
 
 pub fn validate_effect(host: &ControlHost, origin: &str, effect: &Value) -> Result<(), String> {
-    let extension = host.installed.get(origin).ok_or("unknown extension")?;
+    let extension = host.extension(origin).ok_or("unknown extension")?;
     let kind = effect["type"].as_str().ok_or("missing effect type")?;
     if !extension.manifest.capabilities.iter().any(|c| c == kind) {
         return Err("forbidden: extension capability is not granted".into());

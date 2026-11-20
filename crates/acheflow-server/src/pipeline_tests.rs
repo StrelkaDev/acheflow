@@ -17,6 +17,16 @@ use tokio::{
     process::{Child, Command},
 };
 
+// This fixture deliberately edits the current studio repeatedly. Acknowledge
+// each durable revision as a real synchronized operator would before Apply.
+async fn configure_current(
+    state: State<RuntimeState>,
+    mut request: Json<Workspace>,
+) -> live::ApiResult {
+    request.0.edit_revision = state.0.saved_state().0;
+    crate::live::configure(state, request).await
+}
+
 pub(super) async fn server(
     mut workspace: Workspace,
     caps: crate::ffmpeg::CapabilityState,
@@ -28,7 +38,7 @@ pub(super) async fn server(
         source.url = url.clone();
     }
     let runtime = Runtime::new(caps, address.to_string());
-    let _ = live::configure(State(runtime.clone()), Json(workspace))
+    let _ = configure_current(State(runtime.clone()), Json(workspace))
         .await
         .unwrap();
     let server_runtime = runtime.clone();
@@ -206,7 +216,7 @@ async fn restart_failed_output(
     recovered_workspace.sources[0].url = workspace.horizontal.outputs[2].url.clone();
     recovered_workspace.sources[0].key = workspace.horizontal.outputs[2].key.clone();
     let recovered = Runtime::new(caps.clone(), listener.local_addr().unwrap().to_string());
-    let _ = live::configure(State(recovered.clone()), Json(recovered_workspace))
+    let _ = configure_current(State(recovered.clone()), Json(recovered_workspace))
         .await
         .unwrap();
     let recovered_runtime = recovered.clone();
@@ -391,6 +401,7 @@ async fn output_pipeline(encoder: &str) {
             .authorize("live", &workspace.sources[0].key, &runtime.shutdown)
             .is_err()
     );
+    workspace.edit_revision = runtime.saved_state().0;
     let _ = live::start(
         State(runtime.clone()),
         Json(StartRequest {
@@ -452,7 +463,7 @@ async fn output_pipeline(encoder: &str) {
         .layers[0]
         .x = 160;
     workspace.scenes[0].layers[1].x = 0;
-    let _ = live::configure(State(runtime.clone()), Json(workspace.clone()))
+    let _ = configure_current(State(runtime.clone()), Json(workspace.clone()))
         .await
         .unwrap();
     until(|| colors(&sink, "blue", "red")).await;
@@ -476,7 +487,7 @@ async fn output_pipeline(encoder: &str) {
             amount: 50,
             enabled: true,
         });
-    let _ = live::configure(State(runtime.clone()), Json(edited.clone()))
+    let _ = configure_current(State(runtime.clone()), Json(edited.clone()))
         .await
         .unwrap();
     until(|| {
@@ -490,11 +501,11 @@ async fn output_pipeline(encoder: &str) {
     })
     .await;
     edited.move_layer(scene, 0, 1);
-    let _ = live::configure(State(runtime.clone()), Json(edited))
+    let _ = configure_current(State(runtime.clone()), Json(edited))
         .await
         .unwrap();
     until(|| colors(&sink, "red", "red")).await;
-    let _ = live::configure(State(runtime.clone()), Json(workspace.clone()))
+    let _ = configure_current(State(runtime.clone()), Json(workspace.clone()))
         .await
         .unwrap();
     until(|| colors(&sink, "blue", "red")).await;
@@ -529,7 +540,7 @@ async fn output_pipeline(encoder: &str) {
     let mut changed_profile = workspace.clone();
     changed_profile.horizontal.fps = 30;
     assert!(
-        live::configure(State(runtime.clone()), Json(changed_profile))
+        configure_current(State(runtime.clone()), Json(changed_profile))
             .await
             .is_err()
     );
@@ -540,7 +551,7 @@ async fn output_pipeline(encoder: &str) {
     until(|| colors(&sink, "blue", "red")).await;
     let old_token = workspace.sources[1].key.clone();
     workspace.sources[1].key = acheflow_media_api::workspace::new_token();
-    let _ = live::configure(State(runtime.clone()), Json(workspace.clone()))
+    let _ = configure_current(State(runtime.clone()), Json(workspace.clone()))
         .await
         .unwrap();
     until(|| colors(&sink, "black", "red")).await;
@@ -602,9 +613,10 @@ async fn spatial_chat_roundtrip(runtime: &RuntimeState, sink: &RuntimeState, sce
     };
     use serde_json::json;
     let mut host = crate::control::ControlHost::new(runtime.clone());
-    Arc::get_mut(&mut host).unwrap().installed = crate::extension_registry::discover_at(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions"),
-    );
+    Arc::get_mut(&mut host).unwrap().installed =
+        std::sync::RwLock::new(crate::extension_registry::discover_at(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions"),
+        ));
     let workspace = runtime.workspace.read().unwrap().clone().unwrap();
     let mut spatial = SpatialScene::from_canvas(&workspace.horizontal.base);
     spatial.objects.push(SceneObject {
@@ -651,15 +663,20 @@ async fn spatial_chat_roundtrip(runtime: &RuntimeState, sink: &RuntimeState, sce
     .unwrap();
     let manifest: acheflow_control::extensions::GuestManifest =
         serde_json::from_str(include_str!("../../../extensions/twitch/manifest.json")).unwrap();
-    let mut guest = acheflow_control::extensions::Guest::load(
+    let manifest = manifest
+        .select_part(acheflow_extension_api::parts::ExecutionHost::Server)
+        .unwrap()
+        .unwrap();
+    let mut guest = acheflow_control::extensions::Guest::load_part(
         include_bytes!("../../../extensions/twitch/twitch.wasm"),
-        manifest.capabilities,
+        &manifest,
     )
     .unwrap();
     let effects=guest.call(json!({"type":"websocket","now_ms":crate::control::now_ms(),"payload":{"metadata":{"message_type":"notification","subscription_type":"channel.chat.message"},"payload":{"event":{"broadcaster_user_id":"fixture","message_id":"turn-once","chatter_user_id":"moderator","chatter_user_name":"Moderator","message":{"text":"!turn"},"badges":[{"set_id":"moderator"}]}}}})).unwrap();
     for effect in effects {
-        host.publish_fixture(&workspace.id, "twitch", effect)
-            .await
+        // The real provider event enters the normalized provider path. Device
+        // authentication and ownership are covered by bridge/collector tests.
+        host.publish_inner(&workspace.id, "twitch", "", effect, 0, true)
             .unwrap();
     }
     let actual = host.snapshot(0, 1);
@@ -696,7 +713,7 @@ async fn spatial_chat_roundtrip(runtime: &RuntimeState, sink: &RuntimeState, sce
         .find(|s| s.id == scene_id)
         .unwrap()
         .spatial = None;
-    let _ = live::configure(State(runtime.clone()), Json(restored))
+    let _ = configure_current(State(runtime.clone()), Json(restored))
         .await
         .unwrap();
     until(|| colors(sink, "red", "blue")).await;

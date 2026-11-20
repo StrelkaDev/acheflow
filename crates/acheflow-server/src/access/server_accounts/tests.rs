@@ -48,10 +48,12 @@ fn fixture() -> (
     let directory = super::super::tests::Directory::new();
     let (mut host, workspace) = crate::control::tests::host();
     let inner = Arc::get_mut(&mut host).unwrap();
-    inner.installed.clear();
-    inner.provider_catalog.installed.clear();
+    inner.installed.get_mut().unwrap().clear();
+    inner.provider_catalog.get_mut().unwrap().installed.clear();
     inner
         .provider_catalog
+        .get_mut()
+        .unwrap()
         .installed
         .insert("alpha".into(), artifact());
     let access = Access::open(directory.path(), host).unwrap();
@@ -106,7 +108,7 @@ async fn connection_is_read_only_and_locked_vault_preserves_the_old_binding() {
     assert_eq!(current.client_capabilities.len(), 1);
     assert_eq!(
         current.client_capabilities[0].capabilities,
-        [Capability::ChatRead].into()
+        [Capability::ChatRead, Capability::AudienceRead].into()
     );
     let old = current.server_integrations["alpha"].clone();
     store.fail_write.store(true, Ordering::SeqCst);
@@ -362,5 +364,107 @@ async fn http_requires_management_trust_and_matching_verified_account_without_ec
             .unwrap()
             .server_integrations
             .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn config_only_role_reads_and_saves_public_settings_without_scene_media_or_execution_grants()
+{
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use tower::ServiceExt;
+    let (_dir, access, owner, workspace) = fixture();
+    let mut proposed = pending(&access, &workspace, "settings-role");
+    proposed.binding.enabled = false;
+    let _ = complete(
+        &access,
+        &owner,
+        proposed,
+        authorized().await,
+        &Memory::default(),
+    )
+    .await
+    .unwrap();
+    let invite = access
+        .registry
+        .invite(&owner.0, [P::ExtensionsConfigure].into(), now())
+        .unwrap();
+    let configured = access
+        .registry
+        .pair(&invite.code, "Configurator", "fixture", now())
+        .unwrap();
+    let token = configured.token.unwrap();
+    let app = access.protect(access.routes());
+    let call = |method: &'static str, path: &'static str, body: serde_json::Value| {
+        let app = app.clone();
+        let token = token.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("host", "studio.example")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("x-acheflow-request", "1")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let response = call(
+        "GET",
+        "/api/access/server-accounts/alpha",
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), 65536).await.unwrap();
+    let settings: ServerIntegrationSettings = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        settings.workspace_id.as_deref(),
+        Some(workspace.id.as_str())
+    );
+    assert_eq!(settings.binding.unwrap().account_id, "verified-bot");
+    assert!(!String::from_utf8_lossy(&bytes).contains("synthetic-token"));
+    let update = serde_json::json!({"workspace_id":workspace.id,"expected_revision":settings.revision,"enabled":false,"config":{"server_authorization_fixture":"false"}});
+    assert_eq!(
+        call("PUT", "/api/access/server-accounts/alpha", update.clone())
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let mut enable = update;
+    enable["expected_revision"] = serde_json::json!(access.host.runtime.saved_state().0);
+    enable["enabled"] = serde_json::json!(true);
+    assert_eq!(
+        call("PUT", "/api/access/server-accounts/alpha", enable)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            "GET",
+            "/api/extensions/server-providers/alpha/module",
+            serde_json::Value::Null
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            "POST",
+            "/api/access/server-accounts/alpha",
+            serde_json::json!({})
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
     );
 }

@@ -1,10 +1,12 @@
 //! Client-owned provider discovery. No server installation or provider list is required.
 use acheflow_extension_api::integration::{ExecutionSide, GuestManifest};
+use acheflow_extension_api::parts::ExecutionHost;
 use std::collections::BTreeMap;
 mod bundle {
     include!(concat!(env!("OUT_DIR"), "/client_extensions.rs"));
 }
 
+#[derive(Clone)]
 pub struct Installed {
     pub manifest: GuestManifest,
     pub module: Vec<u8>,
@@ -14,6 +16,7 @@ pub struct Installed {
 pub struct ClientCatalog {
     pub installed: BTreeMap<String, Installed>,
     pub errors: Vec<String>,
+    host: ExecutionHost,
     sources: BTreeMap<String, Vec<String>>,
 }
 impl ClientCatalog {
@@ -48,7 +51,9 @@ impl ClientCatalog {
         }
         let manifest: GuestManifest =
             serde_json::from_slice(bytes).map_err(|_| "invalid client manifest")?;
-        manifest.validate()?;
+        let manifest = manifest
+            .select_part(self.host)?
+            .ok_or("installation does not provide this host part")?;
         if manifest.execution_side != ExecutionSide::Client {
             return Err("installation does not execute on the client".into());
         }
@@ -84,6 +89,44 @@ impl ClientCatalog {
     }
     #[cfg(not(target_arch = "wasm32"))]
     pub fn discover() -> Self {
+        let mut catalog = Self::discover_base();
+        let root = match crate::package::client_root() {
+            Ok(root) => root,
+            Err(error) => {
+                catalog.errors.push(error);
+                return catalog;
+            }
+        };
+        if root.exists() {
+            let managed = crate::package::Store::open(root, ExecutionHost::Client)
+                .and_then(|store| store.installed());
+            match managed {
+                Ok(packages) => {
+                    for package in packages {
+                        let id = package.review().id.clone();
+                        if !package.review().execution_allowed {
+                            catalog.installed.remove(&id);
+                            continue;
+                        }
+                        if !catalog.installed.contains_key(&id) && catalog.installed.len() >= 8 {
+                            catalog
+                                .errors
+                                .push("Installed client package catalog is full.".into());
+                            continue;
+                        }
+                        catalog.installed.insert(id, package.into_installed());
+                    }
+                }
+                Err(error) => {
+                    catalog.installed.clear();
+                    catalog.errors.push(error);
+                }
+            }
+        }
+        catalog
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn discover_base() -> Self {
         if let Some(root) = std::env::var_os("ACHEFLOW_CLIENT_EXTENSIONS_DIR") {
             return Self::discover_at(std::path::Path::new(&root));
         }
@@ -110,7 +153,18 @@ impl ClientCatalog {
     }
     #[cfg(not(target_arch = "wasm32"))]
     pub fn discover_at(root: &std::path::Path) -> Self {
-        let mut result = Self::default();
+        Self::discover_for_host(root, ExecutionHost::Client)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn discover_server_at(root: &std::path::Path) -> Self {
+        Self::discover_for_host(root, ExecutionHost::Server)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn discover_for_host(root: &std::path::Path, host: ExecutionHost) -> Self {
+        let mut result = Self {
+            host,
+            ..Self::default()
+        };
         let entries = match std::fs::read_dir(root) {
             Ok(entries) => entries,
             Err(_) => {
@@ -149,7 +203,7 @@ impl ClientCatalog {
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn load_directory(&mut self, dir: &std::path::Path) -> Result<(), String> {
-        let (bytes, module) = read_installation(dir)?;
+        let (bytes, module) = read_installation(dir, self.host)?;
         if bytes.is_empty() || !self.insert(&bytes, &module, &dir.display().to_string()) {
             return Ok(());
         }
@@ -159,7 +213,9 @@ impl ClientCatalog {
             .installed
             .get_mut(&manifest.id)
             .ok_or("client installation unavailable")?;
-        installed.browser_auth = read_browser_authorization(dir, &manifest)?;
+        if self.host == ExecutionHost::Client {
+            installed.browser_auth = read_browser_authorization(dir, &installed.manifest)?;
+        }
         Ok(())
     }
 }
@@ -169,7 +225,10 @@ impl ClientCatalog {
 mod tests;
 
 #[cfg(not(target_arch = "wasm32"))]
-fn read_installation(dir: &std::path::Path) -> Result<(Vec<u8>, Vec<u8>), String> {
+fn read_installation(
+    dir: &std::path::Path,
+    host: ExecutionHost,
+) -> Result<(Vec<u8>, Vec<u8>), String> {
     if std::fs::metadata(dir.join("manifest.json"))
         .map_err(|_| "client manifest unavailable")?
         .len()
@@ -184,7 +243,9 @@ fn read_installation(dir: &std::path::Path) -> Result<(Vec<u8>, Vec<u8>), String
     }
     let manifest: GuestManifest =
         serde_json::from_slice(&bytes).map_err(|_| "invalid client manifest")?;
-    manifest.validate()?;
+    let Some(manifest) = manifest.select_part(host)? else {
+        return Ok((vec![], vec![]));
+    };
     if manifest.execution_side != ExecutionSide::Client {
         return Ok((vec![], vec![]));
     }

@@ -9,6 +9,9 @@ pub struct ServerAccount {
     last_checkpoint: Option<std::time::Instant>,
 }
 impl ServerAccount {
+    pub fn name_workspace(server: &str, workspace: &str, name: &str) -> Result<(), String> {
+        crate::vault::name_workspace(&format!("server:{server}"), workspace, name, "Server")
+    }
     pub fn remove(
         server: &str,
         workspace: &str,
@@ -30,52 +33,6 @@ impl ServerAccount {
             server, workspace, user, provider, slot, account,
         )?)
     }
-    pub async fn personal_runtime(
-        server: &str,
-        workspace: &str,
-        user: &str,
-        slot: &str,
-        installed: &crate::catalog::Installed,
-        config: std::collections::BTreeMap<String, String>,
-        identity: crate::runtime::Identity,
-    ) -> Result<(Self, ProviderRuntime), String> {
-        let provider = &identity.connection.provider;
-        let account = &identity.connection.account_id;
-        let key = personal_storage_key(server, workspace, user, provider, slot, account)?;
-        let state =
-            crate::vault::load(&key)?.ok_or("Personal account credentials are unavailable.")?;
-        let verified = authorization::authorize(
-            installed.manifest.clone(),
-            &installed.module,
-            config.clone(),
-            state.secrets,
-        )
-        .await?;
-        if verified.account_id() != account {
-            return Err("Personal account identity changed.".into());
-        }
-
-        let account = Self {
-            key,
-            state: Arc::new(Mutex::new(verified.state)),
-            scope: (workspace.into(), provider.clone(), account.clone()),
-            last_checkpoint: None,
-        };
-        let mut runtime = ProviderRuntime::new(
-            installed.manifest.clone(),
-            &installed.module,
-            identity,
-            config,
-        )?;
-        {
-            let state = account
-                .state
-                .lock()
-                .map_err(|_| "Account storage unavailable")?;
-            runtime.restore_server(state.secrets.clone(), state.storage.clone())?;
-        }
-        Ok((account, runtime))
-    }
     pub fn load(
         server: &str,
         workspace: &str,
@@ -94,12 +51,13 @@ impl ServerAccount {
         })
     }
     fn check(&self, runtime: &ProviderRuntime) -> Result<(), String> {
-        if self.scope
-            != (
-                runtime.identity().workspace_id.clone(),
-                runtime.identity().connection.provider.clone(),
-                runtime.identity().connection.account_id.clone(),
-            )
+        if runtime.execution_host() != acheflow_extension_api::parts::ExecutionHost::Server
+            || self.scope
+                != (
+                    runtime.identity().workspace_id.clone(),
+                    runtime.identity().connection.provider.clone(),
+                    runtime.identity().connection.account_id.clone(),
+                )
         {
             return Err("Server account belongs to another binding.".into());
         }
@@ -251,11 +209,12 @@ mod tests {
                 capabilities: Default::default(),
             },
         };
-        let mut runtime = ProviderRuntime::new(
+        let mut runtime = ProviderRuntime::new_for_host(
             manifest,
             include_bytes!("../../acheflow-server/tests/fixtures/domain.wasm"),
             identity,
             Default::default(),
+            acheflow_extension_api::parts::ExecutionHost::Server,
         )
         .unwrap();
         let mut account = ServerAccount {

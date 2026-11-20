@@ -64,22 +64,24 @@ impl Registry {
             .map(StoredPersonalAccount::public)
             .collect())
     }
-    pub fn personal_account(
+    pub fn legacy_personal_account(
         &self,
         actor: &Session,
         workspace: &str,
         provider: &str,
-        now: u64,
-    ) -> Result<Option<StoredPersonalAccount>> {
+        time: u64,
+    ) -> Result<StoredPersonalAccount> {
         let inner = self.inner.lock().map_err(|_| unavailable())?;
-        let actor = inner.disk.current(actor, now)?;
-        Ok(inner
+        let actor = inner.disk.current(actor, time)?;
+        inner
             .disk
             .personal_accounts
             .iter()
             .find(|a| a.user == actor.user.id && a.workspace == workspace && a.provider == provider)
-            .cloned())
+            .cloned()
+            .ok_or(Error(404, "Personal account is not connected."))
     }
+    #[cfg(test)]
     pub fn set_personal(
         &self,
         actor: &Session,

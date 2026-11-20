@@ -206,12 +206,20 @@ async fn launch(
             endpoint: Some(endpoint),
             ..
         }) => {
-            if let Err(error) = directory().and_then(|directory| {
-                acheflow_client::access::attach_owned(
-                    &endpoint,
-                    &directory.join("acheflow-server.access.json"),
-                )
-            }) {
+            let storage_endpoint = endpoint.clone();
+            let stored = crate::native_credentials::run(move || {
+                directory().and_then(|directory| {
+                    acheflow_client::access::attach_owned(
+                        &storage_endpoint,
+                        &directory.join("acheflow-server.access.json"),
+                    )
+                })
+            })
+            .await;
+            if *state.operation.peek() != operation {
+                return;
+            }
+            if let Err(error) = stored {
                 state.error.set(error);
             }
             if local_endpoint_if_current(&project.peek(), &identity, preferences.http_port)

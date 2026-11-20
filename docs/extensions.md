@@ -1,19 +1,93 @@
 # WASM extensions
 
-The [v2 contract](extension-contract.md) and [ADR-002](decisions/002-client-execution-and-workspace-capabilities.md)
-separate credential-free server logic from client-owned provider execution.
-The server has no provider credential store, secret-write API or HTTP/WebSocket
-handler. Provider manifests are `execution_side: "client"` and are skipped by server
-discovery. Their cards come from the client catalog, independently of server status.
-The shared browser/native page uses **Client** and **Server** tabs. Client contains
-local integrations and identifies the current client/workspace. Server identifies
-the selected endpoint and contains server logic plus workspace capabilities. Panels
-stay mounted so switching tabs preserves drafts; keyboard arrows and Home/End move
-selection and focus. If no local integrations are installed, Server opens initially. The webpage served from a server address is itself
-a browser client: seeing its bundled local integrations does not install providers
-in the logic-server process.
+The [v2 contract](extension-contract.md) defines `api_version: 2` with
+`parts_version: 1` packages containing client and/or server parts. Each part has
+independent settings, auth, capabilities and WASM entry points. A trusted server
+provider is separate from credential-free server logic; new client-only packages
+are never substituted for a missing server part. Legacy single-side packages
+remain readable under the documented compatibility rules.
+
+The shared browser/native page has **Client / Server** tabs. Client contains this
+device's sender account; Server contains separately authorized collector accounts
+and logic. Server settings require extension configuration rights; authorization,
+start/stop and approved module execution also require execution rights. New server
+settings enable reading and leave sending/polls disabled. Optional manifest
+`default_value` settings are applied consistently by panels and runtimes. Public
+settings never contain credentials. The runtime/legacy manifest fields below
+belong inside the selected part for new packages; identity/version fields belong
+at package level.
+
+Each account card shows its state and identity. Open **Account & settings** to
+change authorization or features. Client panels remain mounted when switching
+tabs, retaining the open account session and unsaved input. Package installation
+and **Advanced permissions** are separate secondary sections below the cards.
+
 `acheflow-client` contains the native reactor and typed MCP adapter. See
 [client executor setup and limitations](client-executor.md).
+
+## Install packages
+
+Build guests, then package manifest-declared artifacts:
+
+```sh
+python3 extensions/build.py
+python3 extensions/package.py extensions/<extension> --output <package.zip>
+```
+
+In Extensions, choose Client or Server, expand package installation and select the
+ZIP. Review its origins, capabilities and supported actions, confirm trust, then
+install. **Allow execution** is a separate action. Upload, install and run are
+independent server grants; installation neither grants capabilities nor starts a
+new extension. A replacement stops the old instance and requires fresh execution
+approval. Failed validation leaves the current installation intact.
+
+Packages accept flat files or one wrapping directory, with declared artifacts
+only. Limits: 8 MiB ZIP, 12 MiB expanded, 32 entries, 64 KiB manifest, 4 MiB module.
+Traversal, links, encrypted/duplicate entries, unknown contract versions and invalid
+WASM exports are rejected. Only the selected host's artifacts are persisted.
+Accepted server packages survive restart. Native client packages load after
+execution approval and client restart. Browser clients use their bundled client
+parts; they can upload server packages, but cannot install arbitrary client WASM.
+
+## Connect chat and send
+
+Authorize the server account in **Server**, choose its channel and explicitly save
+it to the trusted server. The server revalidates and stores those credentials in
+its own vault. Its collector resumes with the saved workspace after restart even
+when video output is inactive. Stop collecting and disconnect remain separate
+actions. Changing the application Client ID requires reauthorization.
+
+Every device reads the same permitted server feed. For personal sends, enable the
+client part and authorize your account in **Client**. The composer shows this
+device's sender and the selected shared channel. Before dispatch it checks current
+Acheflow permission and validates the platform account; it sends directly to the
+platform, never through the server account. Account changes, revocation and a
+missing channel fail closed. Unknown delivery is never automatically retried.
+Browser platform CORS/OAuth restrictions can prevent a direct action; use the
+native client in that case. Personal tokens are never uploaded as a workaround.
+
+Earlier server-held personal accounts can be listed/deleted in **Server → Clean
+up old account copies**. Reauthorize on each device first. No
+secret download or automatic deletion occurs. Linking Acheflow devices shares
+identity and grants, not platform credentials.
+
+macOS uses one provider credential container per workspace on each host, with
+extension/application slots. Keychain display labels are **Acheflow (workspace name · suffix) Client**
+and **Acheflow (workspace name · suffix) Server**. The stable server/workspace
+identity produces the same short suffix for both roles; full IDs remain the storage
+identity, so display names and shortened suffixes never determine account ownership. Names are display metadata; stable IDs
+keep credentials attached when a workspace is renamed. Client containers use the verified server ID, so
+endpoint aliases do not create new containers; matching old URL slots migrate
+only after the destination is saved. Conflicting accounts are retained for
+explicit recovery. The server is a separate trust boundary. Device login uses
+one separate device-session container with endpoint-scoped sessions and its own
+revocation lifetime. An in-memory cache reuses records, with a cross-process lock
+and a nonsecret revision marker invalidating it before OS-vault writes.
+Migration completion is stored in the workspace container so retired per-extension
+records are not reopened. Saving identical account data does not rewrite the vault
+or invalidate the shared cache. Returning to Client reuses an already bound session.
+OS prompt count depends on Keychain access policy and signing; one record is not a promise
+of one lifetime prompt. Browser platform tokens remain in the current session.
 
 ## Build and installation
 

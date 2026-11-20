@@ -8,16 +8,19 @@ use std::{sync::Arc, time::Duration};
 fn host() -> Arc<ControlHost> {
     let (mut host, _) = crate::control::tests::host();
     let inner = Arc::get_mut(&mut host).unwrap();
-    inner.installed.clear();
+    inner.installed.get_mut().unwrap().clear();
     for id in ["alpha", "beta"] {
         let mut manifest: Value =
             serde_json::from_str(include_str!("../../../extensions/sample/manifest.json")).unwrap();
         manifest["id"] = id.into();
         manifest["name"] = id.into();
-        manifest["forwarding"] = json!([{ "id": "increment", "mode": "event" }]);
+        manifest["parts"]["server"]["forwarding"] = json!([{ "id": "increment", "mode": "event" }]);
         let manifest: GuestManifest = serde_json::from_value(manifest).unwrap();
-        manifest.validate().unwrap();
-        inner.installed.insert(
+        let manifest = manifest
+            .select_part(acheflow_extension_api::parts::ExecutionHost::Server)
+            .unwrap()
+            .unwrap();
+        inner.installed.get_mut().unwrap().insert(
             id.into(),
             crate::extension_registry::Installed {
                 manifest,
@@ -209,7 +212,7 @@ async fn stopped_and_restarted_instances_cannot_receive_an_old_forwarding_intent
 fn server_manifests_cannot_declare_credential_callback_delivery() {
     let mut manifest: Value =
         serde_json::from_str(include_str!("../../../extensions/sample/manifest.json")).unwrap();
-    manifest["forwarding"] = json!([{ "id": "oauth", "mode": "callback" }]);
+    manifest["parts"]["server"]["forwarding"] = json!([{ "id": "oauth", "mode": "callback" }]);
     let manifest: GuestManifest = serde_json::from_value(manifest).unwrap();
     assert!(manifest.validate().is_err());
 }

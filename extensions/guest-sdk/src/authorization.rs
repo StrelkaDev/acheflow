@@ -234,8 +234,7 @@ impl Authorization {
         if !kind.starts_with("local_") {
             return None;
         }
-        let manifest: Value =
-            serde_json::from_str(manifest_text).expect("bundled extension manifest");
+        let manifest = manifest_for_input(input, manifest_text);
         let now = input["now_ms"].as_u64().unwrap_or(0);
         let mut output = vec![];
         if self.pending && now > self.pending_until {
@@ -739,4 +738,26 @@ mod identity_validation_tests {
         auth.local_http(&manifest,&json!({"id":"auth:validate","status":200,"config":{},"payload":{"data":{"user":{"nick":"fixture-user"}}}}),1000,&mut vec![]);
         assert!(!auth.authorized);
     }
+}
+
+/// The host overwrites execution_host before every turn. Legacy direct guest
+/// callers default to client authority; package hosts always select explicitly.
+pub fn manifest_for_input(input: &Value, text: &str) -> Value {
+    let host = match input["execution_host"].as_str() {
+        Some("server") => "server",
+        Some("client") | None => "client",
+        _ => panic!("invalid execution host"),
+    };
+    // Package validation belongs to the host. Resolve only this part here instead
+    // of validating/serializing both siblings on every fuel-bounded guest turn.
+    let mut manifest: Value = serde_json::from_str(text).expect("bundled extension manifest");
+    if manifest.get("parts").is_none() {
+        return manifest;
+    }
+    let mut selected = manifest["parts"][host].take();
+    let fields = selected.as_object_mut().expect("declared execution host");
+    for key in ["id", "name", "api_version"] {
+        fields.insert(key.into(), manifest[key].take());
+    }
+    selected
 }

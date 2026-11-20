@@ -112,6 +112,10 @@ Use **Settings → Device access** to pair additional devices with a one-time
 invitation from the server owner; see [device access](server-access.md). The desktop
 that starts its own server restores local owner authority automatically.
 
+On a phone, tapping a text field opens the native input editor and keyboard.
+Leaving the field, tapping outside the editor or pressing **Done** commits the
+value and closes the editor.
+
 For live UI rebuilds, start a separate server with the development origin allowed:
 
 ```sh
