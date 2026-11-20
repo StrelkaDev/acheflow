@@ -4,43 +4,7 @@ use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
-#[wasm_bindgen(inline_js = r#"
-export async function prepare(source) {
-  const url=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
-  try {const module=await import(url);await module.prepare();return module;}
-  finally {URL.revokeObjectURL(url);}
-}
-export function start(url, callback, module, clientId, scopes) {
-  let popup, timer, rejectAttempt, finished=false;
-  const promise=new Promise((resolve,reject)=>{
-    rejectAttempt=reject;
-    const accept=value=>{if(!finished){finished=true;clearInterval(timer);resolve(value);}};
-    if(module) {
-      // SDK must open its window synchronously from this user gesture.
-      module.authorize(clientId,JSON.parse(scopes)).then(value=>accept(JSON.stringify(value)),()=>reject(new Error('Authorization interrupted')));
-      timer=setTimeout(()=>reject(new Error('Authorization timed out')),300000);
-      return;
-    }
-    popup=window.open(url,'_blank','popup,width=600,height=760');
-    if(!popup){reject(new Error('Popup blocked'));return;}
-    try {popup.opener=null;} catch {}
-    const expected=new URL(callback), deadline=Date.now()+300000;
-    timer=setInterval(()=>{
-      if(Date.now()>deadline || popup.closed){clearInterval(timer);reject(new Error('Authorization cancelled or timed out'));return;}
-      try {
-        const current=new URL(popup.location.href);
-        if(current.origin!==expected.origin || current.pathname!==expected.pathname)return;
-        const fields=current.hash.slice(1)||current.search.slice(1);
-        popup.history.replaceState(null,'',expected.pathname);
-        popup.close();accept(fields);
-      } catch { /* Provider pages are intentionally cross-origin. */ }
-    },250);
-  });
-  return {promise,cancel(){finished=true;clearInterval(timer);if(popup&&!popup.closed)popup.close();rejectAttempt(new Error('Authorization cancelled'));}};
-}
-export function wait(handle) {return handle.promise;}
-export function cancel(handle) {handle.cancel();}
-"#)]
+#[wasm_bindgen(module = "/src/client_authorization/browser_auth.js")]
 extern "C" {
     #[wasm_bindgen(catch,js_name=prepare)]
     fn prepare_js(source: &str) -> Result<js_sys::Promise, JsValue>;
@@ -51,7 +15,12 @@ extern "C" {
         module: &JsValue,
         client_id: &str,
         scopes: &str,
+        proxy: &str,
     ) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(js_name=loadRoute)]
+    pub fn load_route() -> bool;
+    #[wasm_bindgen(js_name=saveRoute)]
+    pub fn save_route(hosted: bool);
     fn wait(handle: &JsValue) -> js_sys::Promise;
     fn cancel(handle: &JsValue);
 }
@@ -83,6 +52,9 @@ pub fn start_effect(
         .as_str()
         .ok_or("Missing local callback.")?;
     let sdk = effect["type"] == "browser_module";
+    if !sdk && effect["callback_uri"].as_str() != Some(callback) {
+        return Err("The extension callback does not match the selected return route.".into());
+    }
     if sdk && module.is_none() {
         return Err(
             "The platform sign-in library is still loading. Try again shortly or enter a token."
@@ -112,6 +84,9 @@ pub fn start_effect(
             .as_str()
             .unwrap_or_default(),
         &effect["arguments"]["scopes"].to_string(),
+        environment["app_callback_uri"]
+            .as_str()
+            .unwrap_or("https://app.acheflow.com/callback/"),
     )
     .map_err(|_| "Could not start platform authorization.")?;
     Ok(Some(Login { handle, sdk }))

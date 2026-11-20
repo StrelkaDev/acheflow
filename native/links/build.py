@@ -30,15 +30,21 @@ def build(output, team_id=None, app_prefix=None, handler_id="com.acheflow"):
     root = output / "app.acheflow.com"
     assets = root / "_acheflow-links"
     assets.mkdir(parents=True)
-    for recipient, name in (("client", "forward"), ("server", "server-forward")):
+    for recipient, name in (("client", "forward"), ("server", "server-forward"), ("browser", "browser-callback")):
         page = template.replace("{{recipient}}", recipient)
+        if recipient == "browser":
+            page = page.replace("INSTALLED APPLICATION", "ACCOUNT AUTHORIZATION")
+            page = page.replace("Continue in Acheflow <span id=\"recipient\">browser</span>", "Complete your sign-in")
+            page = page.replace("This link is for your installed Acheflow browser.", "Return to the Acheflow client that started this attempt.")
+            page = page.replace("If nothing opens, install Acheflow, then return to the original link. Your browser may ask you to allow the application to open.", "This page holds the callback only in memory. It does not save tokens or send them to an Acheflow backend. Keep the original Acheflow client open.")
+            page = page.replace('<a class="secondary" href="https://acheflow.com/" rel="noreferrer">Get Acheflow</a>', '')
         page = page.replace('href="/page.css"', 'href="/_acheflow-links/page.css"').replace('src="/entry.mjs"', 'src="/_acheflow-links/entry.mjs"')
         (root / f"{name}.html").write_text(page)
-    for asset in ("page.css", "page.mjs", "entry.mjs"):
+    for asset in ("page.css", "page.mjs", "relay.mjs", "callback.mjs", "entry.mjs"):
         shutil.copy2(source / asset, assets / asset)
     # Extensionless targets avoid Pages canonicalization of .html URLs.
-    (root / "_redirects").write_text("/fwd/* /forward 200\n/server/fwd/* /server-forward 200\n")
-    paths = ["/fwd/*", "/server/fwd/*", "/forward", "/forward.html", "/server-forward", "/server-forward.html", "/_acheflow-links/*"]
+    (root / "_redirects").write_text("/fwd/* /forward 200\n/server/fwd/* /server-forward 200\n/callback /browser-callback 200\n/callback/* /browser-callback 200\n")
+    paths = ["/fwd/*", "/server/fwd/*", "/callback", "/callback/*", "/browser-callback", "/browser-callback.html", "/forward", "/forward.html", "/server-forward", "/server-forward.html", "/_acheflow-links/*"]
     (root / "_headers").write_text("".join(f"{path}\n" + "".join(f"  {name}: {value}\n" for name, value in SECURITY_HEADERS.items()) + "\n" for path in paths))
     if team_id:
         application_id = f"{app_prefix or team_id}.{handler_id}"
@@ -72,6 +78,11 @@ def build(output, team_id=None, app_prefix=None, handler_id="com.acheflow"):
     }}
     handle /server/fwd/* {{
         rewrite * /server-forward.html
+        file_server
+    }}
+    @callback path /callback /callback/*
+    handle @callback {{
+        rewrite * /browser-callback.html
         file_server
     }}
     handle {{

@@ -360,6 +360,38 @@ impl Authorization {
                 }
             };
             self.redirect_uri = redirect.clone();
+            let activation = if input["environment"]["browser"] != true
+                && input["environment"]["app_callback_uri"].as_str() == Some(redirect.as_str())
+            {
+                match application_setup::activation_uri(manifest, input) {
+                    Ok(address) => Some(address),
+                    Err(reason) => {
+                        self.fail(&reason);
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+            let wire_state = if input["environment"]["app_callback_uri"].as_str()
+                == Some(redirect.as_str())
+            {
+                let mut envelope = json!({"v":1,"target":if activation.is_some(){"native"}else{"browser"},"nonce":self.state});
+                if let Some(address) = &activation {
+                    envelope["route"] = json!(
+                        address
+                            .strip_prefix("https://app.acheflow.com")
+                            .unwrap_or_default()
+                    );
+                }
+                format!("acheflow-callback:{envelope}")
+            } else {
+                self.state.clone()
+            };
+            if wire_state.len() > 2048 {
+                self.fail("Application callback route is too large.");
+                return;
+            }
             let mut fields = vec![
                 (
                     "client_id",
@@ -370,7 +402,7 @@ impl Authorization {
                 ),
                 ("redirect_uri", redirect.clone()),
                 ("response_type", if pkce { "code" } else { "token" }.into()),
-                ("state", self.state.clone()),
+                ("state", wire_state),
             ];
             let scopes = scopes(manifest, &input["config"]);
             if !scopes.is_empty() {
@@ -397,7 +429,7 @@ impl Authorization {
             }) {
                 output.push(json!({"type":"forward_wait","action":"oauth","tail":"callback","field":"state","token":self.state,"timeout_ms":300_000}));
             }
-            output.push(json!({"type":"browser","id":"auth:browser","callback_uri":redirect,"url":query(auth["authorize_url"].as_str().unwrap_or_default(),fields),"capture":manifest["secret_fields"]}));
+            output.push(json!({"type":"browser","id":"auth:browser","callback_uri":redirect,"activation_uri":activation,"url":query(auth["authorize_url"].as_str().unwrap_or_default(),fields),"capture":manifest["secret_fields"]}));
         }
     }
     fn local_browser(
@@ -593,6 +625,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn custom_callback_proxy_is_used_for_both_client_transports() {
+        let manifest = r#"{"id":"independent","name":"Independent","authentication":{"authorize_url":"https://provider.example/authorize","native_callback":"oauth/callback"},"forwarding":[{"id":"oauth","mode":"callback"}]}"#;
+        for browser in [false, true] {
+            let mut auth = Authorization::default();
+            let env = json!({"browser":browser,"link":"https://app.acheflow.com/fwd/independent","callback_uri":"https://callbacks.example/callback/","app_callback_uri":"https://callbacks.example/callback/"});
+            auth.handle(&json!({"type":"local_action","action_id":"connect","config":{"client_id":"fixture"},"environment":env}),manifest).unwrap();
+            let effects=auth.handle(&json!({"type":"local_crypto","nonce":"n".repeat(43),"config":{"client_id":"fixture"},"environment":env}),manifest).unwrap();
+            let effect = effects.iter().find(|e| e["type"] == "browser").unwrap();
+            assert_eq!(
+                effect["callback_uri"],
+                "https://callbacks.example/callback/"
+            );
+            assert_eq!(effect["activation_uri"].is_string(), !browser);
+            assert!(
+                effect["url"]
+                    .as_str()
+                    .unwrap()
+                    .contains("acheflow-callback")
+            );
+        }
+    }
+    #[test]
+    fn shared_native_callback_keeps_the_local_nonce_and_declared_activation_route() {
+        let manifest = r#"{"id":"independent","name":"Independent","authentication":{"authorize_url":"https://provider.example/authorize","native_callback":"oauth/callback"},"forwarding":[{"id":"oauth","mode":"callback"}]}"#;
+        let mut auth = Authorization::default();
+        let environment = json!({"browser":false,"link":"https://app.acheflow.com/fwd/independent","app_callback_uri":"https://app.acheflow.com/callback/"});
+        auth.handle(&json!({"type":"local_action","action_id":"connect","config":{"client_id":"fixture"},"environment":environment}), manifest).unwrap();
+        let input = json!({"type":"local_crypto","nonce":"n".repeat(43),"config":{"client_id":"fixture"},"environment":environment});
+        let effects = auth.handle(&input, manifest).unwrap();
+        let browser = effects.iter().find(|e| e["type"] == "browser").unwrap();
+        assert_eq!(
+            browser["callback_uri"],
+            "https://app.acheflow.com/callback/"
+        );
+        assert_eq!(
+            browser["activation_uri"],
+            "https://app.acheflow.com/fwd/independent/oauth/callback"
+        );
+        assert!(
+            browser["url"]
+                .as_str()
+                .unwrap()
+                .contains("acheflow-callback")
+        );
+        let waiting = effects
+            .iter()
+            .find(|e| e["type"] == "forward_wait")
+            .unwrap();
+        assert_eq!(waiting["token"], "n".repeat(43));
+    }
     #[test]
     fn native_callback_suffix_uses_host_link_while_browser_keeps_its_own_callback() {
         let manifest = r#"{"id":"independent","name":"Independent","authentication":{"authorize_url":"https://provider.example/authorize","native_callback":"oauth/callback"},"forwarding":[{"id":"oauth","mode":"callback"}]}"#;

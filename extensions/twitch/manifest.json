@@ -92,9 +92,6 @@
               "Authorization": {
                 "secret": "access_token",
                 "prefix": "OAuth "
-              },
-              "Client-Id": {
-                "config": "client_id"
               }
             }
           },
@@ -284,9 +281,6 @@
               "Authorization": {
                 "secret": "access_token",
                 "prefix": "OAuth "
-              },
-              "Client-Id": {
-                "config": "client_id"
               }
             }
           },

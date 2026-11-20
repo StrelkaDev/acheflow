@@ -319,6 +319,19 @@ async fn command_permissions_are_enforced_before_execution_and_response_projecti
         enabled: true,
         config: None
     }));
+    assert!(!scene.command(&ControlAction::SetCallbackProxy {
+        url: "https://callbacks.example".into()
+    }));
+    let configure = Principal(Session {
+        device: acheflow_media_api::access::Device {
+            permissions: [P::ExtensionsConfigure].into_iter().collect(),
+            ..root_session.device.clone()
+        },
+        ..root_session
+    });
+    assert!(configure.command(&ControlAction::SetCallbackProxy {
+        url: "https://callbacks.example".into()
+    }));
 }
 
 #[tokio::test]

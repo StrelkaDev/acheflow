@@ -8,6 +8,7 @@
   <title>Acheflow · Dashboard</title>
   <link data-trunk rel="rust" data-target-name="acheflow_ui">
   <link data-trunk rel="copy-file" href="perf.js">
+  <link data-trunk rel="copy-file" href="startup.js">
   <link data-trunk rel="copy-file" href="oauth-callback.html">
   <script src="perf.js" defer></script>
   <style>
@@ -17,8 +18,34 @@
     .acheflow-mobile-editor input,.acheflow-mobile-editor textarea { box-sizing:border-box; width:100%; min-height:44px; padding:10px; border:1px solid #66758b; border-radius:6px; background:#0c1017; color:#fff; }
     .acheflow-mobile-editor textarea { min-height:88px; }
     .acheflow-mobile-editor button { min-height:44px; padding:10px 16px; border:0; border-radius:6px; background:#ed6508; color:#fff; font:inherit; }
+    #acheflow-startup { position:fixed; inset:0; z-index:2147483646; display:grid; place-items:center; padding:24px; box-sizing:border-box; color:#e4edf9; background:#0c1017; font:16px/1.6 system-ui,sans-serif; }
+    .startup-content { width:100%; max-width:360px; text-align:center; }
+    .startup-brand { margin:0 0 32px; font-size:24px; font-weight:600; letter-spacing:-.5px; }
+    .startup-spinner { width:32px; height:32px; margin:0 auto 24px; border:3px solid #293343; border-top-color:#ed6508; border-radius:50%; animation:startup-spin 1s linear infinite; }
+    #acheflow-startup-title { margin:0 0 8px; font-size:20px; font-weight:500; }
+    #acheflow-startup-detail { margin:0; color:#a5b2c5; font-size:14px; }
+    #acheflow-startup-retry { margin-top:24px; min-height:44px; padding:10px 20px; border:1px solid #ed6508; border-radius:8px; background:#ed6508; color:#fff; font:inherit; cursor:pointer; }
+    #acheflow-startup-retry[hidden] { display:none; }
+    #acheflow-startup[data-error] .startup-spinner { display:none; }
+    #acheflow-startup-retry:focus-visible { outline:2px solid #e4edf9; outline-offset:4px; }
+    @keyframes startup-spin { to { transform:rotate(360deg); } }
+    @media (prefers-reduced-motion:reduce) { .startup-spinner { animation:none; } }
     canvas { display:block; width:100%; height:100%; outline:none; }
   </style>
 </head>
-<body><noscript>Acheflow requires JavaScript and WebAssembly.</noscript></body>
+<body>
+  <main id="acheflow-startup" aria-busy="true">
+    <div class="startup-content">
+      <p class="startup-brand">Acheflow</p>
+      <div class="startup-spinner" aria-hidden="true"></div>
+      <div role="status" aria-live="polite">
+        <h1 id="acheflow-startup-title">Loading your studio</h1>
+        <p id="acheflow-startup-detail">The first visit may take a little longer while Acheflow downloads.</p>
+      </div>
+      <button id="acheflow-startup-retry" type="button" hidden>Reload</button>
+    </div>
+  </main>
+  <noscript><style>#acheflow-startup{display:none}</style><p style="color:#e4edf9;font:16px system-ui;padding:24px">Acheflow requires JavaScript and WebAssembly. Enable JavaScript and reload this page.</p></noscript>
+  <script src="startup.js"></script>
+</body>
 </html>

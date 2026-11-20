@@ -6,7 +6,7 @@ fn declaration(manifest: &Value) -> Option<ApplicationSetup> {
     serde_json::from_value(manifest["application_setup"].clone()).ok()
 }
 
-pub(super) fn callback_uri(manifest: &Value, input: &Value) -> Result<String, String> {
+pub(super) fn activation_uri(manifest: &Value, input: &Value) -> Result<String, String> {
     if input["environment"]["browser"] != true
         && let Some(suffix) = manifest["authentication"]["native_callback"].as_str()
     {
@@ -37,6 +37,22 @@ pub(super) fn callback_uri(manifest: &Value, input: &Value) -> Result<String, St
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| "Local callback unavailable.".into())
+}
+
+pub(super) fn callback_uri(manifest: &Value, input: &Value) -> Result<String, String> {
+    let address = activation_uri(manifest, input)?;
+    if input["environment"]["browser"] != true
+        && manifest["authentication"]["native_callback"].is_string()
+        && input["environment"]["app_callback_uri"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("https://") && s.len() <= 2048)
+    {
+        return Ok(input["environment"]["app_callback_uri"]
+            .as_str()
+            .unwrap()
+            .into());
+    }
+    Ok(address)
 }
 
 pub(super) fn widgets(manifest: &Value, input: &Value) -> Vec<Value> {

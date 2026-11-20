@@ -43,7 +43,7 @@ impl Context {
             signals,
             owner,
             epoch,
-            environment: environment(),
+            environment: panel_environment(signals),
             callback: Rc::new(RefCell::new(None)),
         }
     }
@@ -58,6 +58,8 @@ impl Context {
     }
     fn live(&self, id: &str) -> bool {
         self.signals.identity.peek().clone() == self.owner
+            && self.environment["app_callback_uri"].as_str()
+                == Some(self.signals.proxy.peek().as_str())
             && *self.signals.restart.peek() == self.epoch
             && self
                 .signals
@@ -235,7 +237,26 @@ async fn open_browser(
         .as_str()
         .ok_or("Missing browser callback address.")?;
     if address.starts_with("https://") {
-        let link = ForwardLink::parse_for(address, ForwardRecipient::Client)
+        let expected = context.environment["app_callback_uri"]
+            .as_str()
+            .ok_or("Callback proxy unavailable.")?;
+        if url::Url::parse(address)
+            .map_err(|_| "Invalid callback proxy.")?
+            .origin()
+            != url::Url::parse(expected)
+                .map_err(|_| "Invalid configured callback proxy.")?
+                .origin()
+        {
+            return Err("The extension callback does not match the configured proxy host.".into());
+        }
+        let activation = if context.environment["app_callback_uri"].as_str() == Some(address) {
+            effect["activation_uri"]
+                .as_str()
+                .ok_or("Missing application callback route.")?
+        } else {
+            address
+        };
+        let link = ForwardLink::parse_for(activation, ForwardRecipient::Client)
             .map_err(|_| "Invalid browser callback link.")?;
         if link.declaration(&session.manifest)?.mode != ForwardMode::Callback
             || link.query.is_some()

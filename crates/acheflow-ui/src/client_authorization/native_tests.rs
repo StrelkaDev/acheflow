@@ -68,6 +68,7 @@ fn app() -> Element {
         task: use_signal(|| None),
         restart: use_signal(|| 0),
         identity,
+        proxy: use_memo(|| "https://app.acheflow.com/callback/".to_owned()),
         native: use_signal(|| Mailbox::new(error)),
     };
     harness.signals.set(Some(signals));
@@ -168,8 +169,7 @@ impl Fixture {
 }
 
 fn connect(session: &mut LocalSession) -> String {
-    let environment =
-        || json!({"browser":false,"callback_uri":"http://127.0.0.1:51234/oauth/callback"});
+    let environment = || json!({"browser":false,"callback_uri":"http://127.0.0.1:51234/oauth/callback","app_callback_uri":"https://app.acheflow.com/callback/"});
     session
         .step(json!({"type":"local_start"}), &environment(), now())
         .unwrap();
@@ -186,13 +186,25 @@ fn connect(session: &mut LocalSession) -> String {
         )
         .unwrap();
     let browser = effects.iter().find(|e| e["type"] == "browser").unwrap();
-    url::Url::parse(browser["url"].as_str().unwrap())
+    let state = url::Url::parse(browser["url"].as_str().unwrap())
         .unwrap()
         .query_pairs()
         .find(|(key, _)| key == "state")
         .unwrap()
         .1
-        .into_owned()
+        .into_owned();
+    if session.manifest.id != "youtube" {
+        assert_eq!(
+            browser["callback_uri"],
+            "https://app.acheflow.com/callback/"
+        );
+        let envelope: Value =
+            serde_json::from_str(state.strip_prefix("acheflow-callback:").unwrap()).unwrap();
+        assert_eq!(envelope["target"], "native");
+        envelope["nonce"].as_str().unwrap().to_owned()
+    } else {
+        state
+    }
 }
 fn callback(provider: &str, state: &str) -> String {
     format!(

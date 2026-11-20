@@ -64,7 +64,7 @@ pub(crate) fn validate_public_settings(
     host: &ControlHost,
     workspace: &Workspace,
 ) -> Result<(), String> {
-    if !workspace.client_extensions.is_empty() {
+    if !workspace.client_extensions.is_empty() || !workspace.client_callback_proxy_url.is_empty() {
         return Err("client integration settings must stay in the client catalog".into());
     }
     crate::providers::validate(host, workspace)?;

@@ -30,6 +30,7 @@ impl Principal {
     }
     pub fn command(&self, action: &ControlAction) -> bool {
         match action {
+            ControlAction::SetCallbackProxy { .. } => self.allows(P::ExtensionsConfigure),
             ControlAction::SendChat { .. } => {
                 self.all(&[P::ChatSend, P::ExtensionsConfigure, P::ExtensionsRun])
             }

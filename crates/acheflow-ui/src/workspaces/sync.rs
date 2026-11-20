@@ -151,6 +151,7 @@ impl Catalog {
         let mut project = config;
         project.server_url = local.server_url.clone();
         project.client_extensions = current.client_extensions;
+        project.client_callback_proxy_url = current.client_callback_proxy_url;
         project.edit_revision = if editable && conflict {
             current.edit_revision
         } else {
@@ -182,6 +183,7 @@ impl Catalog {
         };
         project.server_url = local.server_url.clone();
         project.client_extensions = local.client_extensions.clone();
+        project.client_callback_proxy_url = local.client_callback_proxy_url.clone();
         project.edit_revision = replica.workspace.edit_revision;
         replica.conflict = false;
         record.config = project.clone();

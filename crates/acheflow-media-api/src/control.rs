@@ -62,6 +62,9 @@ pub struct ControlSnapshot {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlAction {
+    SetCallbackProxy {
+        url: String,
+    },
     ForwardExtension {
         url: String,
         instance_id: String,

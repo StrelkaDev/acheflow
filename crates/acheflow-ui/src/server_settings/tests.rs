@@ -41,6 +41,16 @@ fn app() -> Element {
         ..Default::default()
     });
     let catalog = use_signal(crate::workspaces::Catalog::default);
+    let control = crate::control_client::ControlClient {
+        project,
+        state: use_signal(|| None),
+        error: use_signal(|| None),
+        extension_errors: use_signal(Default::default),
+        busy: use_signal(|| false),
+        sync_conflict: use_signal(|| false),
+        request_generation: use_signal(|| 0),
+    };
+    use_context_provider(|| control);
     let storage_status = use_signal(|| "Saved locally".into());
     let effects = use_signal(|| false);
     harness.state.set(Some(state));

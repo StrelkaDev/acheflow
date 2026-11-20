@@ -14,11 +14,19 @@ use std::{
 type ConfigDrafts = BTreeMap<(String, String, String), BTreeMap<String, String>>;
 #[derive(Clone, Copy)]
 pub(crate) struct ServerDrafts(pub Signal<ConfigDrafts>);
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy)]
+struct BrowserRoute(Signal<bool>);
 pub(crate) type Sessions = BTreeMap<(String, String, String), LocalSession>;
 fn session_key(owner: &Owner, extension: &str) -> (String, String, String) {
     (owner.0.clone(), owner.1.clone(), extension.into())
 }
 pub(crate) fn provide_accounts(project: Signal<crate::project::Workspace>) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let route = use_signal(browser::load_route);
+        use_context_provider(|| BrowserRoute(route));
+    }
     let mut sessions = use_signal(Sessions::new);
     use_context_provider(|| sessions);
     let mut server_drafts = use_signal(ConfigDrafts::new);
@@ -51,7 +59,7 @@ fn now() -> u64 {
 fn environment() -> Value {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        json!({"browser":false,"callback_uri":""})
+        json!({"browser":false,"callback_uri":"","app_callback_uri":"https://app.acheflow.com/callback/"})
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -65,6 +73,22 @@ fn environment() -> Value {
             .and_then(|w| w.location().origin().ok())
             .unwrap_or_default();
         json!({"browser":true,"callback_uri":callback,"origin":origin})
+    }
+}
+fn panel_environment(signals: PanelSignals) -> Value {
+    let mut value = environment();
+    let callback = (signals.proxy)();
+    value["app_callback_uri"] = json!(callback);
+    #[cfg(target_arch = "wasm32")]
+    {
+        if (signals.route)() {
+            value["callback_uri"] = json!(callback);
+        }
+        value
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        value
     }
 }
 #[component]
@@ -82,6 +106,17 @@ pub(crate) fn ClientAuthorization(
     let mut drafts = use_signal(BTreeMap::<String, String>::new);
     let mut task = use_signal(|| None::<Task>);
     let mut restart = use_signal(|| 0u64);
+    let proxy = use_memo(move || {
+        let project = client.project.read();
+        let address = if server {
+            &project.callback_proxy_url
+        } else {
+            &project.client_callback_proxy_url
+        };
+        acheflow_media_api::workspace::callback_proxy_uri(address).unwrap_or_default()
+    });
+    #[cfg(target_arch = "wasm32")]
+    let BrowserRoute(mut route) = use_context::<BrowserRoute>();
     use_drop(move || {
         if let Some(task) = task.peek().as_ref() {
             task.cancel();
@@ -105,6 +140,9 @@ pub(crate) fn ClientAuthorization(
     let native = use_signal(|| native::Mailbox::new(error));
     use_effect(move || {
         let _ = identity();
+        let _ = proxy();
+        #[cfg(target_arch = "wasm32")]
+        let _ = route();
         if let Some(running) = task.take() {
             running.cancel();
         }
@@ -121,12 +159,16 @@ pub(crate) fn ClientAuthorization(
         task,
         restart,
         identity,
+        proxy,
+        #[cfg(target_arch = "wasm32")]
+        route,
         #[cfg(not(target_arch = "wasm32"))]
         native,
     };
     #[cfg(not(target_arch = "wasm32"))]
     native::register(id.clone(), signals);
     let installed = &catalog.installed[&id];
+    let proxy_label = (signals.proxy)();
     #[cfg(target_arch = "wasm32")]
     let mut adapter = use_signal(|| None::<wasm_bindgen::JsValue>);
     #[cfg(target_arch = "wasm32")]
@@ -162,6 +204,28 @@ pub(crate) fn ClientAuthorization(
     });
     use_ticks(id.clone(), signals);
     rsx! {div{class:"client-authorization",
+        {#[cfg(not(target_arch="wasm32"))] {
+            if installed.manifest.authentication.as_ref().is_some_and(|auth|auth["native_callback"].is_string()) {
+                rsx! {p{class:"form-help",role:"note","Callbacks return through {proxy_label}. That host’s page can read the response in the browser. Acheflow’s page does not save tokens; you trust the code served by that host. Change Callback proxy URL in Settings to use your own host."}}
+            } else {rsx!{}}
+        } #[cfg(target_arch="wasm32")] {rsx!{}}}
+        {#[cfg(target_arch="wasm32")] {
+            // Provider modules own their sign-in transport and do not use redirects.
+            if installed.browser_auth.is_none() {
+                rsx! {div{class:"authorization-route",
+                    p{class:"form-help","Sign-in return route"}
+                    div{class:"account-purpose",role:"group","aria-label":"Sign-in return route",
+                        for (hosted,label) in [(true,"Via callback proxy"),(false,"Direct to this studio")] {
+                            button{r#type:"button",disabled:busy(),class:if route()==hosted{"selected"}else{""},"aria-pressed":(route()==hosted).to_string(),
+                                onclick:move |_|{browser::save_route(hosted);route.set(hosted);},"{label}"
+                            }
+                        }
+                    }
+                    if route(){p{class:"form-help",role:"note","Authorization passes through {proxy_label}. The page receives your callback in the browser and returns it to this studio; Acheflow’s callback page does not save tokens. You trust the code served by that host. Continue only if you accept this route. Change Callback proxy URL in Settings to use your own host."}}
+                    else {p{class:"form-help","Register this studio’s exact HTTPS callback in your provider application. The studio’s existing server handles the return."}}
+                }}
+            } else {rsx!{}}
+        } #[cfg(not(target_arch="wasm32"))] {rsx!{}}}
         if let Some(panel)=panel.read().as_ref(){
             h3{"{panel.title}"}
             for widget in panel.widgets.clone(){{render_widget(widget,id.clone(),signals,action)}}
@@ -201,6 +265,9 @@ struct PanelSignals {
     task: Signal<Option<Task>>,
     restart: Signal<u64>,
     identity: Memo<Owner>,
+    proxy: Memo<String>,
+    #[cfg(target_arch = "wasm32")]
+    route: Signal<bool>,
     #[cfg(not(target_arch = "wasm32"))]
     native: Signal<native::Mailbox>,
 }
@@ -224,6 +291,7 @@ fn use_initialization(
         let module = installed.module.clone();
         move || {
             let _version = restart();
+            let operation_environment = panel_environment(signals);
             let owner = identity();
             #[cfg(all(not(target_arch = "wasm32"), not(test)))]
             let storage_server = try_consume_context::<crate::server_access::AccessState>()
@@ -267,13 +335,18 @@ fn use_initialization(
                         })
                         .await?;
                     }
-                    let effects =
-                        session.step(json!({"type":"local_start"}), &environment(), now())?;
+                    let effects = session.step(
+                        json!({"type":"local_start"}),
+                        &operation_environment,
+                        now(),
+                    )?;
                     drive(
                         session,
                         effects,
                         #[cfg(target_arch = "wasm32")]
                         None,
+                        #[cfg(target_arch = "wasm32")]
+                        operation_environment,
                         #[cfg(not(target_arch = "wasm32"))]
                         signals.native.peek().clone(),
                         #[cfg(not(target_arch = "wasm32"))]
@@ -341,7 +414,7 @@ fn dispatch(
     }
     #[cfg(not(target_arch = "wasm32"))]
     let callback = acheflow_client::browser::Callback::prepare().ok();
-    let operation_environment = environment();
+    let operation_environment = panel_environment(signals);
     #[cfg(not(target_arch = "wasm32"))]
     let operation_environment = {
         let mut environment = operation_environment;
@@ -380,7 +453,7 @@ fn dispatch(
         return;
     }
     #[cfg(target_arch = "wasm32")]
-    let started = match browser::start_effect(&session, &effects, adapter, &environment()) {
+    let started = match browser::start_effect(&session, &effects, adapter, &operation_environment) {
         Ok(started) => started,
         Err(reason) => {
             error.set(reason);
@@ -420,6 +493,7 @@ fn start_operation(
     let owner = identity();
     busy.set(true);
     error.set(String::new());
+    let expected_proxy = signals.proxy.peek().clone();
     #[cfg(not(target_arch = "wasm32"))]
     let native_mailbox = signals.native.peek().clone();
     #[cfg(not(target_arch = "wasm32"))]
@@ -431,6 +505,8 @@ fn start_operation(
             effects,
             #[cfg(target_arch = "wasm32")]
             started,
+            #[cfg(target_arch = "wasm32")]
+            panel_environment(signals),
             #[cfg(not(target_arch = "wasm32"))]
             native_mailbox,
             #[cfg(not(target_arch = "wasm32"))]
@@ -438,6 +514,7 @@ fn start_operation(
         )
         .await;
         if identity() == owner
+            && *signals.proxy.peek() == expected_proxy
             && client
                 .project
                 .peek()
@@ -486,21 +563,26 @@ fn use_ticks(id: String, signals: PanelSignals) {
                     else {
                         continue;
                     };
-                    let effects =
-                        match session.step(json!({"type":"local_tick"}), &environment(), now()) {
-                            Ok(effects) => effects,
-                            Err(reason) => {
-                                error.set(reason);
-                                sessions.write().insert(session_key(&owner, &id), session);
-                                continue;
-                            }
-                        };
+                    let effects = match session.step(
+                        json!({"type":"local_tick"}),
+                        &panel_environment(signals),
+                        now(),
+                    ) {
+                        Ok(effects) => effects,
+                        Err(reason) => {
+                            error.set(reason);
+                            sessions.write().insert(session_key(&owner, &id), session);
+                            continue;
+                        }
+                    };
                     busy.set(true);
                     let result = drive(
                         session,
                         effects,
                         #[cfg(target_arch = "wasm32")]
                         None,
+                        #[cfg(target_arch = "wasm32")]
+                        panel_environment(signals),
                         #[cfg(not(target_arch = "wasm32"))]
                         signals.native.peek().clone(),
                         #[cfg(not(target_arch = "wasm32"))]
@@ -630,6 +712,7 @@ async fn drive(
     mut session: LocalSession,
     effects: Vec<Value>,
     #[cfg(target_arch = "wasm32")] mut started: Option<browser::Login>,
+    operation_environment: Value,
 ) -> Result<(LocalSession, Option<ExtensionPanel>), String> {
     let mut pending = VecDeque::from(effects);
     let mut panel = None;
@@ -677,7 +760,7 @@ async fn drive(
             Some("status" | "failure") => continue,
             _ => return Err("Unsupported local effect.".into()),
         };
-        pending.extend(session.step(input, &environment(), now())?);
+        pending.extend(session.step(input, &operation_environment, now())?);
     }
     Err("Local panel event queue exceeded.".into())
 }

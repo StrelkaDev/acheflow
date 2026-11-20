@@ -256,6 +256,9 @@ async fn scene_capability_and_extension_configuration_commands_survive_restart()
             spatial: scene.spatial.clone().unwrap(),
         },
         ControlAction::SetClientCapabilities { grants: vec![] },
+        ControlAction::SetCallbackProxy {
+            url: "https://callbacks.example".into(),
+        },
     ]
     .into_iter()
     .enumerate()

@@ -229,6 +229,7 @@ impl ControlClient {
                 ControlAction::SetScene { .. }
                     | ControlAction::SetExtension { .. }
                     | ControlAction::SetClientCapabilities { .. }
+                    | ControlAction::SetCallbackProxy { .. }
                     | ControlAction::ExtensionEvent { .. }
             )
         {

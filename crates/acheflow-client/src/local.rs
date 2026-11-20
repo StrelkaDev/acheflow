@@ -465,6 +465,61 @@ pub struct AccountCredentials {
 mod tests {
     use super::*;
     #[test]
+    fn browser_twitch_validation_uses_cors_supported_headers_and_finishes_account_connection() {
+        let catalog = crate::catalog::ClientCatalog::bundled();
+        let installed = &catalog.installed["twitch"];
+        let mut session = LocalSession::new(
+            installed.manifest.clone(),
+            &installed.module,
+            BTreeMap::from([("client_id".into(), "public-id".into())]),
+        )
+        .unwrap();
+        let env = json!({"browser":true,"callback_uri":"https://app.acheflow.com/callback/","app_callback_uri":"https://app.acheflow.com/callback/"});
+        let effects = session
+            .step(
+                json!({"type":"local_action","action_id":"connect"}),
+                &env,
+                1000,
+            )
+            .unwrap();
+        let browser = effects.iter().find(|e| e["type"] == "browser").unwrap();
+        let url = url::Url::parse(browser["url"].as_str().unwrap()).unwrap();
+        let state = url
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .unwrap()
+            .1
+            .into_owned();
+        let envelope: Value =
+            serde_json::from_str(state.strip_prefix("acheflow-callback:").unwrap()).unwrap();
+        assert_eq!(envelope["target"], "browser");
+        let state = envelope["nonce"].as_str().unwrap();
+        let mut response = json!({"state":state,"access_token":"fixture-token","token_type":"bearer","expires_in":3600});
+        session.capture(&mut response, &Value::Null).unwrap();
+        let effects = session
+            .step(
+                json!({"type":"local_browser","payload":response}),
+                &env,
+                1000,
+            )
+            .unwrap();
+        let validation = effects.iter().find(|e| e["id"] == "auth:validate").unwrap();
+        assert_eq!(
+            validation["headers"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            vec!["Authorization"]
+        );
+        let effects = session.step(json!({"type":"local_http","id":"auth:validate","status":200,"payload":{"client_id":"public-id","scopes":["user:write:chat"],"expires_in":3600,"login":"fixture-user"}}), &env, 1000).unwrap();
+        let panel = effects.iter().find(|e| e["type"] == "panel").unwrap();
+        let panel = panel.to_string();
+        assert!(panel.contains("Disconnect account"));
+        assert!(!panel.contains("Connect with Twitch"));
+        assert!(session.credential_revision().is_some());
+    }
+    #[test]
     fn rejected_callback_cannot_replace_an_existing_account() {
         let catalog = crate::catalog::ClientCatalog::bundled();
         let installed = &catalog.installed["twitch"];

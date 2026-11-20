@@ -60,15 +60,18 @@ client IDs inside the same project does not create separate quota. See the
 
 The host supplies `environment.link` as
 `https://app.acheflow.com/fwd/<extension_id>`; the extension declares only its
-`authentication.native_callback` suffix, e.g. `oauth/callback`. The fields and
+`authentication.native_callback` suffix, e.g. `oauth/callback`, for installed-app
+delivery. `environment.app_callback_uri` is the selected callback proxy URI. The fields and
 instructions come from each manifest; shared UI/server code has no provider
 credentials or automatic application defaults.
 
-- Native Twitch and VK Video Live: register respectively
-  `https://app.acheflow.com/fwd/twitch/oauth/callback` and
-  `https://app.acheflow.com/fwd/vklive/oauth/callback`. The installed app receives
-  the link only for a pending, enabled extension with matching state. Deploy the
-  HTTPS fallback and verify installed app association before live use.
+- Native Twitch and VK Video Live use the same proxy callback as browser sign-in:
+  `https://app.acheflow.com/callback/` by default. Register this one address
+  in each provider application; per-device or per-workspace addresses are not
+  needed. The response's versioned transport envelope identifies the waiting
+  client, and the installed app still checks the pending nonce, extension,
+  workspace and live instance. Old `/fwd/<id>/...` registrations remain compatible
+  with older clients but are not required by the current shared callback flow.
 - Native Google: each attempt owns an available loopback port, independent of
   server ports. The active URI is available after sign-in starts; no fixed
   localhost port is registered for a Desktop application. Cancellation releases it.
@@ -76,10 +79,36 @@ credentials or automatic application defaults.
   Twitch Public clients are restricted to device authorization. The current
   implicit flow requires no application secret; device authorization is not
   offered by this guest. Verify email and enable 2FA before app registration.
-- Browser: serve the bundled `oauth-callback.html` alongside the app and register
-  that URI for redirect-based providers. Allow sign-in popups. Reverse-proxy base
-  paths are preserved. Browser traffic goes directly to declared provider services;
-  CORS failures remain visible and never fall back to server-held credentials.
+- Browser redirect sign-in offers **Via callback proxy** and **Direct to this
+  studio**. The preference is local to this browser origin. Allow sign-in popups
+  and keep the original studio tab open. Provider SDK modules retain their own
+  transport and do not show this redirect selector.
+  The proxy route uses the single registered callback
+  `https://app.acheflow.com/callback/`, independent of the studio address.
+  It requires publishing the matching static link pages. The UI discloses that
+  the selected proxy page can read the callback in the browser. The page shows
+  the original studio's HTTPS origin and requires **Return to browser studio**
+  before sending the callback to that window. Exact source/origin and a random
+  transport challenge fence delivery; the guest still verifies OAuth state,
+  application identity and scopes before committing credentials. No arbitrary
+  return URL is followed. Cancellation, window disconnection and expiry require
+  starting again; there is no silent fallback to a native app or another route.
+  The relay uses no token storage, backend, analytics or third-party scripts.
+  Implicit access tokens in URL fragments are not included in HTTP requests;
+  authorization codes or other query parameters can reach hosting infrastructure.
+  The site operator can change served JavaScript, so hosted sign-in requires trust
+  in that operator and hosting account. The page clears its URL immediately. The
+  browser relay discards its callback after delivery, navigation or five minutes;
+  installed-app callbacks also require a live, unexpired local pending request.
+  The direct route uses the bundled `oauth-callback.html` alongside the current
+  studio, preserving reverse-proxy base paths. For example,
+  `https://studio.example/` uses `https://studio.example/oauth-callback.html`.
+  Register that exact HTTPS address in your provider application. The existing
+  studio server serves it; no separate callback service is required.
+  Browser provider API traffic remains direct in both modes. CORS failures do not
+  fall back to server-held credentials. A Twitch `redirect_mismatch` means the
+  requested callback does not match the application's registration; previous
+  consent alone does not establish a successful new sign-in.
 - Google native: create a **Desktop app** OAuth client and enable YouTube Data API v3.
   The guest uses an authorization code with S256 PKCE and can renew a returned
   refresh token. Enter the Desktop client's application secret in local Application
@@ -114,6 +143,32 @@ and the local application-secret field where required. Native panels
 can also accept an optional refresh token when their flow supports it. A manual token is validated by the
 provider before being committed. Browser panels accept access tokens only. Tokens
 without a refresh mechanism require reconnection after expiry.
+
+
+Under **Settings → General → Callback proxy**, configure the **Client callback
+proxy URL** for this device's workspace or **Server callback proxy URL** for the
+server's accounts. An empty value uses `https://app.acheflow.com`. Custom values
+are HTTPS origins without paths, query strings, fragments or embedded credentials.
+Publish the same web-client and callback bundle at that origin and register its
+`/callback/` URI with the provider. Server changes require
+`extensions_configure` and are revision-checked and persisted on the server;
+client preferences never enter the server configuration or other devices.
+Changing a proxy does not move tokens or change the server connection.
+
+If a server card reports **Credential storage unavailable**, unlock the server's
+credential store, open **Account & settings** and choose **Save settings** to
+retry the saved connection. Temporary storage failures do not imply revoked
+authorization and must not force a new provider sign-in.
+
+The callback router itself is provider-neutral. `/callback/` and its contextual
+subpaths, such as `/callback/<context>/…`, also accept non-OAuth responses.
+The path does not select a workspace or grant access. A callback field can carry
+`acheflow-callback:` followed by a JSON envelope with `v: 1`, `target: native|browser`,
+and a one-time `nonce`; native delivery additionally names the declared `/fwd/...`
+route. OAuth uses `state` as that carrier. No token, workspace selection or
+arbitrary return URL belongs in the envelope. The router restores the original
+nonce in the carrier before delivery. The waiting client owns the actual
+workspace/instance mapping and rejects stale, replayed or unmatched callbacks.
 
 ## Storage and lifetime
 

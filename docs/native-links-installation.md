@@ -112,6 +112,24 @@ For Cloudflare Pages Direct Upload, upload the host root including `_headers`,
 routes and the shared assets together with the matching installed scheme handler.
 Generated local files do not establish live fallback or AASA support.
 
+The generated `/callback/` route and `/callback/*` contextual paths share a generic
+static callback router. It reads a versioned transport envelope to select native app or
+browser delivery; it never selects a workspace or authorizes an action. The same
+`https://app.acheflow.com/callback/` registration serves installed and browser
+clients. These generic endpoints are not included in Apple app associations,
+because the static router must first determine the waiting client. Native
+responses become a validated `acheflow://client/fwd/...` activation; browser
+responses go only to the opening HTTPS tab after explicit destination confirmation.
+See [authorization](extension-authorization.md) for envelope, trust and storage
+boundaries and custom **Callback proxy URL** settings.
+
+The static assets work on a Cloudflare Pages custom domain without an extra
+Worker. Keep the web-client root and assets when merging link output into a Pages
+upload; deploying only link output would remove an existing client deployment.
+Upload HTML, scripts, `_redirects` and `_headers` together. The generated Caddy
+example uses the default domain; change its host/root when hosting a custom origin.
+No token-handling backend is required.
+
 The published `/_acheflow-links/page.mjs` must generate
 `acheflow://client/fwd/...` and `acheflow://server/fwd/...`. Older deployed files
 that generate `acheflow-client://` or `acheflow-server://` cause browser activation

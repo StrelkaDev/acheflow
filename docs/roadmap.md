@@ -206,6 +206,8 @@ qualification gate in the migration order, not a completed foundation task.
   native keyboard and commit/dismiss the input editor on blur or an outside tap.
 - [x] Authorize a real Twitch server account and verify that an operator-sent
   platform message appears once on both desktop and physical phone in shared chat.
+- [x] Send a message from the desktop personal account and confirm that it appears
+  exactly once on the platform. Physical-phone personal sending remains to verify.
 - [ ] Verify desktop plus phone through trusted HTTPS: viewer, chat moderator,
   scene operator and administrator roles, including denied direct API calls.
 - [ ] Verify two devices linked to one Acheflow user with different local platform
@@ -227,7 +229,7 @@ cookie pairing, distinct device grants, revocation and collector restart recover
 Physical-phone HTTPS loading, keyboard dismissal and real Twitch shared receive
 have been verified separately, including server OAuth consent and account storage.
 These checks do not prove a public broadcast, the complete physical-device role
-matrix, personal direct sending or live token renewal. Other providers still need
+matrix, physical-phone personal sending or live token renewal. Other providers still need
 live authorization/receive checks. Complete the remaining checks with the operator's
 own accounts before calling SHARED-08 finished. Do not publish test chat or go live
 automatically.
@@ -322,6 +324,32 @@ Dependencies: SHARED-09, SHARED-11 and SHARED-12.
 - [x] Verify physical-phone keyboard entry and dismissal through trusted HTTPS.
 - [ ] Finish physical-phone pairing/role and real-account checks in SHARED-08;
   viewport emulation is not physical-device evidence.
+- [x] Implement explicit hosted/direct browser callback selection, hosted-route
+  disclosure and in-memory return to the original HTTPS studio window. Preserve
+  separate native app links and provider-owned OAuth state/account validation.
+- [x] Use a shared callback endpoint and versioned transport envelope for native
+  and browser clients; keep workspace/instance ownership in the waiting client.
+  Support non-OAuth carrier fields without adding provider branches to the host.
+- [x] Add separate client/server Callback proxy URL preferences for custom HTTPS
+  hosting. Keep client values device-local; permission-check, revision-check and
+  persist server changes without moving credentials.
+- [x] Publish the matching browser callback pages with no-store, no-referrer and
+  isolated scripts, alongside the current hosted web client.
+- [x] Qualify browser return through the hosted proxy on a physical phone, including
+  provider token validation and replacement of Connect by Disconnect.
+- [x] Publish the unified native/browser callback router alongside the matching
+  hosted web client.
+- [x] Use `/callback/` as the shared public endpoint, support contextual
+  `/callback/*` paths and remove the old public OAuth-specific route. Verify a
+  real desktop sign-in returns to the installed client and shows Disconnect.
+- [ ] Qualify the unified native/browser envelope and custom-host configuration;
+  verify direct return, cancellation and disconnected windows on
+  physical devices. Complete phone personal sending after connection recovery.
+- [ ] Provision a shared Acheflow provider application before offering sign-in
+  without a user-supplied Client ID. Keep custom applications available; do not
+  invent or silently substitute application credentials.
+- [ ] Evolve the hosted web client into an entry point for selecting remote
+  servers. Proxying server traffic or traversing NAT is a separate future feature.
 
 ## Existing-logic backlog
 

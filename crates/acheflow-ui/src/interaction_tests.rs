@@ -7,6 +7,7 @@ use std::{cell::Cell, rc::Rc};
 
 #[derive(Default)]
 struct Harness {
+    initially_empty: bool,
     running: Cell<Option<Signal<bool>>>,
     client: Cell<Option<ControlClient>>,
 }
@@ -17,18 +18,23 @@ fn app() -> Element {
     crate::client_authorization::provide_accounts(project);
     crate::live_client::use_live_client(project);
     crate::interaction::use_chat_draft(project);
+    let initially_empty = harness.initially_empty;
     let client = ControlClient {
         project,
         state: use_signal(move || {
             Some(ControlSnapshot {
                 workspace_id: Some(project.peek().id.clone()),
-                channels: vec![acheflow_extension_api::integration::Channel {
-                    extension_id: "vklive".into(),
-                    id: "channel".into(),
-                    label: "Read-only channel".into(),
-                    capabilities: vec!["chat.read".into()],
-                    constraints: Default::default(),
-                }],
+                channels: if initially_empty {
+                    vec![]
+                } else {
+                    vec![acheflow_extension_api::integration::Channel {
+                        extension_id: "vklive".into(),
+                        id: "channel".into(),
+                        label: "Read-only channel".into(),
+                        capabilities: vec!["chat.read".into()],
+                        constraints: Default::default(),
+                    }]
+                },
                 ..Default::default()
             })
         }),
@@ -232,4 +238,33 @@ async fn chat_targets_keep_one_explicit_recipient_and_never_redirect_after_disco
     );
     activate(&mut doc, ".chat-targets button[aria-label^='VK']");
     assert!(exists(&doc, ".chat-targets button[aria-pressed='true']"));
+}
+
+#[tokio::test]
+async fn a_single_channel_arriving_after_startup_is_selected_for_an_empty_draft() {
+    let harness = Rc::new(Harness {
+        initially_empty: true,
+        ..Default::default()
+    });
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(app).with_root_context(harness.clone()),
+        DocumentConfig::default(),
+    );
+    doc.initial_build();
+    settle(&mut doc);
+    assert!(!exists(&doc, ".chat-target[aria-pressed='true']"));
+    let mut client = harness.client.get().unwrap();
+    client.state.write().as_mut().unwrap().channels =
+        vec![acheflow_extension_api::integration::Channel {
+            extension_id: "twitch".into(),
+            id: "channel".into(),
+            label: "Shared channel".into(),
+            capabilities: vec!["chat.read".into()],
+            constraints: Default::default(),
+        }];
+    settle(&mut doc);
+    assert!(exists(
+        &doc,
+        ".chat-target[aria-label='Shared channel'][aria-pressed='true']"
+    ));
 }

@@ -66,6 +66,7 @@ impl Store {
             || workspace.id.len() > 128
             || workspace.edit_revision != revision
             || !workspace.client_extensions.is_empty()
+            || !workspace.client_callback_proxy_url.is_empty()
         {
             return Err("Invalid saved workspace configuration.".into());
         }

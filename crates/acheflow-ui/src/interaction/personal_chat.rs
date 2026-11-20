@@ -47,7 +47,7 @@ pub(super) fn Composer(channels: Vec<Channel>, mut text: Signal<String>) -> Elem
     } = use_context::<ChatDraft>();
     let one = channels.len() == 1;
     let initial = channels.first().map(Channel::key);
-    use_effect(move || {
+    use_effect(use_reactive((&one, &initial), move |(one, initial)| {
         if one
             && targets.read().is_empty()
             && pending.read().is_none()
@@ -56,7 +56,7 @@ pub(super) fn Composer(channels: Vec<Channel>, mut text: Signal<String>) -> Elem
         {
             targets.set(vec![key.clone()]);
         }
-    });
+    }));
     let choice = targets.read().first().cloned().unwrap_or_default();
     let channel = channels.iter().find(|c| c.key() == choice).cloned();
     let owner = actor(client, access);

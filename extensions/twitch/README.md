@@ -11,6 +11,11 @@ application secret. [Provider setup](../../docs/provider-setup.md) explains nati
 and browser registration. Access/refresh credentials remain local; supported native
 macOS accounts use Keychain and browser tokens remain in memory.
 
+Token validation sends only `Authorization`: Twitch's validation preflight does
+not allow the `Client-Id` header. Application identity is checked against the
+`client_id` returned by validation before credentials are committed. A successful
+callback alone must not replace Connect with Disconnect.
+
 The native provider runtime uses EventSub WebSocket for chat and lifecycle events,
 Twitch API for sending, and Get Streams for current viewer samples. It preserves
 provider event IDs, roles, receipt/echo correlation, bounded retries and cancellation.
@@ -25,6 +30,7 @@ See [client execution](../../docs/client-executor.md). Qualify actual EventSub,
 sends, expiry and provider permissions with your configured application/account.
 
 Sources: [OAuth](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/),
+[token validation](https://dev.twitch.tv/docs/authentication/validate-tokens/),
 [EventSub WebSocket](https://dev.twitch.tv/docs/eventsub/handling-websocket-events/),
 [chat authentication](https://dev.twitch.tv/docs/chat/authenticating/),
 [Get Streams](https://dev.twitch.tv/docs/api/reference/#get-streams).

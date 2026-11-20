@@ -108,6 +108,10 @@ endpoint. Trunk builds optimized WASM into `dist/`; a source server's root page 
 unavailable until assets exist. `ACHEFLOW_WEB_ROOT` overrides their directory.
 The browser needs WebGPU; localhost or trusted HTTPS is required. No WebGL fallback
 is enabled. A UI served by a server remains attached to that server.
+The browser shows a startup screen while downloading the application and
+initializing graphics. It disappears after the first canvas frame finishes on
+the GPU. Slow startup keeps a reload option available; missing WebGPU or a failed
+startup shows an explanation instead of an empty page.
 Use **Settings → Device access** to pair additional devices with a one-time
 invitation from the server owner; see [device access](server-access.md). The desktop
 that starts its own server restores local owner authority automatically.

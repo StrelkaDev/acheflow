@@ -36,13 +36,14 @@ function validateEscapes(value, isPath) {
   }
 }
 
-export function attach(page, address, history, navigate) {
+export function attach(page, address, history, navigate, recipient = page.documentElement.dataset.recipient) {
   // Remove path/query/fragment from history before any user leaves this page.
   history.replaceState(null, '', '/');
   const button = page.getElementById('open');
   const status = page.getElementById('status');
   try {
-    const target = applicationLink(address, page.documentElement.dataset.recipient);
+    const target = applicationLink(address, recipient);
+    button.textContent = recipient === 'server' ? 'Open Acheflow server' : 'Open Acheflow client';
     button.disabled = false;
     status.textContent = 'Ready. Open the installed application to continue.';
     button.addEventListener('click', () => {

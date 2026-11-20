@@ -76,6 +76,7 @@ fn ServerCard(source: String) -> Element {
     let label = match state.as_str() {
         "running" => "Connected",
         "needs_authorization" => "Sign-in required",
+        "storage_unavailable" => "Credential storage unavailable",
         "not_authorized" => "Channel permission required",
         "reconnecting" => "Reconnecting",
         "failed" => "Unavailable",
@@ -92,6 +93,7 @@ fn ServerCard(source: String) -> Element {
             }
             ActionButton{expanded:Some(expanded()),onclick:move|_|expanded.set(!expanded()),if expanded(){"Close settings"}else{"Account & settings"}}
         }
+        if state=="storage_unavailable" {p{class:"padded form-help",role:"alert","The saved server account could not be opened. Unlock the server’s credential storage, then open Account & settings and choose Save settings to retry. A new sign-in is not required for a temporary storage error."}}
         if expanded(){div{class:"padded extension-settings",ServerLoad{source}}}
     }}
 }
@@ -179,6 +181,8 @@ fn ServerAuthorization(
     let id = manifest.id.clone();
     let name = manifest.name.clone();
     let mut project = use_signal(|| original.project.peek().clone());
+    let callback_proxy = use_memo(move || original.project.read().callback_proxy_url.clone());
+    use_effect(move || project.write().callback_proxy_url = callback_proxy());
     let sessions = use_signal(Sessions::new);
     use_context_provider(|| sessions);
     let saved = try_consume_context::<ServerDrafts>();

@@ -242,13 +242,22 @@ and pending callbacks. The host remains provider-neutral.
 The local host supplies `environment.link` from the installed manifest ID as
 `https://app.acheflow.com/fwd/<id>`, replacing caller-provided link bases. An
 extension may declare `authentication.native_callback: "oauth/callback"`; the
-SDK joins the suffix, validates its route/installation/declaration, and emits
-`browser { callback_uri, ... }`. Query/fragment injection is refused. Native
-driving validates the declared callback before opening the provider browser.
-Loopback callbacks use an owned ephemeral listener; app callbacks wait on the
-existing mailbox without opening a fixed port. Exact path, state, workspace and
-live-instance checks remain required. Browser sign-in keeps its same-origin
-callback or provider module and never activates a native app implicitly.
+SDK validates the installed route against this declaration. The host supplies
+`environment.app_callback_uri` from its separately configured client/server
+callback proxy URL. With this transport the guest emits
+`browser { callback_uri, activation_uri, ... }` and a versioned callback envelope
+in the correlation field; `activation_uri` is the declared installed route.
+The native host verifies both the configured proxy and declared activation route
+before opening the browser. The static proxy only restores the opaque nonce and
+selects native versus browser delivery. The waiting client still checks exact
+path, nonce, workspace, live instance and expiry. It never trusts a workspace
+selection supplied by the proxy. Without the shared transport, legacy declared
+app callbacks and owned ephemeral loopback listeners remain supported. Browser
+SDK modules retain their own transport; direct browser callbacks remain same-origin.
+The static envelope is not OAuth-specific: `/callback/` and `/callback/*`
+serve the same router, and extensions may use a declared correlation field other
+than `state`. Contextual paths do not select a workspace or authorize a request. No provider URL, credential or permission mapping belongs in shared
+host code.
 
 UI/MCP -> server domain command -> outbox -> client claim -> provider API -> receipt.
 Provider -> client normalized typed event -> server logic -> shared native/browser UI.

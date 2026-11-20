@@ -1,4 +1,5 @@
 //! Shared connection settings and native-only process controls.
+mod callback_proxy;
 use crate::project::Workspace;
 use acheflow_media_api::server::ServerInfo;
 use dioxus_native::prelude::*;
@@ -201,6 +202,7 @@ pub(crate) fn ServerSettings(
                 p {class:"form-help",role:"status","{storage_status}"}
             }
         }
+        callback_proxy::CallbackProxySettings{project}
     }
 }
 fn local_controls(

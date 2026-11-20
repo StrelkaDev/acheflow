@@ -26,7 +26,12 @@ class BuildTests(unittest.TestCase):
             config=(output / "Caddyfile").read_text().split("https://app.acheflow.com {",1)[1].split("https://server.acheflow.com",1)[0]
             self.assertIn("handle /fwd/* {",config)
             self.assertIn("rewrite * /forward.html",config)
-            self.assertEqual((root / "_redirects").read_text(),"/fwd/* /forward 200\n/server/fwd/* /server-forward 200\n")
+            self.assertEqual((root / "_redirects").read_text(),"/fwd/* /forward 200\n/server/fwd/* /server-forward 200\n/callback /browser-callback 200\n/callback/* /browser-callback 200\n")
+            self.assertIn('data-recipient="browser"', (root / "browser-callback.html").read_text())
+            self.assertTrue((root / "_acheflow-links/relay.mjs").is_file())
+            self.assertNotIn("/oauth/callback", config)
+            self.assertIn("@callback path /callback /callback/*", config)
+            self.assertIn("handle @callback {", config)
             headers=(root / "_headers").read_text()
             self.assertTrue(headers.startswith("/fwd/*\n"))
             self.assertNotIn("\n/*\n",headers)

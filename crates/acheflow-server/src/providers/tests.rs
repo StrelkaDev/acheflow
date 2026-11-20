@@ -1,5 +1,21 @@
 use super::*;
 use acheflow_media_api::control::{ControlAction, ControlRequest};
+#[test]
+fn unavailable_credentials_are_not_reported_as_missing_authorization() {
+    assert_eq!(
+        ready_account::<()>(Err("credential store locked".into()), false),
+        Err("storage_unavailable")
+    );
+    assert_eq!(
+        ready_account::<()>(Ok(None), false),
+        Err("needs_authorization")
+    );
+    assert_eq!(ready_account::<()>(Ok(None), true), Ok(None));
+    assert_eq!(
+        ready_account(Ok(Some("saved account")), false),
+        Ok(Some("saved account"))
+    );
+}
 fn fixture() -> (Arc<ControlHost>, Workspace) {
     let (mut host, mut workspace) = crate::control::tests::host();
     let inner = Arc::get_mut(&mut host).unwrap();

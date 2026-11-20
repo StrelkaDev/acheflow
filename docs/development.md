@@ -47,6 +47,8 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo clippy -p acheflow-ui --lib --target wasm32-unknown-unknown --locked -- -D warnings
 cargo test --workspace --locked
 node --test native/links/page.test.mjs
+node --test native/links/callback.test.mjs native/links/relay.test.mjs crates/acheflow-ui/src/client_authorization/browser_auth.test.mjs
+node --test crates/acheflow-ui/startup.test.mjs
 python3 -m unittest discover -s native/links -p 'test_*.py'
 python3 -m unittest discover -s native/macos -p 'test_*.py'
 trunk build

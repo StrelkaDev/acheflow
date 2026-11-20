@@ -627,6 +627,7 @@ impl ControlHost {
                     ControlAction::SetScene { .. }
                         | ControlAction::SetExtension { .. }
                         | ControlAction::SetClientCapabilities { .. }
+                        | ControlAction::SetCallbackProxy { .. }
                         | ControlAction::ExtensionEvent {
                             config: Some(_),
                             ..
@@ -704,6 +705,14 @@ impl ControlHost {
                     is_live,
                 )
                 .await?;
+            }
+            ControlAction::SetCallbackProxy { url } => {
+                let address = acheflow_media_api::workspace::normalize_callback_proxy_url(url)?;
+                self.runtime
+                    .update_workspace(&request.workspace_id, |workspace| {
+                        workspace.callback_proxy_url = address;
+                        Ok(())
+                    })?;
             }
             ControlAction::SetClientCapabilities { grants } => {
                 acheflow_control::client_execution::ExecutionRegistry::default().set_policy(

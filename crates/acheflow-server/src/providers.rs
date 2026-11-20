@@ -353,11 +353,10 @@ async fn worker(
                 &spec.binding.account_id,
             )
         };
-        let mut account = match account {
-            Ok(Some(account)) => Some(account),
-            Ok(None) if manifest.secret_fields.is_empty() => None,
-            _ => {
-                mark("needs_authorization", generation);
+        let mut account = match ready_account(account, manifest.secret_fields.is_empty()) {
+            Ok(account) => account,
+            Err(state) => {
+                mark(state, generation);
                 return;
             }
         };
@@ -413,15 +412,17 @@ async fn worker(
             mark("stopped", 0);
             return;
         }
-        if result.as_ref().is_some_and(|r| {
-            r.as_ref().is_err_and(|e| {
-                matches!(
-                    e.as_str(),
-                    "account_storage_unavailable" | "provider_needs_authorization"
-                )
-            })
-        }) {
-            mark("needs_authorization", generation);
+        let terminal = match result.as_ref() {
+            Some(Err(error)) if error == "account_storage_unavailable" => {
+                Some("storage_unavailable")
+            }
+            Some(Err(error)) if error == "provider_needs_authorization" => {
+                Some("needs_authorization")
+            }
+            _ => None,
+        };
+        if let Some(state) = terminal {
+            mark(state, generation);
             return;
         }
 
@@ -430,6 +431,18 @@ async fn worker(
         tokio::select! {biased; _=cancel.cancelled()=>return,_=tokio::time::sleep(std::time::Duration::from_secs((1u64<<failures.min(5)).min(30)))=>{}}
     }
 }
+fn ready_account<A>(
+    loaded: Result<Option<A>, String>,
+    secretless: bool,
+) -> Result<Option<A>, &'static str> {
+    match loaded {
+        Ok(Some(account)) => Ok(Some(account)),
+        Ok(None) if secretless => Ok(None),
+        Ok(None) => Err("needs_authorization"),
+        Err(_) => Err("storage_unavailable"),
+    }
+}
+
 pub(crate) fn validate(host: &ControlHost, workspace: &Workspace) -> Result<(), String> {
     for (provider, binding) in &workspace.server_integrations {
         if host.installed.read().unwrap().contains_key(provider) {

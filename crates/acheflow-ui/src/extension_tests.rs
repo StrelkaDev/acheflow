@@ -593,8 +593,7 @@ async fn application_setup_renders_guest_links_addresses_and_local_failures_in_e
                 .unwrap()
                 .attrs();
             assert!(attrs.iter().any(|a| a.name.local.to_string() == "value"
-                && a.value.as_str()
-                    == format!("https://app.acheflow.com/fwd/{provider}/oauth/callback")));
+                && a.value.as_str() == "https://app.acheflow.com/callback/"));
             drop(document);
         }
         open_application_credentials(&mut doc, provider);

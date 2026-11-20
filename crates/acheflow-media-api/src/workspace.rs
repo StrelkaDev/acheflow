@@ -204,6 +204,12 @@ pub struct Workspace {
     /// HTTP(S) API base. Empty in legacy files: use the UI's startup default.
     #[serde(default)]
     pub server_url: String,
+    /// Public callback host for server authorizations. Empty uses Acheflow hosting.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub callback_proxy_url: String,
+    /// Device-local callback host; never included in server configuration.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub client_callback_proxy_url: String,
     #[serde(default)]
     pub extensions: std::collections::BTreeMap<String, ExtensionSettings>,
     /// Local client integrations. Excluded from Apply/Start by server_configuration().
@@ -229,6 +235,8 @@ impl Default for Workspace {
             version: 1,
             name: "My workspace".into(),
             server_url: String::new(),
+            callback_proxy_url: String::new(),
+            client_callback_proxy_url: String::new(),
             extensions: Default::default(),
             client_extensions: Default::default(),
             server_integrations: Default::default(),
@@ -522,6 +530,8 @@ impl Workspace {
         if !self.server_url.is_empty() {
             normalize_server_url(&self.server_url)?;
         }
+        normalize_callback_proxy_url(&self.callback_proxy_url)?;
+        normalize_callback_proxy_url(&self.client_callback_proxy_url)?;
         if self.id.is_empty()
             || self.id.len() > 128
             || !self
@@ -668,6 +678,7 @@ impl Workspace {
     pub fn server_configuration(&self) -> Self {
         let mut server = self.clone();
         server.client_extensions.clear();
+        server.client_callback_proxy_url.clear();
         server
     }
     pub fn migrate_client_extensions<'a>(&mut self, ids: impl IntoIterator<Item = &'a str>) {
@@ -696,6 +707,32 @@ impl Workspace {
 }
 
 /// Keep an optional reverse-proxy path while rejecting ambiguous API bases.
+pub const DEFAULT_CALLBACK_PROXY_URL: &str = "https://app.acheflow.com";
+
+pub fn normalize_callback_proxy_url(address: &str) -> Result<String, String> {
+    if address.trim().is_empty() {
+        return Ok(String::new());
+    }
+    let address = normalize_server_url(address)?;
+    let parsed = url::Url::parse(&address).map_err(|_| "Invalid callback proxy URL.")?;
+    if parsed.scheme() != "https" || !matches!(parsed.path(), "" | "/") {
+        return Err("Callback proxy URL must be an HTTPS origin without a path.".into());
+    }
+    Ok(address)
+}
+
+pub fn callback_proxy_uri(address: &str) -> Result<String, String> {
+    let base = normalize_callback_proxy_url(address)?;
+    Ok(format!(
+        "{}/callback/",
+        if base.is_empty() {
+            DEFAULT_CALLBACK_PROXY_URL
+        } else {
+            &base
+        }
+    ))
+}
+
 pub fn normalize_server_url(address: &str) -> Result<String, String> {
     let invalid =
         || "Enter an HTTP(S) server address without credentials, query or fragment.".to_owned();
@@ -1095,6 +1132,39 @@ mod tests {
 #[cfg(test)]
 mod client_extension_tests {
     use super::*;
+    #[test]
+    fn callback_proxy_settings_are_https_and_keep_device_preferences_local() {
+        assert_eq!(
+            callback_proxy_uri("").unwrap(),
+            "https://app.acheflow.com/callback/"
+        );
+        assert_eq!(
+            callback_proxy_uri("https://callbacks.example/").unwrap(),
+            "https://callbacks.example/callback/"
+        );
+        for invalid in [
+            "http://callbacks.example",
+            "https://user:password@callbacks.example",
+            "https://callbacks.example/path",
+            "https://callbacks.example?token=fixture",
+            "https://callbacks.example/#fragment",
+        ] {
+            assert!(normalize_callback_proxy_url(invalid).is_err());
+        }
+        let local = Workspace {
+            callback_proxy_url: "https://server-callback.example".into(),
+            client_callback_proxy_url: "https://device-callback.example".into(),
+            ..Default::default()
+        };
+        let server = local.server_configuration();
+        assert_eq!(server.callback_proxy_url, local.callback_proxy_url);
+        assert!(server.client_callback_proxy_url.is_empty());
+        assert!(
+            !serde_json::to_string(&server)
+                .unwrap()
+                .contains("device-callback")
+        );
+    }
     #[test]
     fn local_provider_settings_migrate_and_persist_but_never_enter_server_configuration() {
         let mut workspace = Workspace::default();
