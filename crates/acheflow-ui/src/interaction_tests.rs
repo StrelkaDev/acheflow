@@ -28,6 +28,7 @@ fn app() -> Element {
                     vec![]
                 } else {
                     vec![acheflow_extension_api::integration::Channel {
+                        stream_id: None,
                         extension_id: "vklive".into(),
                         id: "channel".into(),
                         label: "Read-only channel".into(),
@@ -159,6 +160,7 @@ async fn chat_targets_keep_one_explicit_recipient_and_never_redirect_after_disco
     settle(&mut doc);
     let mut client = harness.client.get().unwrap();
     let channel = |extension: &str, label: &str, send| Channel {
+        stream_id: None,
         extension_id: extension.into(),
         id: "channel".into(),
         label: label.into(),
@@ -256,6 +258,7 @@ async fn a_single_channel_arriving_after_startup_is_selected_for_an_empty_draft(
     let mut client = harness.client.get().unwrap();
     client.state.write().as_mut().unwrap().channels =
         vec![acheflow_extension_api::integration::Channel {
+            stream_id: None,
             extension_id: "twitch".into(),
             id: "channel".into(),
             label: "Shared channel".into(),

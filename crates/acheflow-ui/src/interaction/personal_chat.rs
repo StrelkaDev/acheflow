@@ -106,7 +106,7 @@ pub(super) fn Composer(channels: Vec<Channel>, mut text: Signal<String>) -> Elem
                 let Some(channel)=channel.clone() else{return;};let Some((account,revision))=account.clone() else{return;};
                 let Some(installed)=send_catalog.installed.get(&channel.extension_id) else{return;};
                 let current=actor(client,access);let key=(current.0.clone(),current.1.clone(),channel.extension_id.clone());
-                let prepared=sessions.peek().get(&key).ok_or_else(||"Reconnect this device's account.".to_owned()).and_then(|session|session.direct_action(&installed.module,&channel.id));
+                let prepared=sessions.peek().get(&key).ok_or_else(||"Reconnect this device's account.".to_owned()).and_then(|session|session.direct_action(&installed.module,&channel.id)).and_then(|action|action.with_stream(channel.stream_id.as_deref()));
                 let request=PendingSend{id:crate::project::new_token(),channel:channel.key(),text:text.peek().clone(),account:account.clone(),running:true,outcome:ExecutionOutcome::Unknown,error:None};
                 pending.set(Some(request.clone()));
                 dioxus_core::spawn_forever(async move{
@@ -165,6 +165,7 @@ async fn authorize(
             workspace_id: owner.0.clone(),
             provider: channel.extension_id.clone(),
             channel_id: channel.id.clone(),
+            stream_id: channel.stream_id.clone(),
             operation: "chat.send".into(),
         })
         .timeout(std::time::Duration::from_secs(10))
@@ -185,6 +186,7 @@ async fn authorize(
         || permission.workspace_id != owner.0
         || permission.provider != channel.extension_id
         || permission.channel_id != channel.id
+        || permission.stream_id != channel.stream_id
         || started.elapsed().as_millis() >= u128::from(lifetime)
     {
         return Err("Sending permission changed or expired before dispatch.".into());

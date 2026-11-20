@@ -28,7 +28,7 @@ fn start(guest: &mut Guest, id: &str) -> Vec<Value> {
 fn youtube_rest_recovery_receives_a_full_page_in_real_wasm_and_rejects_late_results() {
     let mut guest = load("youtube");
     start(&mut guest, "youtube");
-    guest.call(json!({"type":"http_result","id":"video","status":200,"now_ms":1000,"payload":{"items":[{"id":"video","liveStreamingDetails":{"activeLiveChatId":"chat"}}]}})).unwrap();
+    guest.call(json!({"type":"http_result","id":"video","status":200,"now_ms":1000,"payload":{"items":[{"id":"video","snippet":{"channelId":"stable-channel"},"liveStreamingDetails":{"activeLiveChatId":"chat"}}]}})).unwrap();
     let effects = guest.call(json!({"type":"tick","now_ms":1001})).unwrap();
     let id = effects.iter().find(|e| e["protocol"] == "grpc").unwrap()["id"].clone();
     guest
@@ -79,7 +79,7 @@ fn independently_compiled_providers_use_opaque_credentials_and_declare_only_supp
         );
         assert!(effects.iter().any(|e| e["type"] == "panel"));
         let response = if id == "youtube" {
-            json!({"type":"http_result","id":"video","status":200,"now_ms":1000,"payload":{"items":[{"id":"video","snippet":{"title":"Live"},"liveStreamingDetails":{"activeLiveChatId":"chat","concurrentViewers":"42"}}]}})
+            json!({"type":"http_result","id":"video","status":200,"now_ms":1000,"payload":{"items":[{"id":"video","snippet":{"channelId":"stable-channel","title":"Live"},"liveStreamingDetails":{"activeLiveChatId":"chat","concurrentViewers":"42"}}]}})
         } else {
             json!({"type":"http_result","id":"channel","status":200,"now_ms":1000,"payload":{"data":{"channel":{"url":"streamer","nick":"Streamer","status":"online"},"stream":{"id":"stream","counters":{"viewers":17}}}}})
         };
@@ -132,7 +132,7 @@ fn independently_compiled_providers_use_opaque_credentials_and_declare_only_supp
 fn youtube_preserves_every_message_across_bounded_wasm_calls_and_correlates_sends() {
     let mut guest = load("youtube");
     start(&mut guest, "youtube");
-    guest.call(json!({"type":"http_result","id":"video","status":200,"payload":{"items":[{"id":"video","liveStreamingDetails":{"activeLiveChatId":"chat"}}]}})).unwrap();
+    guest.call(json!({"type":"http_result","id":"video","status":200,"payload":{"items":[{"id":"video","snippet":{"channelId":"stable-channel"},"liveStreamingDetails":{"activeLiveChatId":"chat"}}]}})).unwrap();
     let open = guest.call(json!({"type":"tick","now_ms":1000})).unwrap();
     let id = open
         .iter()
@@ -205,7 +205,7 @@ fn youtube_preserves_every_message_across_bounded_wasm_calls_and_correlates_send
                 .all(|e| e["type"] != "chat")
         );
     }
-    let effects=guest.call(json!({"type":"command","name":"chat.send","channel_id":"video","request_id":"intent","text":"Hello"})).unwrap();
+    let effects=guest.call(json!({"type":"command","name":"chat.send","channel_id":"stable-channel","request_id":"intent","text":"Hello"})).unwrap();
     let request = effects.iter().find(|e| e["type"] == "http").unwrap();
     assert_eq!(
         request["body"]["snippet"]["textMessageDetails"]["messageText"],
@@ -354,7 +354,7 @@ fn vklive_denies_read_only_offline_and_stopped_instances_and_does_not_retry_unkn
 fn personal_action_preparation_never_opens_a_chat_subscription() {
     for id in ["youtube", "vklive"] {
         let mut guest = load(id);
-        let effects=guest.call(json!({"type":"prepare_action","channel_id":if id=="youtube"{"video"}else{"streamer"},"config":{"send_chat":"true","read_chat":"true","read_audience":"true"},"secrets":["access_token"],"now_ms":1000})).unwrap();
+        let effects=guest.call(json!({"type":"prepare_action","channel_id":if id=="youtube"{"stable-channel"}else{"streamer"},"stream_id":if id=="youtube"{Some("video")}else{None},"config":{"send_chat":"true","read_chat":"true","read_audience":"true"},"secrets":["access_token"],"now_ms":1000})).unwrap();
         assert!(!effects.is_empty());
         assert!(
             effects

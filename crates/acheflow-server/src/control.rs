@@ -942,6 +942,8 @@ pub(crate) mod tests {
                         version: CLIENT_EXECUTION_VERSION,
                         generation: 1,
                         connections: vec![Connection {
+                            channel_label: None,
+                            stream_id: None,
                             id: "connection".into(),
                             provider: "fixture".into(),
                             account_id: "bot".into(),

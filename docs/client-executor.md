@@ -57,14 +57,33 @@ account/channel selected for the server:
       "config": {}
     }
   },
-  "client_capabilities": [{
+  "channel_permissions": {
+    "version": 1,
+    "grants": [{
     "provider": "provider-id",
     "account_id": "ACCOUNT_ID",
     "channel_id": "CHANNEL_ID",
     "capabilities": ["chat.read", "chat.send"]
-  }]
+    }]
+  }
 }
 ```
+
+Permission identity is **provider + account + stable channel**, within one workspace.
+A live connection may carry an optional `stream_id`; switching a broadcast replaces
+its connection generation, not its saved permission. YouTube uses the resource's
+[`snippet.channelId`](https://developers.google.com/youtube/v3/live/docs/liveBroadcasts)
+for the channel and the video ID for the broadcast. Twitch and VK Video Live keep
+their stable channel identities under the same contract.
+
+The Server tab shows one permission card per account/channel. Read chat, audience
+and sending are independent controls. **Revoke access** saves an empty permission
+set so reconnecting cannot restore it; explicitly select rights to allow access again.
+The versioned `channel_permissions` object replaces legacy broadcast-scoped
+`client_capabilities` arrays. Old arrays are deliberately discarded on load; reconnect
+or explicitly grant channel access again. Credentials are unaffected. Existing
+YouTube server bindings that still contain a video ID must be reconnected with the
+stable channel ID; a mismatched binding fails closed.
 
 This is a fragment of a complete workspace, not a standalone import. Apply requires
 the normal management grants and expected revision. Settings must match nonsecret
@@ -171,7 +190,7 @@ current workspace/revision, a `unix_milliseconds:unique_suffix` intent ID and:
 ```
 
 Only grant implemented capabilities. Policy persists as workspace
-`client_capabilities`; default is empty/deny. The client sends connection metadata
+`channel_permissions`; default is empty/deny. The client sends connection metadata
 through `register` after local authorization, using a monotonic generation and
 connection IDs local to that client. Server permissions are the intersection of saved policy and requested live
 capabilities; the trusted executor must advertise only its implemented handlers.

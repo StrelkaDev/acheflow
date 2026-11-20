@@ -628,3 +628,22 @@ button.selected { background:var(--accent-surface); color:var(--accent-text); bo
     .extension-card-actions > button { flex:1; }
     .server-account-current .extension-action-row > button { flex:1 1 160px; }
 }
+.permission-list { display:flex; flex-direction:column; gap:12px; }
+.workspace-capabilities > .panel-heading { flex-wrap:wrap; gap:12px; }
+.permission-card { padding:16px; border:1px solid #29313e; border-radius:8px; background:#131a24; min-width:0; }
+.permission-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.permission-heading h3 { margin:0 0 5px; font-size:13px; color:#e0e6ee; }
+.permission-channel { margin:0; font-size:11px; color:#9eacbf; overflow-wrap:anywhere; }
+.permission-controls { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+.permission-toggle { display:flex; align-items:center; gap:8px; min-height:36px; padding:8px 12px; border:1px solid #344052; border-radius:6px; background:#1a2330; color:#b4bfd0; }
+.permission-toggle[aria-pressed="true"] { border-color:#a44b21; background:#38271f; color:#f1d1bb; }
+.permission-check { display:flex; align-items:center; justify-content:center; width:15px; height:15px; border:1px solid #647084; border-radius:3px; font-size:11px; flex-shrink:0; }
+.permission-toggle[aria-pressed="true"] .permission-check { border-color:#d97536; background:#a34a1d; color:white; }
+.permission-footer { display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.permission-footer button { min-height:32px; background:transparent; border:0; font-size:11px; color:#9eacbf; padding:6px 0; }
+.permission-footer .permission-revoke { color:#e2a394; }
+.permission-revoked { color:#e2a394; }
+.permission-identity { display:flex; flex-wrap:wrap; gap:5px 12px; padding-top:12px; margin:8px 0 0; border-top:1px solid #29313e; font-size:10px; }
+.permission-identity dt { color:#8797ad; min-width:90px; }
+.permission-identity dd { margin:0; width:calc(100% - 110px); overflow-wrap:anywhere; color:#bac5d5; }
+.permission-empty h3 { margin:0 0 8px; font-size:13px; }

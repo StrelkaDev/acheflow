@@ -67,12 +67,20 @@ impl Registration<'_> {
         if !capabilities.contains(&Capability::ChatRead) {
             return Err("Provider cannot collect this channel.".into());
         }
-        if self.active && runtime.identity().connection.capabilities == capabilities {
+        let stream_id = channel["stream_id"].as_str().map(str::to_owned);
+        let channel_label = channel["label"].as_str().map(str::to_owned);
+        if self.active
+            && runtime.identity().connection.capabilities == capabilities
+            && runtime.identity().connection.stream_id == stream_id
+            && runtime.identity().connection.channel_label == channel_label
+        {
             return Ok(());
         }
         self.withdraw();
         let mut connection = runtime.identity().connection.clone();
         connection.capabilities = capabilities;
+        connection.stream_id = stream_id;
+        connection.channel_label = channel_label;
         connection.id = acheflow_media_api::workspace::new_token();
         runtime.select_connection(connection)?;
         Executor(self.bridge).heartbeat(runtime).await?;

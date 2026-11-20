@@ -7,6 +7,8 @@ fn capabilities(values: &[Capability]) -> BTreeSet<Capability> {
 }
 fn connection(provider: &str) -> Connection {
     Connection {
+        channel_label: None,
+        stream_id: None,
         id: "connection".into(),
         provider: provider.into(),
         account_id: "sender".into(),
@@ -84,6 +86,81 @@ fn registration_intersects_saved_policy_and_cannot_smuggle_secret_fields() {
     let mut value = serde_json::to_value(registration("alpha", 1)).unwrap();
     value["access_token"] = serde_json::json!("must-not-be-accepted");
     assert!(serde_json::from_value::<ClientRegistration>(value).is_err());
+}
+
+#[test]
+fn channel_permission_survives_broadcast_replacement_but_never_restores_revoked_rights() {
+    let mut registry = setup();
+    let replace = |generation: u64| {
+        let mut request = registration("alpha", generation);
+        request.connections[0].id = format!("broadcast-{generation}");
+        request.connections[0].stream_id = Some(format!("stream-{generation}"));
+        request
+    };
+
+    // Different live sessions keep using the same saved account/channel grant.
+    for generation in 2..=3 {
+        let connected = registry
+            .register(
+                "workspace",
+                "client-a",
+                replace(generation),
+                1000 + generation,
+            )
+            .unwrap();
+        assert_eq!(connected.connections[0].channel_id, "channel");
+        assert_eq!(
+            connected.connections[0].id,
+            format!("broadcast-{generation}")
+        );
+        assert_eq!(
+            connected.connections[0].capabilities,
+            policy("alpha").capabilities
+        );
+    }
+
+    let mut read_only = policy("alpha");
+    read_only.capabilities = capabilities(&[Capability::ChatRead]);
+    registry
+        .set_policy("workspace", vec![read_only, policy("beta")], 1004)
+        .unwrap();
+    let connected = registry
+        .register("workspace", "client-a", replace(4), 1005)
+        .unwrap();
+    assert_eq!(
+        connected.connections[0].capabilities,
+        capabilities(&[Capability::ChatRead])
+    );
+    let mut send = intent("1005:narrowed", "client-a", 4, "hello", 5000);
+    send.connection_id = "broadcast-4".into();
+    assert!(registry.enqueue("workspace", send, 1005).is_err());
+
+    registry
+        .set_policy("workspace", vec![policy("beta")], 1006)
+        .unwrap();
+    assert!(
+        registry
+            .register("workspace", "client-a", replace(5), 1007)
+            .is_err()
+    );
+    assert!(
+        registry
+            .connections("workspace", 1007)
+            .iter()
+            .all(|status| status.client_id != "client-a")
+    );
+
+    // Revoking one channel does not interrupt another provider's live session.
+    registry
+        .enqueue(
+            "workspace",
+            intent("1007:independent", "client-b", 1, "still connected", 5000),
+            1007,
+        )
+        .unwrap();
+    let claimed = registry.claim("workspace", "client-b", 1, 1, 1008).unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].instruction.connection.provider, "beta");
 }
 
 #[test]
@@ -445,6 +522,9 @@ fn malformed_registration_cannot_replace_live_authority() {
     let mut invalid = registration("alpha", 2);
     invalid.connections[0].account_id = "not/an/identity".into();
     requests.push(invalid);
+    let mut invalid_stream = registration("alpha", 2);
+    invalid_stream.connections[0].stream_id = Some("not/a/broadcast".into());
+    requests.push(invalid_stream);
     let mut too_many = registration("alpha", 2);
     too_many.connections = vec![connection("alpha"); 17];
     requests.push(too_many);

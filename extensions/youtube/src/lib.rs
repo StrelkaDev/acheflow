@@ -24,6 +24,8 @@ struct WirePayload {
 pub struct YouTube {
     authorization: guest_sdk::authorization::Authorization,
     action_only: bool,
+    channel: String,
+    target_channel: String,
     video: String,
     configured_video: String,
     broadcasts: Vec<Value>,
@@ -105,8 +107,17 @@ impl YouTube {
     pub fn handle(&mut self, mut input: Value) -> Vec<Value> {
         if input["type"] == "prepare_action" {
             self.action_only = true;
+            self.target_channel = input["channel_id"].as_str().unwrap_or_default().into();
             input["type"] = json!("start");
-            input["config"]["video_id"] = input["channel_id"].clone();
+            input["config"]["video_id"] = input["stream_id"].clone();
+            if input["stream_id"].as_str().is_none_or(str::is_empty) {
+                return vec![status(
+                    "failed",
+                    Some(
+                        "The selected broadcast is no longer available. Refresh the channel before sending.",
+                    ),
+                )];
+            }
             input["config"]["read_chat"] = json!("false");
             input["config"]["read_audience"] = json!("false");
         }
@@ -139,6 +150,7 @@ impl YouTube {
                     .trim()
                     .into();
                 self.configured_video = self.video.clone();
+                self.channel.clear();
                 self.chat.clear();
                 self.broadcasts.clear();
                 self.video_pending = false;
@@ -219,7 +231,7 @@ impl YouTube {
                 if !self.authorized
                     || !send_chat
                     || self.chat.is_empty()
-                    || channel != self.video
+                    || channel != self.channel
                     || self.pending.len() >= 128
                 {
                     return vec![
@@ -298,7 +310,7 @@ impl YouTube {
             let snippet = &message["snippet"];
             let author = &message["authorDetails"];
             if snippet["type"] == "messageDeletedEvent" {
-                out.push(json!({"type":"delete","platform":"youtube","channel_id":self.video,"message_id":snippet["messageDeletedDetails"]["deletedMessageId"],"all":false}));
+                out.push(json!({"type":"delete","platform":"youtube","channel_id":self.channel,"message_id":snippet["messageDeletedDetails"]["deletedMessageId"],"all":false}));
             } else if let Some(text) = snippet["displayMessage"]
                 .as_str()
                 .or(snippet["textMessageDetails"]["messageText"].as_str())
@@ -311,7 +323,7 @@ impl YouTube {
                 .into_iter()
                 .filter_map(|(key, role)| (author[key] == true).then_some(role))
                 .collect();
-                out.push(json!({"type":"chat","message":{"platform":"youtube","channel_id":self.video,"message_id":id,"user_id":author["channelId"].as_str().unwrap_or_default(),"display_name":author["displayName"].as_str().unwrap_or("YouTube user"),"text":text,"roles":roles,"occurred_at_ms":now}}));
+                out.push(json!({"type":"chat","message":{"platform":"youtube","channel_id":self.channel,"message_id":id,"user_id":author["channelId"].as_str().unwrap_or_default(),"display_name":author["displayName"].as_str().unwrap_or("YouTube user"),"text":text,"roles":roles,"occurred_at_ms":now}}));
             }
         }
         self.advance_stream(&mut out);

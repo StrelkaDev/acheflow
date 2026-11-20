@@ -30,10 +30,17 @@ pub struct Connection {
     pub provider: String,
     pub account_id: String,
     pub channel_id: String,
+    /// Display metadata from the guest, never used for authorization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_label: Option<String>,
+    /// Current broadcast, never part of the saved permission identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<String>,
     pub capabilities: BTreeSet<Capability>,
 }
 
-/// Saved workspace policy; client registration can only narrow these grants.
+/// Saved policy for a stable provider/account/channel, independent of broadcasts.
+/// An empty capability set keeps an explicit revocation; registration can only narrow grants.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

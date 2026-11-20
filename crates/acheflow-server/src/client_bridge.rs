@@ -371,9 +371,13 @@ pub fn refresh(
             let _ = state.integrations.register_channel(
                 id,
                 acheflow_extension_api::integration::Channel {
+                    stream_id: c.stream_id.clone(),
                     id: c.channel_id.clone(),
                     extension_id: id.clone(),
-                    label: format!("{} / {}", c.provider, c.channel_id),
+                    label: c
+                        .channel_label
+                        .clone()
+                        .unwrap_or_else(|| format!("{} channel", c.provider)),
                     capabilities: caps,
                     constraints: Default::default(),
                 },
@@ -439,6 +443,8 @@ mod tests {
         for (n, id) in ["alpha", "beta"].into_iter().enumerate() {
             let manifest:acheflow_control::extensions::GuestManifest=serde_json::from_value(json!({"id":id,"name":id,"api_version":2,"module":"fixture.wasm","execution_side":"client","capabilities":["channel","chat","audience","delivery","poll","donation","interaction"],"services":[],"subscriptions":["chat.send"]})).unwrap();
             let connection = Connection {
+                channel_label: None,
+                stream_id: None,
                 id: "local".into(),
                 provider: id.into(),
                 account_id: "bot".into(),

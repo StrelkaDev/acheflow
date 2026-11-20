@@ -129,7 +129,7 @@ fn rest_recovery_discards_old_broadcast_responses_and_honors_rate_limit_backoff(
 fn broadcast_refresh_does_not_hide_a_failed_chat_stream() {
     let mut guest = setup();
     guest.handle(json!({"type":"http_stream_closed","id":guest.stream.id,"grpc_status":7,"http_status":200,"now_ms":2000}));
-    let effects = guest.handle(json!({"type":"http_result","id":"video","status":200,"now_ms":31000,"payload":{"items":[{"id":"video","snippet":{"title":"Live"},"liveStreamingDetails":{"activeLiveChatId":"chat"}}]}}));
+    let effects = guest.handle(json!({"type":"http_result","id":"video","status":200,"now_ms":31000,"payload":{"items":[{"id":"video","snippet":{"channelId":"stable-channel","title":"Live"},"liveStreamingDetails":{"activeLiveChatId":"chat"}}]}}));
     assert!(guest.stream.blocked);
     assert!(
         effects
@@ -165,11 +165,11 @@ fn setup() -> YouTube {
             .iter()
             .any(|e| e["url"] == "https://www.googleapis.com/youtube/v3/videos")
     );
-    let effects=guest.handle(json!({"type":"http_result","id":"video","status":200,"now_ms":1000,"payload":{"items":[{"id":"video","snippet":{"title":"Live"},"liveStreamingDetails":{"activeLiveChatId":"chat","concurrentViewers":"42"}}]}}));
+    let effects=guest.handle(json!({"type":"http_result","id":"video","status":200,"now_ms":1000,"payload":{"items":[{"id":"video","snippet":{"channelId":"stable-channel","title":"Live"},"liveStreamingDetails":{"activeLiveChatId":"chat","concurrentViewers":"42"}}]}}));
     assert!(
         effects
             .iter()
-            .any(|e| e["type"] == "channel" && e["channel"]["id"] == "video")
+            .any(|e| e["type"] == "channel" && e["channel"]["id"] == "stable-channel")
     );
     assert!(
         effects
@@ -370,7 +370,69 @@ fn auto_input(kind: &str, now: u64) -> Value {
 }
 
 fn active_broadcast(id: &str, chat: &str) -> Value {
-    json!({"id":id,"snippet":{"title":format!("Live {id}"),"liveChatId":chat},"status":{"lifeCycleStatus":"live"}})
+    json!({"id":id,"snippet":{"channelId":"stable-channel","title":format!("Live {id}"),"liveChatId":chat},"status":{"lifeCycleStatus":"live"}})
+}
+
+#[test]
+fn successive_broadcasts_keep_one_permission_channel_and_replace_the_stream() {
+    let mut guest = YouTube::default();
+    guest.handle(auto_input("start", 1000));
+    for (video, chat, now) in [("video-a", "chat-a", 1001), ("video-b", "chat-b", 32000)] {
+        let effects = guest.handle(broadcast_response(vec![active_broadcast(video, chat)], now));
+        let channel = effects
+            .iter()
+            .find(|e| e["type"] == "channel" && e["reset"] != true)
+            .unwrap();
+        assert_eq!(channel["channel"]["id"], "stable-channel");
+        assert_eq!(channel["channel"]["stream_id"], video);
+        assert!(
+            effects
+                .iter()
+                .any(|e| e["type"] == "channel" && e["reset"] == true)
+        );
+    }
+}
+
+#[test]
+fn broadcast_without_a_verified_channel_id_cannot_create_a_permission_target() {
+    let mut guest = YouTube::default();
+    guest.handle(auto_input("start", 1000));
+    let mut video = active_broadcast("video", "chat");
+    video["snippet"]
+        .as_object_mut()
+        .unwrap()
+        .remove("channelId");
+    let effects = guest.handle(broadcast_response(vec![video], 1001));
+    assert!(
+        effects
+            .iter()
+            .all(|e| e["type"] != "channel" || e["reset"] == true)
+    );
+}
+
+#[test]
+fn direct_action_resolves_the_broadcast_and_rejects_a_different_channel() {
+    for resolved in ["target-channel", "other-channel"] {
+        let mut guest = YouTube::default();
+        let effects = guest.handle(json!({"type":"prepare_action","channel_id":"target-channel","stream_id":"target-broadcast","config":{},"secrets":["access_token"]}));
+        assert!(
+            effects
+                .iter()
+                .any(|e| e["query"]["id"] == "target-broadcast")
+        );
+        let effects = guest.handle(broadcast_response(vec![json!({"id":"target-broadcast","snippet":{"channelId":resolved,"title":"Broadcast","liveChatId":"chat"}})], 1001));
+        assert_eq!(
+            effects
+                .iter()
+                .any(|e| e["type"] == "channel" && e["channel"]["id"] == "target-channel"),
+            resolved == "target-channel"
+        );
+        let sent = guest.handle(json!({"type":"command","name":"chat.send","request_id":"send","channel_id":"target-channel","text":"Hello","config":{}}));
+        assert_eq!(
+            sent.iter().any(|e| e["method"] == "POST"),
+            resolved == "target-channel"
+        );
+    }
 }
 
 fn broadcast_response(items: Vec<Value>, now: u64) -> Value {
@@ -394,7 +456,7 @@ fn automatic_discovery_keeps_finding_current_broadcasts_after_the_first_selectio
     assert!(
         selected
             .iter()
-            .any(|e| e["type"] == "channel" && e["channel"]["id"] == "video-a")
+            .any(|e| e["type"] == "channel" && e["channel"]["id"] == "stable-channel")
     );
     let next = guest.handle(auto_input("tick", guest.next_video));
     assert!(
@@ -437,7 +499,7 @@ fn multiple_active_broadcasts_offer_a_selector_and_switch_to_the_requested_chat(
     assert!(
         switched
             .iter()
-            .any(|e| e["type"] == "channel" && e["channel"]["id"] == "video-b")
+            .any(|e| e["type"] == "channel" && e["channel"]["id"] == "stable-channel")
     );
     let opened = guest.handle(auto_input("tick", 1003));
     let open = opened
@@ -515,7 +577,7 @@ fn automatic_selection_follows_the_remaining_live_broadcast_when_the_old_one_dis
     assert!(
         selected
             .iter()
-            .any(|e| e["type"] == "channel" && e["channel"]["id"] == "video-b")
+            .any(|e| e["type"] == "channel" && e["channel"]["id"] == "stable-channel")
     );
     let missing = guest.handle(broadcast_response(vec![], 64000));
     assert!(guest.chat.is_empty());

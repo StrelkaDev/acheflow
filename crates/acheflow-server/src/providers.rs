@@ -365,6 +365,8 @@ async fn worker(
             client_id: actor.clone(),
             generation,
             connection: Connection {
+                channel_label: None,
+                stream_id: None,
                 id: format!("binding-{generation}"),
                 provider: provider.clone(),
                 account_id: spec.binding.account_id.clone(),

@@ -171,7 +171,7 @@ impl ProviderRuntime {
         self.action_phase = 1;
         let output = self
             .turn(
-                json!({"type":"prepare_action","channel_id":self.identity.connection.channel_id}),
+                json!({"type":"prepare_action","channel_id":self.identity.connection.channel_id,"stream_id":self.identity.connection.stream_id}),
                 now,
             )
             .await?;

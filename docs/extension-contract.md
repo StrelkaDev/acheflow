@@ -199,6 +199,19 @@ forwarding only, through private bounded per-instance queues. Forwarding does no
 activate disabled guests or grant provider I/O to server logic. See
 [forwarding addresses and delivery](forwarding.md).
 
+A provider's `channel.id` is a stable platform channel identity, never a broadcast
+or chat-session ID. Saved workspace permissions are keyed by provider, verified
+account and that channel. An optional `channel.stream_id` identifies the current
+broadcast for routing and display; it is not part of permission identity. A changed
+broadcast withdraws the previous connection and creates a new generation. Chat,
+audience and deletion effects retain the stable channel ID; audience `stream_id`
+identifies the broadcast. This contract applies equally to all providers.
+
+`prepare_action { channel_id, stream_id }` resolves a device action for that exact
+channel and, when present, broadcast. The guest must verify the selected broadcast
+belongs to that channel. The server's fresh action permission also pins the current
+broadcast; a stale selection cannot silently send into a replacement broadcast.
+
 A client guest can emit `channel { reset: true }` to withdraw its current local
 channel before discovery/selection changes. This uses its declared `channel`
 capability. The Studio executor unregisters the previous generation; late stream

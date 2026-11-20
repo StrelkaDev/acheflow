@@ -202,6 +202,8 @@ mod tests {
             client_id: "server-actor".into(),
             generation: 1,
             connection: Connection {
+                channel_label: None,
+                stream_id: None,
                 id: "binding".into(),
                 provider: "alpha".into(),
                 account_id: "bot".into(),

@@ -329,6 +329,9 @@ pub fn valid_id(id: &str, max: usize) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct Channel {
     pub id: String,
+    /// Temporary broadcast context; `id` remains the stable permission target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<String>,
     #[serde(default)]
     pub extension_id: String,
     pub label: String,

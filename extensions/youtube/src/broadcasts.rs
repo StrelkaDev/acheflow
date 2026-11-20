@@ -1,6 +1,14 @@
 use super::{YouTube, status};
 use serde_json::{Value, json};
 
+fn acheflow_channel_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+}
+
 impl YouTube {
     pub(super) fn broadcast_panel(&self) -> Value {
         let mut widgets =
@@ -27,6 +35,7 @@ impl YouTube {
         out.extend(self.stream.reset());
         self.chat.clear();
         self.video.clear();
+        self.channel.clear();
         self.messages.clear();
         self.seen.clear();
         // Withdraw the previous channel while waiting for a new broadcast or selection.
@@ -82,15 +91,27 @@ impl YouTube {
         out: &mut Vec<Value>,
     ) {
         let id = video["id"].as_str().unwrap_or_default();
+        let channel = video["snippet"]["channelId"].as_str().unwrap_or_default();
+        if !acheflow_channel_id(channel)
+            || (!self.target_channel.is_empty() && self.target_channel != channel)
+        {
+            self.clear_broadcast(out);
+            out.push(status(
+                "failed",
+                Some("The broadcast does not identify the selected YouTube channel."),
+            ));
+            return;
+        }
         let chat = video["liveStreamingDetails"]["activeLiveChatId"]
             .as_str()
             .or(video["snippet"]["liveChatId"].as_str())
             .unwrap_or_default();
         let offline = video["liveStreamingDetails"]["actualEndTime"].is_string();
-        let changed = id != self.video || chat != self.chat || offline;
+        let changed = id != self.video || channel != self.channel || chat != self.chat || offline;
         if changed {
             self.clear_broadcast(out);
             self.video = id.into();
+            self.channel = channel.into();
             if !offline {
                 self.chat = chat.into();
             }
@@ -100,7 +121,7 @@ impl YouTube {
             let concurrent = video["liveStreamingDetails"]["concurrentViewers"]
                 .as_str()
                 .and_then(|v| v.parse::<u64>().ok());
-            out.push(json!({"type":"audience","sample":{"platform":"youtube","channel_id":self.video,"stream_id":self.video,"observed_at_ms":now,"concurrent":concurrent,"offline":offline,"unique":null}}));
+            out.push(json!({"type":"audience","sample":{"platform":"youtube","channel_id":self.channel,"stream_id":self.video,"observed_at_ms":now,"concurrent":concurrent,"offline":offline,"unique":null}}));
         }
         if !self.chat.is_empty() {
             let capabilities: Vec<_> = [
@@ -111,7 +132,7 @@ impl YouTube {
             .into_iter()
             .flatten()
             .collect();
-            out.push(json!({"type":"channel","channel":{"id":self.video,"label":format!("YouTube / {}",video["snippet"]["title"].as_str().unwrap_or(&self.video)),"capabilities":capabilities,"constraints":{"chat.max_chars":200}}}));
+            out.push(json!({"type":"channel","channel":{"id":self.channel,"stream_id":self.video,"label":format!("YouTube / {}",video["snippet"]["title"].as_str().unwrap_or(&self.video)),"capabilities":capabilities,"constraints":{"chat.max_chars":200}}}));
             if !enabled("read_chat") {
                 out.push(status("connected", None));
             } else if changed {

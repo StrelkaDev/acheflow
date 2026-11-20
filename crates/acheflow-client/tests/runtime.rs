@@ -13,6 +13,8 @@ fn runtime_with_actions(
 ) -> ProviderRuntime {
     let manifest:GuestManifest=serde_json::from_value(json!({"id":id,"name":id,"api_version":2,"module":"fixture.wasm","execution_side":"client","capabilities":if network.is_some(){vec!["http"]}else{vec!["channel","chat","delivery","poll","donation","interaction"]},"services":network.iter().collect::<Vec<_>>(),"subscriptions":["chat.send"],"supported_actions":actions})).unwrap();
     let connection = Connection {
+        channel_label: None,
+        stream_id: None,
         id: "local".into(),
         provider: id.into(),
         account_id: "bot".into(),
@@ -129,6 +131,8 @@ async fn real_provider_guests_keep_oauth_and_authorization_ui_on_the_client() {
             client_id: "client".into(),
             generation: 1,
             connection: Connection {
+                channel_label: None,
+                stream_id: None,
                 id: "local".into(),
                 provider: id.into(),
                 account_id: "bot".into(),

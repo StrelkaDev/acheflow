@@ -46,6 +46,8 @@ async fn two_local_installations_run_real_wasm_without_any_server_catalog() {
                 client_id: id.clone(),
                 generation: 1,
                 connection: Connection {
+                    channel_label: None,
+                    stream_id: None,
                     id: "local".into(),
                     provider: id,
                     account_id: "bot".into(),

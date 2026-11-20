@@ -108,6 +108,8 @@ pub(crate) fn ClientExecutionPanel(id: String) -> Element {
                             client_id: actor.clone(),
                             generation: next,
                             connection: Connection {
+                                channel_label: None,
+                                stream_id: None,
                                 id: "pending".into(),
                                 provider: id.clone(),
                                 account_id: local.account_id(),
@@ -319,6 +321,8 @@ pub(super) async fn run(
                         .filter_map(|v| serde_json::from_value::<Capability>(v.clone()).ok())
                         .collect();
                     let mut connection = Connection {
+                        channel_label: None,
+                        stream_id: None,
                         id: current.id.clone(),
                         provider: id.into(),
                         account_id: current.account_id.clone(),
@@ -328,7 +332,11 @@ pub(super) async fn run(
                             .into(),
                         capabilities,
                     };
+                    connection.stream_id = channel["stream_id"].as_str().map(str::to_owned);
+                    connection.channel_label = channel["label"].as_str().map(str::to_owned);
                     if current.channel_id != connection.channel_id
+                        || current.stream_id != connection.stream_id
+                        || current.channel_label != connection.channel_label
                         || current.capabilities != connection.capabilities
                         || registration.generation.is_none()
                     {

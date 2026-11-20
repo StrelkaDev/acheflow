@@ -1,3 +1,4 @@
+mod permissions;
 mod personal_chat;
 use crate::{
     control_client::ControlClient,
@@ -213,9 +214,6 @@ pub fn ChatPanel() -> Element {
     }
 }
 
-fn chat_activation(event: &KeyboardEvent) -> bool {
-    event.key() == Key::Named(NamedKey::Enter) || event.key() == Key::Character(" ".into())
-}
 fn delivery_symbol(state: &str) -> &'static str {
     match state {
         "sent" => "✓",
@@ -398,7 +396,7 @@ pub fn ExtensionsPage() -> Element {
             for status in extensions {
                 ExtensionCard {key:"server:{server}:{workspace.id}:{status.id}", id:status.id, name:status.name, busy:(live.busy)()}
             }
-            WorkspaceCapabilities {}
+            permissions::WorkspacePermissions {}
             crate::extension_packages::Packages {server:true}
             if scope()==1 {crate::client_authorization::legacy_accounts::LegacyAccounts {}}
         }
@@ -600,56 +598,6 @@ fn ClientIntegrationCard(id: String, name: String) -> Element {
             }}
         }
     }
-}
-fn capability_names<'a>(
-    values: impl IntoIterator<Item = &'a acheflow_extension_api::client_execution::Capability>,
-) -> String {
-    values
-        .into_iter()
-        .map(|c| {
-            serde_json::to_value(c)
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_owned()
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-#[component]
-fn WorkspaceCapabilities() -> Element {
-    let mut expanded = use_signal(|| false);
-    use acheflow_extension_api::client_execution::Capability;
-    let client = use_context::<ControlClient>();
-    let catalog = use_context::<Rc<ClientCatalog>>();
-    let state = client.state.read();
-    let current = state
-        .as_ref()
-        .filter(|s| s.workspace_id.as_deref() == Some(client.project.read().id.as_str()));
-    rsx! {section{class:"panel workspace-capabilities",
-        div{class:"panel-heading",div{h2{"Advanced permissions"}p{class:"form-help","Channel grants and connected executors."}}crate::server_settings::ActionButton{expanded:Some(expanded()),onclick:move |_|expanded.set(!expanded()),if expanded(){"Hide"}else{"Review permissions"}}}
-        div{class:"padded",hidden:!expanded(),
-            if let Some(state)=current {
-                h3{"Saved permissions"}
-                if state.client_capabilities.is_empty(){p{class:"form-help","No client capabilities are authorized."}}
-                for (index, grant) in state.client_capabilities.iter().enumerate() {
-                    div{class:"audience-row",strong{"{grant.provider} / {grant.channel_id}"}p{"Account: {grant.account_id}"}p{class:"form-help","{capability_names(&grant.capabilities)}"}
-                        if !grant.capabilities.contains(&Capability::ChatSend) && catalog.installed.get(&grant.provider).is_some_and(|i|i.manifest.subscriptions.iter().any(|s|s=="chat.send")) {
-                            {
-                                let mut grants=state.client_capabilities.clone();
-                                grants[index].capabilities.insert(Capability::ChatSend);
-                                let keyboard_grants=grants.clone();
-                                rsx!{button{class:"allow-chat-send",disabled:(client.busy)(),"aria-label":format!("Allow sending to {} / {}",grant.provider,grant.channel_id),title:"Allow this account to send chat in this workspace. Platform authorization is still required.",onclick:move |_|client.command(ControlAction::SetClientCapabilities{grants:grants.clone()}),onkeydown:move |event|{if !(client.busy)() && chat_activation(&event){event.prevent_default();client.command(ControlAction::SetClientCapabilities{grants:keyboard_grants.clone()});}},"Allow sending"}}
-                            }
-                        }
-                    }
-                }
-                h3{"Connected executors"}
-                if state.client_executors.is_empty(){p{class:"form-help","No executor is connected to this workspace."}}
-                for executor in &state.client_executors {for connection in &executor.connections {div{class:"audience-row",strong{"{executor.client_id} · {connection.provider} / {connection.channel_id}"}p{class:"form-help","{capability_names(&connection.capabilities)}"}}}}
-            }else{p{class:"form-help","Apply this workspace to inspect its server permissions and connected executors."}}
-        }
-    }}
 }
 
 fn money(amount: u64, places: u8) -> String {

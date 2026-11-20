@@ -33,6 +33,7 @@ pub struct DirectAction {
     guest: Guest,
     account: String,
     channel: String,
+    stream: Option<String>,
     secrets: Secrets,
     storage: Value,
     prepared: bool,
@@ -63,6 +64,7 @@ impl DirectAction {
             guest,
             account,
             channel: channel.into(),
+            stream: None,
             secrets: Default::default(),
             storage: Value::Null,
             prepared: false,
@@ -73,6 +75,17 @@ impl DirectAction {
     }
     pub fn account_id(&self) -> &str {
         &self.account
+    }
+    /// Pin a one-shot write to the selected broadcast, independently of channel permission.
+    pub fn with_stream(mut self, stream: Option<&str>) -> Result<Self, String> {
+        if self.prepared || self.used {
+            return Err("The action target is already fixed.".into());
+        }
+        if stream.is_some_and(|id| !acheflow_extension_api::integration::valid_id(id, 128)) {
+            return Err("Invalid broadcast identity.".into());
+        }
+        self.stream = stream.map(str::to_owned);
+        Ok(self)
     }
     pub async fn prepare(&mut self, http: &mut impl ActionHttp) -> Result<(), String> {
         if self.used || self.prepared {
@@ -122,7 +135,7 @@ impl DirectAction {
         self.storage = state.storage;
         let output = self
             .read_turn(
-                json!({"type":"prepare_action","channel_id":self.channel}),
+                json!({"type":"prepare_action","channel_id":self.channel,"stream_id":self.stream}),
                 http,
             )
             .await?;
@@ -131,6 +144,13 @@ impl DirectAction {
             .find(|e| e["type"] == "channel" && e["channel"]["id"] == self.channel)
             .map(|e| &e["channel"])
             .ok_or("The platform could not resolve the selected channel.")?;
+        if self
+            .stream
+            .as_ref()
+            .is_some_and(|id| channel["stream_id"].as_str() != Some(id))
+        {
+            return Err("The selected broadcast changed before sending.".into());
+        }
         if !channel["capabilities"]
             .as_array()
             .is_some_and(|caps| caps.iter().any(|cap| cap == "chat.send"))

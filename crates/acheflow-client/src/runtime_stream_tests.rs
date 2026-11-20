@@ -17,6 +17,8 @@ fn runtime(id: &str, channel: &str) -> ProviderRuntime {
             client_id: "client".into(),
             generation: 1,
             connection: Connection {
+                channel_label: None,
+                stream_id: None,
                 id: "local".into(),
                 provider: id.into(),
                 account_id: "account".into(),
@@ -32,10 +34,10 @@ fn runtime(id: &str, channel: &str) -> ProviderRuntime {
 
 #[tokio::test]
 async fn real_guests_receive_only_owned_streams_and_stop_discards_late_messages() {
-    let mut youtube = runtime("youtube", "video");
+    let mut youtube = runtime("youtube", "stable-channel");
     let mut twitch = runtime("twitch", "b");
     youtube.guest.call(json!({"type":"start","config":{"video_id":"video"},"secrets":["access_token"],"now_ms":1000})).unwrap();
-    youtube.guest.call(json!({"type":"http_result","id":"video","status":200,"now_ms":1000,"payload":{"items":[{"id":"video","liveStreamingDetails":{"activeLiveChatId":"chat"}}]}})).unwrap();
+    youtube.guest.call(json!({"type":"http_result","id":"video","status":200,"now_ms":1000,"payload":{"items":[{"id":"video","snippet":{"channelId":"stable-channel"},"liveStreamingDetails":{"activeLiveChatId":"chat"}}]}})).unwrap();
     let opened = youtube
         .guest
         .call(json!({"type":"tick","now_ms":1000}))

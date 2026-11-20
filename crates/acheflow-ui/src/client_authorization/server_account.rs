@@ -336,6 +336,7 @@ mod interaction_tests {
             state: use_signal(|| {
                 Some(acheflow_media_api::control::ControlSnapshot {
                     channels: vec![acheflow_extension_api::integration::Channel {
+                        stream_id: None,
                         extension_id: "vklive".into(),
                         id: "channel".into(),
                         label: "Fixture channel".into(),

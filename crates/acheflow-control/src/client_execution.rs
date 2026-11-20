@@ -77,6 +77,14 @@ fn validate_registration(request: &ClientRegistration) -> Result<(), String> {
         if !valid_provider_id(&connection.provider)
             || !identity(&connection.account_id)
             || !identity(&connection.channel_id)
+            || connection
+                .stream_id
+                .as_ref()
+                .is_some_and(|id| !identity(id))
+            || connection
+                .channel_label
+                .as_ref()
+                .is_some_and(|label| label.trim().is_empty() || label.len() > 256)
         {
             return Err("invalid_argument: provider account/channel identity".into());
         }

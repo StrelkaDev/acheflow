@@ -6,6 +6,8 @@ pub struct AuthorizeDirectAction {
     pub workspace_id: String,
     pub provider: String,
     pub channel_id: String,
+    #[serde(default)]
+    pub stream_id: Option<String>,
     pub operation: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -17,6 +19,8 @@ pub struct DirectActionPermission {
     pub workspace_id: String,
     pub provider: String,
     pub channel_id: String,
+    #[serde(default)]
+    pub stream_id: Option<String>,
     pub server_time_ms: u64,
     pub valid_until_ms: u64,
 }

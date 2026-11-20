@@ -218,7 +218,14 @@ pub struct Workspace {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub server_integrations:
         std::collections::BTreeMap<String, crate::server_provider::ServerIntegration>,
-    #[serde(default)]
+    /// Stable channel policy. Legacy `client_capabilities` was keyed by broadcasts and is discarded.
+    #[serde(
+        default,
+        rename = "channel_permissions",
+        alias = "client_capabilities",
+        serialize_with = "save_channel_permissions",
+        deserialize_with = "load_channel_permissions"
+    )]
     pub client_capabilities: Vec<acheflow_extension_api::client_execution::CapabilityGrant>,
     pub horizontal: Stream,
     pub vertical: Stream,
@@ -226,6 +233,44 @@ pub struct Workspace {
     pub scenes: Vec<Scene>,
     pub horizontal_scene: Option<u32>,
     pub vertical_scene: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChannelPermissions {
+    version: u32,
+    grants: Vec<acheflow_extension_api::client_execution::CapabilityGrant>,
+}
+fn save_channel_permissions<S: serde::Serializer>(
+    grants: &[acheflow_extension_api::client_execution::CapabilityGrant],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    #[derive(Serialize)]
+    struct Policy<'a> {
+        version: u32,
+        grants: &'a [acheflow_extension_api::client_execution::CapabilityGrant],
+    }
+    Policy { version: 1, grants }.serialize(serializer)
+}
+fn load_channel_permissions<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<acheflow_extension_api::client_execution::CapabilityGrant>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Saved {
+        Channel(ChannelPermissions),
+        Legacy(Vec<serde::de::IgnoredAny>),
+    }
+    match Saved::deserialize(deserializer)? {
+        Saved::Channel(policy) if policy.version == 1 => Ok(policy.grants),
+        Saved::Channel(_) => Err(serde::de::Error::custom(
+            "Unsupported channel permission version",
+        )),
+        Saved::Legacy(discarded) => {
+            drop(discarded);
+            Ok(Vec::new())
+        }
+    }
 }
 impl Default for Workspace {
     fn default() -> Self {
@@ -752,6 +797,33 @@ pub fn normalize_server_url(address: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn legacy_broadcast_permissions_are_discarded_but_channel_permissions_round_trip() {
+        use acheflow_extension_api::client_execution::{Capability, CapabilityGrant};
+        let grant = CapabilityGrant {
+            provider: "alpha".into(),
+            account_id: "account".into(),
+            channel_id: "channel".into(),
+            capabilities: [Capability::ChatRead].into(),
+        };
+        let mut saved = serde_json::to_value(Workspace::default()).unwrap();
+        saved.as_object_mut().unwrap().remove("channel_permissions");
+        saved["client_capabilities"] = serde_json::json!([grant.clone()]);
+        let mut workspace: Workspace = serde_json::from_value(saved).unwrap();
+        assert!(workspace.client_capabilities.is_empty());
+        workspace.client_capabilities.push(grant.clone());
+        let saved = serde_json::to_value(&workspace).unwrap();
+        assert!(saved.get("client_capabilities").is_none());
+        assert_eq!(
+            saved["channel_permissions"],
+            serde_json::json!({"version":1,"grants":[grant]})
+        );
+        assert_eq!(
+            serde_json::from_value::<Workspace>(saved).unwrap(),
+            workspace
+        );
+    }
+
     use super::*;
 
     #[test]

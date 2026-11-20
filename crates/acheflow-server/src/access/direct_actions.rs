@@ -14,6 +14,10 @@ pub(super) async fn authorize(
     if request.operation != "chat.send"
         || !acheflow_extension_api::integration::valid_provider_id(&request.provider)
         || !acheflow_extension_api::integration::valid_id(&request.channel_id, 128)
+        || request
+            .stream_id
+            .as_ref()
+            .is_some_and(|id| !acheflow_extension_api::integration::valid_id(id, 128))
     {
         return Err(Error(422, "Unsupported direct action or channel."));
     }
@@ -21,11 +25,11 @@ pub(super) async fn authorize(
         return Err(Error(409, "The server workspace changed."));
     }
     let snapshot = access.host.snapshot(0, 0);
-    if !snapshot
-        .channels
-        .iter()
-        .any(|c| c.extension_id == request.provider && c.id == request.channel_id)
-    {
+    if !snapshot.channels.iter().any(|c| {
+        c.extension_id == request.provider
+            && c.id == request.channel_id
+            && c.stream_id == request.stream_id
+    }) {
         return Err(Error(
             409,
             "The selected shared channel is no longer connected.",
@@ -39,6 +43,7 @@ pub(super) async fn authorize(
         workspace_id: request.workspace_id,
         provider: request.provider,
         channel_id: request.channel_id,
+        stream_id: request.stream_id,
         server_time_ms: current,
         valid_until_ms: current + 5000,
     }))
@@ -52,6 +57,7 @@ mod tests {
             workspace_id: workspace.into(),
             provider: "alpha".into(),
             channel_id: "channel".into(),
+            stream_id: None,
             operation: "chat.send".into(),
         }
     }
@@ -86,6 +92,7 @@ mod tests {
             .register_channel(
                 "alpha",
                 acheflow_extension_api::integration::Channel {
+                    stream_id: None,
                     id: "channel".into(),
                     extension_id: "alpha".into(),
                     label: "Shared read-only source".into(),
@@ -104,6 +111,17 @@ mod tests {
         .0;
         assert_eq!(permission.user_id, principal.0.user.id);
         assert_eq!(permission.device_id, principal.0.device.id);
+        let mut stale = request(&workspace.id);
+        stale.stream_id = Some("previous-broadcast".into());
+        assert!(
+            authorize(
+                State(access.clone()),
+                Extension(principal.clone()),
+                Json(stale)
+            )
+            .await
+            .is_err()
+        );
         assert!(!principal.server_accounts());
         assert!(
             authorize(

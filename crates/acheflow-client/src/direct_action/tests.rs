@@ -193,7 +193,8 @@ impl ActionHttp for ProviderHttp {
                         json!({"aud":"application","sub":"sender","scope":"https://www.googleapis.com/auth/youtube.force-ssl","expires_in":3600})
                     }
                     ("youtube", "video") => {
-                        json!({"items":[{"id":"target-channel","snippet":{"title":"Target"},"liveStreamingDetails":{"activeLiveChatId":"chat"}}]})
+                        assert_eq!(effect["query"]["id"], "target-broadcast");
+                        json!({"items":[{"id":"target-broadcast","snippet":{"channelId":"target-channel","title":"Target"},"liveStreamingDetails":{"activeLiveChatId":"chat"}}]})
                     }
                     ("vklive", "auth:validate" | "send-permission") => {
                         json!({"data":{"user":{"id":123,"nick":"Sender"}}})
@@ -248,6 +249,8 @@ async fn actual_provider_guests_resolve_shared_targets_and_send_as_the_local_acc
         assert_ne!(source.account_id(), "local-account");
         let mut action = source
             .direct_action(&installed.module, "target-channel")
+            .unwrap()
+            .with_stream((provider == "youtube").then_some("target-broadcast"))
             .unwrap();
         action
             .prepare(&mut http)

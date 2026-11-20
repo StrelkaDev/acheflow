@@ -30,6 +30,8 @@ fn fixture() -> (Directory, Arc<Access>, Router, String) {
                 generation: 1,
                 expires_at_ms: u64::MAX,
                 connections: vec![acheflow_extension_api::client_execution::Connection {
+                    channel_label: None,
+                    stream_id: None,
                     id: "binding".into(),
                     provider: "fixture".into(),
                     account_id: "private-account-fixture".into(),

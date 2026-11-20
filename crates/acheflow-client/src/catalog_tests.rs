@@ -96,6 +96,8 @@ fn dual_parts_are_discovered_for_the_requested_host_and_cannot_open_the_other_ho
             client_id: "actor".into(),
             generation: 1,
             connection: acheflow_extension_api::client_execution::Connection {
+                channel_label: None,
+                stream_id: None,
                 id: "channel".into(),
                 provider: id.into(),
                 account_id: "account".into(),

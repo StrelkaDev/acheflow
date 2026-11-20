@@ -13,6 +13,10 @@ impl Integrations {
     }
     pub fn register_channel(&mut self, origin: &str, mut channel: Channel) -> Result<(), String> {
         if !valid_id(&channel.id, 128)
+            || channel
+                .stream_id
+                .as_ref()
+                .is_some_and(|id| !valid_id(id, 128))
             || channel.label.is_empty()
             || channel.label.len() > 256
             || channel.capabilities.len() > 8
@@ -159,6 +163,7 @@ mod tests {
                 .register_channel(
                     origin,
                     Channel {
+                        stream_id: None,
                         id: "channel".into(),
                         extension_id: "forged".into(),
                         label: origin.into(),

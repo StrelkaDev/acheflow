@@ -104,7 +104,7 @@ fn app() -> Element {
     h.text.set(Some(draft.text));
     let visible = use_signal(|| true);
     h.visible.set(Some(visible));
-    rsx! {if visible(){Composer{channels:vec![Channel{extension_id:"alpha".into(),id:"channel".into(),label:"Read-only shared feed".into(),capabilities:vec!["chat.read".into()],constraints:Default::default()}],text:draft.text}}}
+    rsx! {if visible(){Composer{channels:vec![Channel{stream_id:None,extension_id:"alpha".into(),id:"channel".into(),label:"Read-only shared feed".into(),capabilities:vec!["chat.read".into()],constraints:Default::default()}],text:draft.text}}}
 }
 fn settle(d: &mut DioxusDocument) {
     for _ in 0..40 {

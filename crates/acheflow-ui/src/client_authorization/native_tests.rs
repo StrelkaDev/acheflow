@@ -708,6 +708,8 @@ async fn native_live_loop_publishes_real_guest_events_and_unregisters_when_cance
                 client_id: format!("studio-{provider}"),
                 generation: 1,
                 connection: Connection {
+                    channel_label: None,
+                    stream_id: None,
                     id: "pending".into(),
                     provider: provider.into(),
                     account_id: "bot".into(),
