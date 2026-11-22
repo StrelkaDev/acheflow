@@ -22,25 +22,22 @@ xcode-select --install
 brew install ffmpeg openssl@3 pkg-config
 ```
 
-Use the system's normal package management if these prerequisites are already
-installed. The macOS package workflow is exercised locally; other platforms still
-need their own packaging and native activation validation.
+The macOS camera crate uses `xcrun` to compile its AVFoundation adapter with the
+macOS SDK. Check the active toolchain with `xcrun --sdk macosx --find clang`.
+For SRT input, select an [SRT-enabled FFmpeg](ffmpeg.md#srt-input).
 
 Run the following commands from the repository root. If necessary, first run
 `source "$HOME/.cargo/env"` so Cargo, rustup and installed Rust tools are on PATH.
-
-```sh
-python3 extensions/build.py
-cargo build -p acheflow --release --locked
-```
-
-The guest builder operates offline with locked dependencies. A fresh checkout may
-need to fetch them first:
+Fetch both lockfiles before running the offline guest builder.
 
 ```sh
 cargo fetch --locked
 cargo fetch --manifest-path extensions/Cargo.toml --locked
+python3 extensions/build.py
+cargo build -p acheflow --release --locked
 ```
+
+For a macOS app bundle or ZIP, follow the [distribution build](desktop-installation.md#build-a-distribution-maintainers).
 
 ## Desktop with a local server
 
@@ -146,8 +143,8 @@ MCP has a separate authenticated loopback listener; media CORS does not grant MC
 ## First broadcast
 
 1. Create/select a workspace and connect to its server.
-2. Add an input in Live / Sources, then apply sources. Copy the generated RTMP
-   address/token into a publisher such as OBS.
+2. Add an input in **Live / Sources**, then apply sources. For an RTMP or SRT
+   publisher, macOS camera or macOS microphone, follow [source setup](live-pipeline.md#source-setup).
 3. Create a scene and add the source. Adjust layout/crop/effects; apply the scene.
 4. Set the scene mix in Live / Mixer. Track zero starts on Program; additional
    tracks need explicit routing.

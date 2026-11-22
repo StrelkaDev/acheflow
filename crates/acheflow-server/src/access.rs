@@ -320,6 +320,9 @@ async fn authorize(
         (&Method::GET, "/api/media/capabilities" | "/api/live/status") => {
             principal.any(&[P::StudioView, P::ScenesManage, P::MediaManage])
         }
+        (&Method::GET, "/api/media/cameras" | "/api/media/microphones") => {
+            principal.allows(P::MediaManage)
+        }
         (
             &Method::POST,
             "/api/media/capabilities" | "/api/live/stop" | "/api/live/output/restart",

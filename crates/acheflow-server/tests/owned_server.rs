@@ -51,6 +51,7 @@ fn config(directory: &Directory) -> LaunchConfig {
         directory: directory.0.clone(),
         http_port: http,
         rtmp_port: rtmp,
+        ffmpeg_path: None,
         allow_network: false,
         startup_timeout: Duration::from_secs(15),
     }
@@ -66,6 +67,7 @@ async fn missing_binary_is_reported_without_starting_a_process() {
         directory: directory.0.clone(),
         http_port: 21295,
         rtmp_port: 1935,
+        ffmpeg_path: None,
         allow_network: false,
         startup_timeout: Duration::from_secs(1),
     };

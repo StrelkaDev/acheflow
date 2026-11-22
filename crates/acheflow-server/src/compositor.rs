@@ -1,4 +1,9 @@
-use crate::{ingest::Input, live::RuntimeState};
+use crate::{
+    av_sync::{FormatSync, Presentation, VideoHistory},
+    ingest::Input,
+    live::RuntimeState,
+    media_monitor::RenderMonitor,
+};
 use acheflow_media_api::{
     MediaCapabilities,
     live::{FormatStatus, OutputState, OutputStatus},
@@ -26,8 +31,11 @@ pub struct RunningFormat {
     pub frames: Arc<AtomicU64>,
     pub outputs: Vec<Arc<Mutex<OutputStatus>>>,
     output_workers: Vec<OutputWorker>,
+    encoder_frame: watch::Receiver<crate::output::RenderedVideo>,
     spec: crate::output::VideoSpec,
     audio_buses: Arc<Mutex<Vec<acheflow_media_api::audio::AudioBusStatus>>>,
+    sync: Arc<FormatSync>,
+    render: Arc<Mutex<RenderMonitor>>,
     tasks: Vec<JoinHandle<()>>,
     started: Instant,
     renderer: String,
@@ -36,7 +44,7 @@ pub struct RunningFormat {
 struct OutputWorker {
     index: usize,
     config: acheflow_media_api::workspace::Output,
-    audio: broadcast::Sender<Arc<Vec<u8>>>,
+    audio: broadcast::Sender<Arc<crate::audio_mixer::PcmBlock>>,
     status: Arc<Mutex<OutputStatus>>,
     cancel: CancellationToken,
     task: Option<JoinHandle<()>>,
@@ -44,14 +52,15 @@ struct OutputWorker {
 impl OutputWorker {
     async fn stop(&mut self) {
         self.cancel.cancel();
-        if let Some(mut task) = self.task.take()
-            && tokio::time::timeout(Duration::from_secs(3), &mut task)
+        if let Some(task) = self.task.as_mut()
+            && tokio::time::timeout(Duration::from_secs(3), &mut *task)
                 .await
                 .is_err()
         {
             task.abort();
             let _ = task.await;
         }
+        self.task = None;
     }
 }
 impl RunningFormat {
@@ -69,6 +78,7 @@ impl RunningFormat {
         {
             let mut status = worker.status.lock().unwrap();
             status.state = OutputState::Starting;
+            status.reconnect_attempt = None;
             status.error = None;
             status.frames = 0;
             status.sent_bytes = 0;
@@ -79,8 +89,8 @@ impl RunningFormat {
             worker.config.clone(),
             self.spec.clone(),
             capabilities,
-            self.frame.clone(),
-            worker.audio.subscribe(),
+            self.encoder_frame.clone(),
+            worker.audio.clone(),
             worker.status.clone(),
             worker.cancel.clone(),
         )
@@ -102,6 +112,12 @@ impl RunningFormat {
     pub fn status(&self) -> FormatStatus {
         FormatStatus {
             audio_buses: self.audio_buses.lock().unwrap().clone(),
+            audio_sync: self.sync.audio.lock().unwrap().clone(),
+            render_load: self
+                .render
+                .lock()
+                .unwrap()
+                .status(Instant::now(), self.spec.fps),
             time_seconds: self.started.elapsed().as_secs_f64(),
             renderer: Some(self.renderer.clone()),
             error: self.error.lock().unwrap().clone(),
@@ -147,6 +163,10 @@ pub async fn start(
         stream.base.width,
         stream.base.height,
     )));
+    let (encoder_tx, encoder_frame) = watch::channel(crate::output::RenderedVideo {
+        image: video_rx.borrow().clone(),
+        rendered_at: Instant::now(),
+    });
     let audio_buses = Arc::new(Mutex::new(vec![]));
     let frames = Arc::new(AtomicU64::new(0));
     let video_runtime = runtime.clone();
@@ -156,6 +176,10 @@ pub async fn start(
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let error = Arc::new(Mutex::new(None));
     let video_error = error.clone();
+    let sync = Arc::new(FormatSync::default());
+    let video_sync = sync.clone();
+    let render = Arc::new(Mutex::new(RenderMonitor::default()));
+    let video_render = render.clone();
     let started = Instant::now();
     let visual_epoch_ms = crate::control::now_ms();
     let size = stream.base.clone();
@@ -170,15 +194,18 @@ pub async fn start(
         let _ = ready_tx.send(Ok(renderer.backend()));
         let period = Duration::from_secs_f64(1. / fps as f64);
         let mut deadline = Instant::now();
+        let mut history = VideoHistory::default();
         while !video_cancel.is_cancelled() {
+            let render_start = Instant::now();
             let workspace = video_runtime.workspace.read().unwrap().clone();
             if let Some(workspace) = workspace {
                 let inputs = video_runtime.inputs.lock().unwrap().clone();
-                let mut frame = gpu_frame(
+                let (mut frame, mut presented) = gpu_frame(
                     &workspace,
                     orientation,
                     &inputs,
                     started.elapsed().as_secs_f64(),
+                    &mut history,
                 );
                 frame.epoch_ms = visual_epoch_ms;
                 if let Some(services) = video_runtime.visual_services.read().unwrap().as_ref() {
@@ -187,13 +214,38 @@ pub async fn start(
                         visual_epoch_ms.saturating_add((frame.time * 1000.) as u64),
                     );
                 }
-                match renderer.render(&frame) {
+                let result = renderer.render(&frame);
+                let shown = Instant::now();
+                video_render.lock().unwrap().record(
+                    shown,
+                    shown.duration_since(render_start),
+                    result.is_ok(),
+                );
+                match result {
                     Ok(image) => {
-                        video_tx.send_replace(Arc::new(image));
+                        let image = Arc::new(image);
+                        #[cfg(test)]
+                        crate::av_timing_tests::trace_image(
+                            "compositor",
+                            orientation,
+                            shown,
+                            presented.get(&1).and_then(|source| source.pts),
+                            &image,
+                        );
+                        video_tx.send_replace(image.clone());
+                        encoder_tx.send_replace(crate::output::RenderedVideo {
+                            image,
+                            rendered_at: shown,
+                        });
+                        for timing in presented.values_mut() {
+                            timing.shown = shown;
+                        }
+                        *video_sync.presented.lock().unwrap() = presented;
                         video_frames.fetch_add(1, Ordering::Relaxed);
                         *video_error.lock().unwrap() = None;
                     }
                     Err(error) => {
+                        *video_sync.presented.lock().unwrap() = HashMap::new();
                         *video_error.lock().unwrap() = Some(error);
                     }
                 }
@@ -220,15 +272,20 @@ pub async fn start(
     let mut running = RunningFormat {
         orientation,
         cancel,
-        frame: video_rx.clone(),
+        frame: video_rx,
+        encoder_frame,
         frames,
         outputs: vec![],
         output_workers: vec![],
         spec: crate::output::VideoSpec {
             base: stream.base.clone(),
             fps,
+            #[cfg(test)]
+            orientation,
         },
         audio_buses: audio_buses.clone(),
+        sync: sync.clone(),
+        render,
         tasks: vec![video],
         started,
         renderer,
@@ -241,7 +298,7 @@ pub async fn start(
         .enumerate()
         .filter(|(_, o)| o.enabled)
     {
-        let (audio_tx, audio_rx) = broadcast::channel(8);
+        let (audio_tx, _) = broadcast::channel(8);
         let status = Arc::new(Mutex::new(OutputStatus {
             index,
             sent_bytes: 0,
@@ -253,6 +310,10 @@ pub async fn start(
             audio_bus: None,
             audio_meter: Default::default(),
             state: OutputState::Starting,
+            reconnect_attempt: None,
+            repeated_video_frames: 0,
+            inserted_audio_blocks: 0,
+            reconnects: 0,
             frames: 0,
             error: None,
         }));
@@ -262,10 +323,12 @@ pub async fn start(
             crate::output::VideoSpec {
                 base: stream.base.clone(),
                 fps,
+                #[cfg(test)]
+                orientation,
             },
             capabilities,
-            video_rx.clone(),
-            audio_rx,
+            running.encoder_frame.clone(),
+            audio_tx.clone(),
             status.clone(),
             output_cancel.clone(),
         )
@@ -299,6 +362,7 @@ pub async fn start(
         orientation,
         destinations,
         audio_buses,
+        sync,
         running.cancel.clone(),
     )));
     Ok(running)
@@ -309,51 +373,73 @@ fn gpu_frame(
     orientation: Orientation,
     inputs: &HashMap<u32, Arc<Input>>,
     time: f64,
-) -> acheflow_composition::gpu::SceneFrame {
+    history: &mut VideoHistory,
+) -> (
+    acheflow_composition::gpu::SceneFrame,
+    HashMap<u32, Presentation>,
+) {
     use acheflow_composition::gpu::{SceneFrame, SourceFrame};
-    SceneFrame {
-        source_documents: Default::default(),
-        epoch_ms: 0,
-        scene: workspace
-            .scenes
-            .iter()
-            .find(|s| Some(s.id) == workspace.active(orientation))
-            .cloned()
-            .unwrap_or(Scene {
-                id: 0,
-                name: "Empty".into(),
-                orientation,
-                layers: vec![],
-                audio: Default::default(),
-                spatial: None,
-            }),
-        size: workspace.stream(orientation).base.clone(),
-        time,
-        inputs: inputs
-            .iter()
-            .filter_map(|(id, input)| {
-                if !input.connected.load(Ordering::Relaxed) {
-                    return None;
-                }
-                let frame = input.frame.read().unwrap();
-                frame
-                    .as_ref()
-                    .filter(|f| f.received.elapsed() < Duration::from_secs(2))
-                    .map(|f| {
-                        (
-                            *id,
-                            SourceFrame {
-                                image: f.image.clone(),
-                                size: acheflow_media_api::workspace::Resolution {
-                                    width: f.image.width(),
-                                    height: f.image.height(),
-                                },
-                            },
-                        )
-                    })
-            })
-            .collect(),
-    }
+    let scene = workspace
+        .scenes
+        .iter()
+        .find(|s| Some(s.id) == workspace.active(orientation))
+        .cloned()
+        .unwrap_or(Scene {
+            id: 0,
+            name: "Empty".into(),
+            orientation,
+            layers: vec![],
+            audio: Default::default(),
+            spatial: None,
+        });
+    let now = Instant::now();
+    history.retain(|id| {
+        scene.audio.video_delay_ms(id) > 0
+            && inputs
+                .get(&id)
+                .is_some_and(|input| input.connected.load(Ordering::Acquire))
+    });
+    let mut timing = HashMap::new();
+    let sources = inputs
+        .iter()
+        .filter_map(|(&id, input)| {
+            if !input.connected.load(Ordering::Acquire) {
+                return None;
+            }
+            let frame = input.frame.read().unwrap().clone()?;
+            if frame.generation != input.generation.load(Ordering::Acquire)
+                || now.saturating_duration_since(frame.received) >= Duration::from_secs(2)
+            {
+                return None;
+            }
+            let (frame, presented) = history.select(id, frame, scene.audio.video_delay_ms(id), now);
+            // Expose timing only for sources that enter this scene.
+            if scene.visual_layers().any(|layer| layer.source_id == id) {
+                timing.insert(id, presented);
+            }
+            Some((
+                id,
+                SourceFrame {
+                    size: acheflow_media_api::workspace::Resolution {
+                        width: frame.image.width(),
+                        height: frame.image.height(),
+                    },
+                    image: frame.image,
+                },
+            ))
+        })
+        .collect();
+    (
+        SceneFrame {
+            source_documents: Default::default(),
+            epoch_ms: 0,
+            scene,
+            size: workspace.stream(orientation).base.clone(),
+            time,
+            inputs: sources,
+        },
+        timing,
+    )
 }
 
 #[cfg(test)]
@@ -476,11 +562,19 @@ mod tests {
         *input.metadata.lock().unwrap() = (Some(320), Some(180), Some(30.));
         let image = Arc::new(RgbImage::from_pixel(160, 90, image::Rgb([255, 0, 0])));
         *input.frame.write().unwrap() = Some(crate::ingest::VideoFrame {
+            pts: None,
+            generation: 0,
             received: Instant::now(),
             image: image.clone(),
         });
         let inputs = HashMap::from([(1, input.clone())]);
-        let frame = gpu_frame(&workspace, Orientation::Horizontal, &inputs, 0.);
+        let (frame, _) = gpu_frame(
+            &workspace,
+            Orientation::Horizontal,
+            &inputs,
+            0.,
+            &mut VideoHistory::default(),
+        );
         assert_eq!(
             frame.inputs[&1].size,
             acheflow_media_api::workspace::Resolution {
@@ -520,6 +614,8 @@ mod tests {
                 })
             };
             *input.frame.write().unwrap() = Some(crate::ingest::VideoFrame {
+                pts: None,
+                generation: 0,
                 received: Instant::now(),
                 image: Arc::new(image),
             });
@@ -552,6 +648,7 @@ mod tests {
             [0, 0, 255]
         );
         w.scenes[0].layers[1].effects.push(LayerEffect {
+            chroma_key: None,
             id: acheflow_media_api::workspace::new_entity_id(),
             shader: String::new(),
             kind: EffectKind::Opacity,
@@ -576,6 +673,8 @@ mod tests {
         let input = Arc::new(Input::new(workspace.sources[0].clone()));
         input.connected.store(true, Ordering::Relaxed);
         *input.frame.write().unwrap() = Some(crate::ingest::VideoFrame {
+            pts: None,
+            generation: 0,
             received: Instant::now(),
             image: Arc::new(RgbImage::from_pixel(16, 16, image::Rgb([255, 0, 0]))),
         });

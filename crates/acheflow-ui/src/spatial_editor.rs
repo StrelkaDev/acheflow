@@ -239,7 +239,12 @@ fn ViewportLayers(mut project: Signal<Workspace>, scene_id: u32, object_id: u64)
             })
     });
     let workspace = project.read();
-    let sources = workspace.sources.clone();
+    let sources = workspace
+        .sources
+        .iter()
+        .filter(|source| !source.kind.is_audio_only())
+        .cloned()
+        .collect::<Vec<_>>();
     let Some(object) = workspace
         .scenes
         .iter()

@@ -57,6 +57,9 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(info["CFBundleExecutable"], "acheflow")
             self.assertEqual(info["CFBundleURLTypes"][0]["CFBundleURLSchemes"], ["acheflow"])
             self.assertIn("NSUserActivityTypeBrowsingWeb", info["NSUserActivityTypes"])
+            self.assertTrue(info["NSCameraUsageDescription"])
+            self.assertTrue(info["NSMicrophoneUsageDescription"])
+            self.assertIs(info["NSCameraUseContinuityCameraDeviceType"], True)
     def test_dual_part_artifacts_are_copied_without_losing_server_only_modules(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

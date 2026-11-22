@@ -50,7 +50,32 @@ fn config(preferences: &ServerPreferences) -> Result<LaunchConfig, String> {
     config.http_port = preferences.http_port;
     config.rtmp_port = preferences.rtmp_port;
     config.allow_network = preferences.allow_network;
+    config.ffmpeg_path = preferences.ffmpeg_path.as_deref().map(PathBuf::from);
     Ok(config)
+}
+
+pub(super) fn ffmpeg_path(value: &str) -> Result<Option<String>, String> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let path = std::path::Path::new(value);
+    if !path.is_absolute() {
+        return Err("Enter an absolute path to the FFmpeg executable".into());
+    }
+    let metadata = path
+        .metadata()
+        .map_err(|_| "The FFmpeg executable was not found")?;
+    if !metadata.is_file() {
+        return Err("Select the FFmpeg executable file".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err("The selected FFmpeg file is not executable".into());
+        }
+    }
+    Ok(Some(value.to_owned()))
 }
 pub(super) fn provide(
     mut state: ServerState,

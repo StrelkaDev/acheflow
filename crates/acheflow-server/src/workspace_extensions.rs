@@ -9,7 +9,7 @@ use axum::{
     extract::State,
     routing::{post, put},
 };
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 pub fn routes(host: Arc<ControlHost>) -> Router {
     Router::new()
@@ -34,17 +34,40 @@ pub fn configure_extension(
     host: &ControlHost,
     owner: &str,
     id: &str,
-    config: &std::collections::BTreeMap<String, String>,
+    config: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     configure_public_settings(host, id, config)?;
     update_settings(host, owner, id, |settings| settings.config = config.clone())
 }
+
+pub(crate) async fn set_extension(
+    host: &Arc<ControlHost>,
+    owner: &str,
+    id: &str,
+    enabled: bool,
+    config: Option<&BTreeMap<String, String>>,
+) -> Result<(), String> {
+    if let Some(config) = config {
+        configure_public_settings(host, id, config)?;
+    }
+    extension_host::set_enabled_with_commit(host.clone(), owner, id, enabled, || {
+        update_settings(host, owner, id, |settings| {
+            if let Some(config) = config {
+                settings.config = config.clone();
+            }
+            settings.enabled = enabled;
+        })
+    })
+    .await
+}
+
 fn configure_public_settings(
     host: &ControlHost,
     id: &str,
-    config: &std::collections::BTreeMap<String, String>,
+    config: &BTreeMap<String, String>,
 ) -> Result<(), String> {
-    let extension = host.extension(id).ok_or("not_found: extension")?;
+    let installed = host.installed.read().unwrap();
+    let extension = installed.get(id).ok_or("not_found: extension")?;
     if config.len() > 32
         || config.iter().any(|(key, value)| {
             extension

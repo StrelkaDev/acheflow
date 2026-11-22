@@ -220,7 +220,7 @@ impl LiveClient {
             self.busy.set(false);
         });
     }
-    pub fn add_source(mut self) {
+    pub fn add_source(mut self) -> Option<u32> {
         let url = self
             .status
             .peek()
@@ -231,14 +231,14 @@ impl LiveClient {
             Ok(url) => url,
             Err(error) => {
                 self.error.set(Some(error));
-                return;
+                return None;
             }
         };
         let mut project = self.project.write();
         project.add_source();
-        if let Some(source) = project.sources.last_mut() {
-            source.url = url;
-        }
+        let source = project.sources.last_mut()?;
+        source.url = url;
+        Some(source.id)
     }
     pub async fn copy_text(mut self, text: String) -> bool {
         #[cfg(target_arch = "wasm32")]
@@ -276,6 +276,13 @@ impl LiveClient {
             &format!("{path}?workspace={}", self.project.read().id),
         )
         .unwrap_or_default()
+    }
+
+    pub fn srt_url(&self, port: u16) -> Result<String, String> {
+        let server = crate::media::server_url(&self.project.read(), "")?;
+        let server = reqwest::Url::parse(&server).map_err(|error| error.to_string())?;
+        let host = server.host_str().ok_or("The server address has no host.")?;
+        Ok(format!("srt://{host}:{port}?mode=caller&transtype=live"))
     }
 }
 

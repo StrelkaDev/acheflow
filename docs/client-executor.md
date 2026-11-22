@@ -218,17 +218,23 @@ work is cancelled/expired; in-flight uncertainty is retained without reassignmen
 
 | Resource | Current limit |
 | --- | --- |
-| Retained client identities | 64 |
+| Active executor identities | 64 |
+| Retained executor identities, including active ones | 512 |
 | Connections per registration | 16 |
-| Retained workspace policies / grants per policy | 64 / 64 |
+| Loaded workspace policies / grants per policy | 64 / 64 |
 | Retained instructions | 512 |
 | Instructions per claim | 1–64 |
 | Registration heartbeat lifetime | 30 seconds |
+| Retired registration retention | Ten minutes |
 | Maximum instruction lifetime | Five minutes |
 | Intent retention | Ten minutes |
 
-Generation tombstones stay bounded until process restart so delayed requests cannot
-revive old authority. Intent IDs use `timestamp:unique_id`; an intent outside retention
+Expiry and withdrawal free an active slot immediately. The registry remembers the
+last generation for ten minutes after retirement and rejects new identities when
+the history is full until entries age out. After that window the registry has no
+previous generation for the identity. Withdrawing a workspace also releases its
+loaded policy. The server reloads the policy from saved workspace settings when
+needed. Intent IDs use `timestamp:unique_id`; an intent outside retention
 is rejected instead of silently becoming new work. Exclusive claims are bound to
 actor, generation and connection. Changed payloads cannot reuse an existing intent;
 expired/disconnected in-flight work becomes unknown without automatic reassignment.

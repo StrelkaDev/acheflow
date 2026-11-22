@@ -13,7 +13,7 @@ server workspace automatically while retaining their local catalogs and drafts.
 |---|---|---|
 | Native workspace catalog, selected workspace and client preferences | `~/.acheflow/workspaces.json`, overridden by `ACHEFLOW_WORKSPACE_FILE` | Loaded at client startup; edits auto-save through temporary-file replacement. Unix files are owner-only (`0600`). Parent directories are created. |
 | Browser workspace catalog, selected workspace and client preferences | localStorage key `acheflow.workspaces.v1`, scoped to the browser profile and origin | Loaded on page startup; edits auto-save. A different scheme/host/port has a separate catalog. |
-| Workspace server address, RTMP inputs/keys, scenes, outputs, audio, server logic `extensions`, local integration `client_extensions`, `client_capabilities` policy and `edit_revision` | Each workspace entry in the client catalog; also in workspace JSON exports | Kept independently for each workspace. Authenticated clients follow the server configuration; export/import also transfers independent local drafts. |
+| Workspace server address, sources, stream keys and passphrases, scenes, outputs, audio, server logic `extensions`, local integration `client_extensions`, `client_capabilities` policy and `edit_revision` | Each workspace entry in the client catalog; also in workspace JSON exports | Kept independently for each workspace. Authenticated clients follow the server configuration; export/import also transfers independent local drafts. Camera and microphone IDs refer to devices on the configured server. |
 | Background animation | Catalog `preferences.background_animation` | Shared across workspaces in this client catalog, restored after reload/restart. Old catalogs default to enabled. Excluded from workspace-only exports. |
 | Server workspace configuration, capability policy and edit revision | `<config-stem>.workspace.json`, beside the selected server config | Apply and configuration commands save atomically before publishing edits. Restart restores the same identity/revision without starting inputs, outputs or integrations. Deactivation retains the saved configuration. Unix file mode is `0600`. |
 | HTTP/RTMP bind settings and TLS certificate/key **paths** | `acheflow-server.json` relative to the server working directory; `--config` or `ACHEFLOW_CONFIG` selects another file | Loaded at server startup. Saving creates missing parent directories and atomically replaces the file. Listener changes need a restart. |
@@ -24,7 +24,7 @@ server workspace automatically while retaining their local catalogs and drafts.
 | Live client registrations, leases, receipts, chat/session state | Process memory | Not restored as live authority. Reconnect/re-register using a new generation; do not replay uncertain external sends. |
 | Native macOS committed provider accounts/application secrets | Keychain, scoped to server/workspace/extension/application | Local account panels restore matching records; Disconnect removes them. No plaintext fallback. Other native vault adapters remain unfinished. |
 | Browser account credentials and runtime opaque handles | Local process/session memory | Browser reload/disposal loses credentials. A native execution runtime must explicitly receive a matching local account. Only explicit trusted-server connection copies committed credentials to its vault. Values never enter workspace JSON or public MCP DTOs. |
-| Desktop server startup/exit policy and ports | Catalog `preferences.server` | Shared across this catalog; excluded from workspace-only exports. The owned server configuration lives in sibling `server/`. |
+| Desktop server startup/exit policy, ports and FFmpeg executable override | Catalog `preferences.server` | Shared across this catalog; excluded from workspace-only exports. The owned server configuration lives in sibling `server/`. |
 
 A workspace import through **Add from file** creates a new workspace identity.
 Update any executor endpoint's pinned `workspace_id` before using that imported copy.
@@ -38,7 +38,12 @@ export is required before submitting it to the current server.
 new source/output/extension drafts have been applied to the server. Client integration fields and toggles auto-save locally in `client_extensions`.
 Full **Apply workspace** / Start send a server projection that excludes this map.
 Server logic `extensions` settings are included in Apply and their enable/disable
-commands. The server rejects nonempty client integration maps submitted directly.
+commands. An enable/disable command validates the installation and supplied public
+settings, and loads the WASM guest before saving when enabling. The settings and
+enablement share one edit revision. Validation, load or save failure preserves the
+last saved settings and any running instance. A failure while handling guest
+events after activation is reported in runtime status. The server rejects
+nonempty client integration maps submitted directly.
 Known installed providers migrate from the older shared `extensions` map when the
 client loads/imports a workspace, without overwriting newer local preferences.
 An enabled client card can authorize a local account; live server capabilities

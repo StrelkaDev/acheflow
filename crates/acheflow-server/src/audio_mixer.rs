@@ -1,4 +1,5 @@
 //! Fixed-gain stereo scene buses and bounded timestamp-based audio playout.
+use crate::av_sync::{FormatSync, PresentationClock, audio_target};
 use acheflow_media_api::audio::{AUDIO_SAMPLES, AudioMeter, OutputAudio, SceneAudio, TrackKey};
 use std::collections::BTreeMap;
 
@@ -96,6 +97,23 @@ mod tests {
     fn constant(left: i16, right: i16) -> Vec<i16> {
         [left, right].repeat(AUDIO_SAMPLES / 2)
     }
+
+    #[test]
+    fn microphone_audio_needs_a_send_and_no_video_layer() {
+        let key = TrackKey {
+            source_id: 1,
+            track_id: 0,
+        };
+        let pcm = BTreeMap::from([(key, constant(1000, 1000))]);
+        let mut mixer = SceneAudio::default();
+        assert_eq!(render_buses(&mixer, [], &pcm)[&1].meter.peak, [0.; 2]);
+        mixer.strips.push(AudioStrip::new(key, true));
+        assert_eq!(
+            render_buses(&mixer, [], &pcm)[&1].meter.peak,
+            [1000. / 32768.; 2]
+        );
+    }
+
     #[test]
     fn playout_preserves_timestamps_gaps_and_bounds_latency() {
         let mut queue = Playout::default();
@@ -116,13 +134,16 @@ mod tests {
         let pcm = queue.render(1440);
         assert_eq!(pcm[0], 12);
         assert_eq!(pcm[960], 34);
-        assert!(queue.render(10000).iter().all(|s| *s == 0));
+        assert!(queue.render(48_000).iter().all(|s| *s == 0));
         assert!(queue.frames.is_empty());
         for n in 0..100 {
             queue.push(frame(n * 960, 1));
         }
-        assert_eq!(queue.frames.len(), 16);
-        assert_eq!(queue.frames.front().unwrap().pts, 84 * 960);
+        assert_eq!(queue.frames.len(), MIX_HISTORY_BLOCKS);
+        assert_eq!(
+            queue.frames.front().unwrap().pts,
+            (100 - MIX_HISTORY_BLOCKS as i64) * 960
+        );
     }
     #[test]
     fn buses_keep_stereo_and_only_receive_their_selected_strips() {
@@ -223,6 +244,8 @@ mod tests {
 }
 
 /// Bounded PCM timeline. Missing samples become silence; old data never adds latency.
+const MIX_HISTORY_BLOCKS: usize = 48;
+const USED_PCM_HISTORY_SAMPLES: i64 = 28_800;
 #[derive(Default)]
 struct Playout {
     frames: std::collections::VecDeque<std::sync::Arc<crate::audio_input::AudioFrame>>,
@@ -233,9 +256,14 @@ impl Playout {
             return;
         }
         self.frames.push_back(frame);
-        while self.frames.len() > 16 {
+        while self.frames.len() > MIX_HISTORY_BLOCKS {
             self.frames.pop_front();
         }
+    }
+    fn has_samples_at(&self, pts: i64) -> bool {
+        self.frames
+            .iter()
+            .any(|frame| frame.pts <= pts && pts < frame.pts + (frame.samples.len() / 2) as i64)
     }
     fn render(&mut self, pts: i64) -> Vec<i16> {
         use acheflow_media_api::audio::AUDIO_FRAMES;
@@ -243,7 +271,7 @@ impl Playout {
         while self
             .frames
             .front()
-            .is_some_and(|f| f.pts + (f.samples.len() / 2) as i64 <= pts)
+            .is_some_and(|f| f.pts + (f.samples.len() / 2) as i64 <= pts - USED_PCM_HISTORY_SAMPLES)
         {
             self.frames.pop_front();
         }
@@ -265,9 +293,16 @@ impl Playout {
 use acheflow_media_api::{audio::AudioBusStatus, live::OutputStatus, workspace::Orientation};
 use std::sync::{Arc, Mutex, atomic::Ordering};
 use tokio::sync::broadcast;
+#[derive(Debug)]
+pub struct PcmBlock {
+    pub sequence: u64,
+    pub scheduled: tokio::time::Instant,
+    pub bytes: Vec<u8>,
+}
+
 pub struct Destination {
     pub index: usize,
-    pub sender: broadcast::Sender<Arc<Vec<u8>>>,
+    pub sender: broadcast::Sender<Arc<PcmBlock>>,
     pub status: Arc<Mutex<OutputStatus>>,
 }
 struct Subscription {
@@ -281,26 +316,39 @@ pub async fn run(
     orientation: Orientation,
     destinations: Vec<Destination>,
     status: Arc<Mutex<Vec<AudioBusStatus>>>,
+    sync: Arc<FormatSync>,
     cancel: tokio_util::sync::CancellationToken,
 ) {
-    use acheflow_media_api::audio::AUDIO_RATE;
-    use std::time::{Duration, Instant};
-    let started = Instant::now();
-    let mut ticker = tokio::time::interval(Duration::from_millis(20));
+    use acheflow_media_api::audio::{AUDIO_RATE, TrackSyncStatus};
+    use std::time::Duration;
+    let started = tokio::time::Instant::now();
+    let mut ticker = tokio::time::interval_at(started, Duration::from_millis(20));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sources = BTreeMap::<u32, Arc<crate::ingest::Input>>::new();
     let mut clocks = BTreeMap::<u32, i64>::new();
+    let mut video_clocks = BTreeMap::<u32, PresentationClock>::new();
+    let mut generations = BTreeMap::new();
     let mut subscriptions = BTreeMap::<TrackKey, Subscription>::new();
+    let mut next_sequence = 0;
     loop {
         tokio::select! {_=cancel.cancelled()=>break,_=ticker.tick()=>{}}
-        let now = (started.elapsed().as_millis() / 20) as i64 * 960;
+        let sequence = (started.elapsed().as_millis() / 20) as u64;
+        if sequence < next_sequence {
+            continue;
+        }
+        next_sequence = sequence + 1;
+        let now = sequence as i64 * acheflow_media_api::audio::AUDIO_FRAMES as i64;
         let inputs = runtime.inputs.lock().unwrap().clone();
         sources.retain(|id, old| {
             let keep = inputs.get(id).is_some_and(|input| {
-                Arc::ptr_eq(input, old) && input.connected.load(Ordering::Acquire)
+                Arc::ptr_eq(input, old)
+                    && input.connected.load(Ordering::Acquire)
+                    && generations.get(id) == Some(&input.generation.load(Ordering::Acquire))
             });
             if !keep {
                 clocks.remove(id);
+                video_clocks.remove(id);
+                generations.remove(id);
                 subscriptions.retain(|key, _| key.source_id != *id);
             }
             keep
@@ -311,6 +359,7 @@ pub async fn run(
                 continue;
             }
             sources.insert(id, input.clone());
+            generations.insert(id, input.generation.load(Ordering::Acquire));
             for (&track_id, track) in input.audio_tracks.lock().unwrap().iter() {
                 tracks.insert(
                     TrackKey {
@@ -333,7 +382,6 @@ pub async fn run(
                 playout: Playout::default(),
             });
         }
-        let mut pcm = BTreeMap::new();
         for (key, sub) in &mut subscriptions {
             // A continuously publishing input cannot monopolize this mixer tick.
             for _ in 0..32 {
@@ -356,9 +404,6 @@ pub async fn run(
                     Err(_) => break,
                 }
             }
-            if let Some(offset) = clocks.get(&key.source_id) {
-                pcm.insert(*key, sub.playout.render(now - *offset));
-            }
         }
         let workspace = runtime.workspace.read().unwrap().clone();
         let scene = workspace.as_ref().and_then(|w| {
@@ -366,6 +411,65 @@ pub async fn run(
                 .iter()
                 .find(|s| Some(s.id) == w.active(orientation))
         });
+        let presented = sync.presented.lock().unwrap().clone();
+        let mut readouts = Vec::new();
+        let mut pcm = BTreeMap::new();
+        #[cfg(test)]
+        let mut source_sample_pts = None;
+        for (key, sub) in &mut subscriptions {
+            let Some(&fallback) = clocks.get(&key.source_id) else {
+                continue;
+            };
+            let settings =
+                scene.and_then(|scene| scene.audio.strips.iter().find(|strip| strip.key() == *key));
+            let mode = settings.map(|strip| strip.sync_mode).unwrap_or_default();
+            let offset_ms = settings
+                .map(|strip| strip.active_sync_offset())
+                .unwrap_or(0);
+            let video = presented.get(&key.source_id).copied().filter(|video| {
+                generations.get(&key.source_id) == Some(&video.generation)
+                    && video.received.elapsed() < Duration::from_secs(2)
+            });
+            let video_delay_ms = video.map(|video| video.video_delay_ms).unwrap_or(0);
+            let legacy_pts = now - fallback;
+            let video_pts = video.and_then(|video| {
+                video_clocks.entry(key.source_id).or_default().source_pts(
+                    video,
+                    started.into_std(),
+                    now,
+                )
+            });
+            let (pts, audio_delay_ms, tracking_pts) =
+                audio_target(mode, offset_ms, video_delay_ms, legacy_pts, video_pts);
+            let acquiring = mode != acheflow_media_api::audio::SyncMode::Manual
+                && video.is_some_and(|video| video.pts.is_some())
+                && !tracking_pts;
+            let buffering = acquiring || !sub.playout.has_samples_at(pts);
+            #[cfg(test)]
+            if key.source_id == 1 && key.track_id == 0 {
+                source_sample_pts = Some(pts);
+            }
+            pcm.insert(
+                *key,
+                if acquiring {
+                    vec![0; AUDIO_SAMPLES]
+                } else {
+                    sub.playout.render(pts)
+                },
+            );
+            readouts.push(TrackSyncStatus {
+                key: *key,
+                mode,
+                tracking_pts,
+                buffering,
+                offset_ms,
+                video_delay_ms,
+                audio_delay_ms,
+                video_delay_limited: video.is_some_and(|video| video.limited),
+                estimated_clock_offset_ms: video_pts.map(|pts| (pts - legacy_pts) as f64 / 48.),
+            });
+        }
+        *sync.audio.lock().unwrap() = readouts;
         let buses = scene
             .map(|s| render_buses(&s.audio, s.layers.iter().map(|l| l.source_id), &pcm))
             .unwrap_or_default();
@@ -400,7 +504,27 @@ pub async fn run(
                 out.audio_bus = bus_id;
                 out.audio_meter = meter;
             }
-            let _ = dest.sender.send(Arc::new(bytes));
+            let scheduled = started + Duration::from_millis(sequence * 20);
+            #[cfg(test)]
+            if dest.index == 0 {
+                crate::av_timing_tests::trace_pcm(
+                    "mixer",
+                    orientation.label(),
+                    scheduled.into_std(),
+                    source_sample_pts,
+                    bytes
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .copied()
+                        .map(i16::from_le_bytes),
+                );
+            }
+            let _ = dest.sender.send(Arc::new(PcmBlock {
+                sequence,
+                scheduled,
+                bytes,
+            }));
         }
     }
 }

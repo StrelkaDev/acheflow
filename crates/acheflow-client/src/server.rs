@@ -23,6 +23,7 @@ pub struct LaunchConfig {
     pub directory: PathBuf,
     pub http_port: u16,
     pub rtmp_port: u16,
+    pub ffmpeg_path: Option<PathBuf>,
     /// Opt in to HTTP/RTMP connections on all IPv4 interfaces.
     pub allow_network: bool,
     pub startup_timeout: Duration,
@@ -41,12 +42,19 @@ impl LaunchConfig {
             directory,
             http_port: 21295,
             rtmp_port: 1935,
+            ffmpeg_path: None,
             allow_network: false,
             startup_timeout: Duration::from_secs(30),
         })
     }
     fn validate(&self) -> Result<(), ServerError> {
-        if !self.binary.is_absolute() || !self.directory.is_absolute() {
+        if !self.binary.is_absolute()
+            || !self.directory.is_absolute()
+            || self
+                .ffmpeg_path
+                .as_ref()
+                .is_some_and(|path| !path.is_absolute())
+        {
             return Err(ServerError::InvalidConfig);
         }
         if [self.http_port, self.rtmp_port].contains(&0) || self.http_port == self.rtmp_port {

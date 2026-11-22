@@ -20,6 +20,212 @@ impl Drop for Directory {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+
+async fn extension_host(root: &Directory) -> (std::sync::Arc<crate::control::ControlHost>, String) {
+    let (host, workspace) = crate::control::tests::host();
+    let id = workspace.id.clone();
+    host.runtime
+        .attach_store(Store::open(root.path(), "fixture-server").unwrap())
+        .unwrap();
+    host.runtime.install(workspace, true).await.unwrap();
+    host.installed
+        .write()
+        .unwrap()
+        .get_mut("sample")
+        .unwrap()
+        .manifest
+        .settings
+        .push(acheflow_extension_api::integration::Setting {
+            id: "label".into(),
+            label: "Label".into(),
+            max_length: 16,
+            ..Default::default()
+        });
+    (host, id)
+}
+
+fn extension_edit(
+    host: &crate::control::ControlHost,
+    workspace: &str,
+    suffix: &str,
+    id: &str,
+    enabled: bool,
+    label: Option<&str>,
+) -> acheflow_media_api::control::ControlRequest {
+    use acheflow_media_api::control::{ControlAction, ControlRequest};
+    ControlRequest {
+        workspace_id: workspace.into(),
+        request_id: format!("{}:{suffix}", crate::control::now_ms()),
+        expected_revision: host.snapshot(0, 1).revision,
+        action: ControlAction::SetExtension {
+            id: id.into(),
+            enabled,
+            config: label.map(|label| [("label".into(), label.into())].into()),
+        },
+    }
+}
+
+#[tokio::test]
+async fn extension_configuration_and_enablement_share_one_durable_revision() {
+    let root = Directory::new();
+    let (host, id) = extension_host(&root).await;
+    let before = host.runtime.saved_state();
+    let initial_revision = host.snapshot(0, 1).revision;
+    for request in [
+        extension_edit(&host, &id, "unknown", "missing", false, None),
+        extension_edit(
+            &host,
+            &id,
+            "invalid",
+            "sample",
+            true,
+            Some("a value longer than 16"),
+        ),
+    ] {
+        assert!(host.execute(request).await.is_err());
+        assert_eq!(host.runtime.saved_state(), before);
+        assert_eq!(runtime(&root).saved_state(), before);
+        assert_eq!(host.snapshot(0, 1).revision, initial_revision);
+    }
+    assert!(host.guests.lock().await.is_empty());
+
+    let enable = extension_edit(&host, &id, "enable", "sample", true, Some("new"));
+    let running = host.execute(enable.clone()).await.unwrap();
+    assert_eq!(running.revision, initial_revision + 1);
+    assert_eq!(
+        host.execute(enable).await.unwrap().revision,
+        running.revision
+    );
+    let saved = runtime(&root).saved_state();
+    assert_eq!(saved, host.runtime.saved_state());
+    assert_eq!(saved.0, before.0 + 1);
+    let enabled = &saved.1.as_ref().unwrap().extensions["sample"];
+    assert!(enabled.enabled);
+    assert_eq!(enabled.config["label"], "new");
+    assert!(
+        host.services
+            .lock()
+            .unwrap()
+            .instances
+            .contains_key("sample")
+    );
+
+    let disable = extension_edit(&host, &id, "disable", "sample", false, Some("disabled"));
+    let stopped = host.execute(disable).await.unwrap();
+    assert_eq!(stopped.revision, running.revision + 1);
+    let saved = runtime(&root).saved_state();
+    assert_eq!(saved, host.runtime.saved_state());
+    let disabled = &saved.1.as_ref().unwrap().extensions["sample"];
+    assert!(!disabled.enabled);
+    assert_eq!(disabled.config["label"], "disabled");
+    assert!(host.guests.lock().await.is_empty());
+    assert!(host.services.lock().unwrap().instances.is_empty());
+}
+
+#[tokio::test]
+async fn extension_load_and_save_failures_preserve_the_last_working_state() {
+    let root = Directory::new();
+    let (host, id) = extension_host(&root).await;
+    let before = host.runtime.saved_state();
+    let initial_revision = host.snapshot(0, 1).revision;
+    let change_entry = |entry: &str| {
+        host.installed
+            .write()
+            .unwrap()
+            .get_mut("sample")
+            .unwrap()
+            .manifest
+            .entry_point = entry.into();
+    };
+    // Use the real guest with a valid but absent export to fail during instantiation.
+    change_entry("missing_export");
+    let request = extension_edit(&host, &id, "failed-load", "sample", true, Some("rejected"));
+    let failure = host.execute(request.clone()).await.unwrap_err();
+    assert_eq!(host.execute(request).await.unwrap_err(), failure);
+    assert_eq!(host.runtime.saved_state(), before);
+    assert_eq!(runtime(&root).saved_state(), before);
+    let unchanged = host.snapshot(0, 1);
+    assert_eq!(unchanged.revision, initial_revision);
+    assert_eq!(
+        unchanged
+            .extensions
+            .iter()
+            .find(|s| s.id == "sample")
+            .unwrap()
+            .state,
+        "stopped"
+    );
+    assert!(host.guests.lock().await.is_empty());
+    assert!(host.services.lock().unwrap().instances.is_empty());
+
+    change_entry("handle");
+    let enable = extension_edit(&host, &id, "enable", "sample", true, Some("working"));
+    let running = host.execute(enable).await.unwrap();
+    let instance = host.services.lock().unwrap().instances["sample"].clone();
+    let before = host.runtime.saved_state();
+
+    change_entry("missing_export");
+    let replace = extension_edit(&host, &id, "replace", "sample", true, Some("rejected"));
+    assert!(host.execute(replace).await.is_err());
+    assert_eq!(runtime(&root).saved_state(), before);
+
+    change_entry("handle");
+    let backup = root.path().with_extension("fixture-backup");
+    std::fs::rename(root.path(), &backup).unwrap();
+    std::fs::create_dir(root.path()).unwrap();
+    let disable = extension_edit(&host, &id, "failed-save", "sample", false, Some("rejected"));
+    assert!(
+        host.execute(disable)
+            .await
+            .unwrap_err()
+            .contains("Could not save workspace")
+    );
+    std::fs::remove_dir(root.path()).unwrap();
+    std::fs::rename(backup, root.path()).unwrap();
+
+    assert_eq!(host.runtime.saved_state(), before);
+    assert_eq!(runtime(&root).saved_state(), before);
+    assert_eq!(host.snapshot(0, 1).revision, running.revision);
+    assert!(host.extension_is_live(&id, "sample", &instance));
+    let stop = extension_edit(&host, &id, "stop", "sample", false, None);
+    host.execute(stop).await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelling_the_caller_does_not_strand_an_accepted_extension_edit() {
+    let root = Directory::new();
+    let (host, id) = extension_host(&root).await;
+    let request = extension_edit(&host, &id, "enable", "sample", true, Some("new"));
+    let guests = host.guests.lock().await;
+    let caller = {
+        let host = host.clone();
+        let request = request.clone();
+        tokio::spawn(async move { host.execute(request).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while host.command_lock.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    drop(guests);
+
+    let state = host.execute(request.clone()).await.unwrap();
+    assert_eq!(state.revision, request.expected_revision + 1);
+    assert_eq!(host.runtime.saved_state(), runtime(&root).saved_state());
+    assert!(
+        host.services
+            .lock()
+            .unwrap()
+            .instances
+            .contains_key("sample")
+    );
+    let stop = extension_edit(&host, &id, "stop", "sample", false, None);
+    host.execute(stop).await.unwrap();
+}
 #[test]
 fn saved_workspace_keeps_identity_and_revision_across_restart() {
     let root = Directory::new();

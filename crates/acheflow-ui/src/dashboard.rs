@@ -20,6 +20,7 @@ pub fn dashboard() -> Element {
     let backend = use_signal(|| "Starting GPU...".to_owned());
     let mut page = use_signal(|| "Overview");
     let (project, mut catalog, storage_status) = use_workspaces();
+    use_context_provider(|| catalog);
     crate::server_settings::provide(project, catalog);
     crate::server_access::provide(project);
     let effects = use_signal(|| catalog.peek().background_animation());

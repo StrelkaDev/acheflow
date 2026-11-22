@@ -12,7 +12,8 @@ server or link dispatch without introducing provider-specific host code.
 | `acheflow` | Production desktop/server entrypoint and recipient dispatch |
 | `acheflow-ui` | Shared Dioxus components, CSS, native/browser rendering and local workspace UI |
 | `acheflow-client` | Provider discovery, local authorization/runtime, credential handling, executor bridge and owned server lifecycle |
-| `acheflow-server` | HTTP/RTMP listeners, media workers, server logic, control and MCP adapters |
+| `acheflow-server` | HTTP/RTMP listeners, SRT and capture workers, server logic, control and MCP adapters |
+| `acheflow-camera` | macOS AVFoundation camera and microphone discovery and capture |
 | `acheflow-launcher` | Bounded native activation, private per-recipient IPC and instance election |
 | `acheflow-composition` | Shared scene geometry, CSS/WGSL composition, 3D viewports and GPU readback |
 | `acheflow-media-api` | Workspace/scene/audio types, validation, media status and control DTOs |

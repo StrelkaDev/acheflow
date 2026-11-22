@@ -7,6 +7,10 @@ and verification boundaries.
 
 - Audio can arrive from multiple RTMP sources and as multiple independent
   audio tracks inside a single compatible RTMP input.
+- SRT ingest decodes the first audio track when present. macOS camera capture
+  supplies video only.
+- A macOS microphone supplies its own track 0. Capture converts it to 48 kHz
+  stereo PCM, duplicating mono input to both channels.
 - Each output selects one stereo mixer bus. Multiple independent audio tracks
   inside one output are not implemented.
 - Mixer configurations belong to scenes. Destinations store a bus selection for
@@ -30,7 +34,7 @@ and verification boundaries.
 - `audio_mixer.rs` renders 20 ms blocks with fixed gains and scene-wide solo;
   source count does not alter gain. Float sums retain headroom until destination
   gain/mute and final i16 saturation. Missing input is silent. Timestamped playout
-  queues are bounded to 16 blocks; large discontinuities rebase the clock.
+  queues are bounded to 48 blocks. Large discontinuities rebase the clock.
 - `compositor.rs` starts one audio engine per active format and independent
   output workers. Each destination receives its selected scene bus, encoded by
   `output.rs` as one AAC stereo track at 48 kHz / 128 kbps.
@@ -60,11 +64,24 @@ bus creation/name/master controls and meters. Gain/send/master/destination contr
 span 0–200%; stereo balance spans −100 to +100. Program cannot be removed;
 removing another bus resets affected destination routes to Program.
 
+Track, send and bus faders display logarithmic gain from mute to +6 dB, with
+0 dB at 80% of the travel. Workspace gain values remain linear percentages.
+The peak meters show dBFS, with green below −18 dBFS, yellow up to −6 dBFS,
+orange up to 0 dBFS and red above it.
+
 Destination cards omit audio routing controls and use Program by default.
 Existing per-destination scene/bus and gain/mute settings remain supported in JSON. Studio places a scrollable row of vertical strips
 under each format preview, following the applied scene during streaming and the
 selected scene offline. It shows source L/R levels, gain/mute/solo/balance,
 bus masters and destination names; sends are configured in Live / Mixer.
+For a microphone, set a send in each scene where it should be heard. Studio
+can show its input levels and adjust gain and audio delay before it is routed.
+
+Studio offers **Auto**, **Auto + trim**, and **Manual** per input track. Auto
+uses the source video timestamps when available. A positive trim delays the
+track, and a negative trim delays the source video shared by its tracks.
+See [live mixing and sync](live-pipeline.md#media-path) for how
+the applied delay and sync status are reported.
 
 Edits save locally and reach the server through Apply mixer/routes. Audio-only
 edits do not restart video encoders; transport/video-profile changes still require

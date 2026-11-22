@@ -109,6 +109,7 @@ impl Principal {
     }
     pub fn live(&self, mut status: LiveStatus) -> LiveStatus {
         if !self.allows(P::MediaManage) {
+            status.server_load.clear();
             for source in &mut status.sources {
                 source.error = None;
             }

@@ -1,6 +1,7 @@
 //! Bounded, reusable GPU passes. Input/output textures contain straight RGBA.
 use acheflow_media_api::{
     appearance::{shader_module, validate_shader},
+    layer::ChromaKey,
     workspace::{EffectKind, LayerEffect},
 };
 use wgpu::*;
@@ -15,7 +16,21 @@ pub struct Filters {
     sampler: Sampler,
     crop: RenderPipeline,
     premultiply: RenderPipeline,
+    chroma_key: Option<RenderPipeline>,
     passes: Vec<(LayerEffect, RenderPipeline)>,
+}
+struct EffectUniforms {
+    frame: [f32; 6],
+    chroma: Option<ChromaKey>,
+}
+
+impl From<[f32; 6]> for EffectUniforms {
+    fn from(frame: [f32; 6]) -> Self {
+        Self {
+            frame,
+            chroma: None,
+        }
+    }
 }
 pub fn texture(device: &Device, width: u32, height: u32) -> Texture {
     device.create_texture(&TextureDescriptor {
@@ -88,6 +103,7 @@ impl Filters {
             sampler,
             crop,
             premultiply,
+            chroma_key: None,
             passes: vec![],
         }
     }
@@ -102,17 +118,24 @@ impl Filters {
         }
         let mut passes = vec![];
         for effect in effects.iter().filter(|e| e.enabled) {
-            let code = match effect.kind {
+            let pass = match effect.kind {
                 EffectKind::Wgsl => {
                     validate_shader(&effect.shader)?;
-                    effect.shader.clone()
+                    pipeline(device, &self.layout, &shader_module(&effect.shader))
                 }
-                _ => builtin(effect.kind),
+                EffectKind::ChromaKey => self
+                    .chroma_key
+                    .get_or_insert_with(|| {
+                        pipeline(
+                            device,
+                            &self.layout,
+                            &shader_module(include_str!("chroma_key.wgsl")),
+                        )
+                    })
+                    .clone(),
+                _ => pipeline(device, &self.layout, &shader_module(&builtin(effect.kind))),
             };
-            passes.push((
-                effect.clone(),
-                pipeline(device, &self.layout, &shader_module(&code)),
-            ));
+            passes.push((effect.clone(), pass));
         }
         self.passes = passes;
         Ok(())
@@ -141,7 +164,7 @@ impl Filters {
             input,
             &targets[0],
             &self.crop,
-            [crop[0], crop[1], crop[2], crop[3], 1., 1.],
+            [crop[0], crop[1], crop[2], crop[3], 1., 1.].into(),
         );
         let mut current = 0;
         for (effect, pipeline) in &self.passes {
@@ -152,14 +175,18 @@ impl Filters {
                 &targets[current],
                 &targets[next],
                 pipeline,
-                [
-                    time,
-                    effect.amount as f32 / 100.,
-                    source_size[0],
-                    source_size[1],
-                    input.width() as f32 / source_size[0],
-                    input.height() as f32 / source_size[1],
-                ],
+                EffectUniforms {
+                    frame: [
+                        time,
+                        effect.amount as f32 / 100.,
+                        source_size[0],
+                        source_size[1],
+                        input.width() as f32 / source_size[0],
+                        input.height() as f32 / source_size[1],
+                    ],
+                    chroma: (effect.kind == EffectKind::ChromaKey)
+                        .then(|| effect.chroma_key.unwrap_or_default()),
+                },
             );
             current = next;
         }
@@ -170,7 +197,7 @@ impl Filters {
             &targets[current],
             &targets[next],
             &self.premultiply,
-            [time, 1., source_size[0], source_size[1], 1., 1.],
+            [time, 1., source_size[0], source_size[1], 1., 1.].into(),
         );
         queue.submit([encoder.finish()]);
         next
@@ -182,18 +209,20 @@ impl Filters {
         input: &Texture,
         target: &Texture,
         pipeline: &RenderPipeline,
-        params: [f32; 6],
+        params: EffectUniforms,
     ) {
-        let floats = [
-            target.width() as f32,
-            target.height() as f32,
-            params[0],
-            params[1],
-            params[2],
-            params[3],
-            params[4],
-            params[5],
-        ];
+        let mut floats = [0.; 16];
+        floats[..2].copy_from_slice(&[target.width() as f32, target.height() as f32]);
+        floats[2..8].copy_from_slice(&params.frame);
+        if let Some(key) = params.chroma {
+            floats[8..11].copy_from_slice(&key.color.map(|channel| f32::from(channel) / 255.));
+            floats[12..16].copy_from_slice(&[
+                f32::from(key.tolerance) / 100.,
+                f32::from(key.softness.max(1)) / 100.,
+                f32::from(key.edge),
+                f32::from(key.despill) / 100.,
+            ]);
+        }
         let bytes: Vec<u8> = floats.into_iter().flat_map(f32::to_le_bytes).collect();
         use wgpu::util::DeviceExt;
         let uniform = device.create_buffer_init(&util::BufferInitDescriptor {
@@ -291,7 +320,7 @@ fn builtin(kind: EffectKind) -> String {
         }
         EffectKind::Opacity => "vec4f(color.rgb,color.a * params.strength)",
         EffectKind::Blur => return BLUR.into(),
-        EffectKind::Wgsl => unreachable!(),
+        EffectKind::Wgsl | EffectKind::ChromaKey => unreachable!(),
     };
     format!(
         "fn effect(uv:vec2f,color:vec4f)->vec4f {{return clamp({expression},vec4f(0.),vec4f(1.));}}"

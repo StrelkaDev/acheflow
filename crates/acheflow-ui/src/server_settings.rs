@@ -15,6 +15,8 @@ pub(crate) struct ServerPreferences {
     pub allow_network: bool,
     pub http_port: u16,
     pub rtmp_port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ffmpeg_path: Option<String>,
 }
 impl Default for ServerPreferences {
     fn default() -> Self {
@@ -24,6 +26,7 @@ impl Default for ServerPreferences {
             allow_network: false,
             http_port: 21295,
             rtmp_port: 1935,
+            ffmpeg_path: None,
         }
     }
 }
@@ -294,6 +297,7 @@ fn LocalControls(
                 },"Save ports"}
             }
             if !ports_error().is_empty() {p {class:"error",role:"alert","{ports_error}"}}
+            FfmpegPathSetting {catalog,busy}
             div {class:"server-preferences",
                 label {input {r#type:"checkbox",id:"server-allow-network",checked:preferences.allow_network,disabled:busy,
                     onkeydown:move|e|{if !busy && !e.is_auto_repeating() && (e.key()==Key::Character(" ".into())||e.key()==Key::Named(NamedKey::Enter)) {e.prevent_default();let mut prefs=catalog.peek().server_preferences();prefs.allow_network= !prefs.allow_network;catalog.write().set_server_preferences(prefs);}},
@@ -309,6 +313,41 @@ fn LocalControls(
             if let Some(error)=process.error && (state.error)().is_empty() {p {class:"error",role:"alert","{error}"}}
             if process.forced_stop {p {class:"form-help","The last process needed forced termination."}}
         }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[component]
+fn FfmpegPathSetting(mut catalog: Signal<crate::workspaces::Catalog>, busy: bool) -> Element {
+    let saved = catalog
+        .read()
+        .server_preferences()
+        .ffmpeg_path
+        .unwrap_or_default();
+    let mut draft = use_signal(|| saved.clone());
+    let mut error = use_signal(String::new);
+    rsx! {
+        div {class:"server-actions",
+            label {class:"field",span {"FFmpeg executable"}
+                input {id:"local-ffmpeg-path",r#type:"text",value:draft(),placeholder:"Automatic discovery",disabled:busy,
+                    oninput:move |event| {draft.set(event.value());error.set(String::new());}}
+            }
+            ActionButton {id:"save-local-ffmpeg-path",disabled:busy||draft().trim()==saved,onclick:move |_| {
+                let value=draft.peek().trim().to_owned();
+                match native::ffmpeg_path(&value) {
+                    Ok(path)=>{
+                        let mut preferences=catalog.peek().server_preferences();
+                        preferences.ffmpeg_path=path;
+                        catalog.write().set_server_preferences(preferences);
+                        draft.set(value);
+                        error.set(String::new());
+                    }
+                    Err(message)=>error.set(message),
+                }
+            },"Save FFmpeg path"}
+        }
+        p {class:"form-help","Enter an absolute path if automatic discovery misses FFmpeg. Restart the local server to apply."}
+        if !error().is_empty() {p {class:"error",role:"alert","{error}"}}
     }
 }
 

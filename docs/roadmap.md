@@ -359,25 +359,25 @@ a correction. Unchecked items are open. P1 covers state consistency and lost edi
 P2 covers recovery and completion of existing mechanisms; P3 covers maintainability.
 New bugs found during everyday use can change this order.
 
-Start with LOGIC-04 and LOGIC-03, then LOGIC-01 and LOGIC-02. Keep each task a
+Continue with the remaining P2 items. Keep each task a
 separate reviewable change. For every implementation, run the affected regression
 tests and applicable [development checks](development.md#standard-checks), update
 the owning guide, and only then mark the task complete. Keep provider-specific
 behavior under `extensions/` and follow the [extension contract](extension-contract.md).
 
-### LOGIC-01: Atomic extension configuration — P1
+### LOGIC-01: Atomic extension configuration — complete
 
-Settings are currently written before the guest successfully starts. A rejected
-operation can leave changed workspace settings without a matching control revision.
+Enablement and public settings share one durable edit. Validation, guest loading
+and saving must succeed before the host replaces a running instance.
 
 Owner: [control](../crates/acheflow-server/src/control.rs),
 [workspace extensions](../crates/acheflow-server/src/workspace_extensions.rs),
 [guest lifecycle](../crates/acheflow-server/src/extension_host.rs). Dependencies: none.
 
-- [ ] Validate the installation and requested configuration before mutating settings.
-- [ ] Define and enforce one consistent failure outcome for settings, runtime status
+- [x] Validate the installation and requested configuration before mutating settings.
+- [x] Define and enforce one consistent failure outcome for settings, runtime status
   and revisions; never leave a failed startup reported as a running instance.
-- [ ] Cover unknown installations, invalid configuration, guest-load failure and
+- [x] Cover unknown installations, invalid configuration, guest-load failure and
   successful enable/disable with regression tests using real WASM guests.
 
 ### LOGIC-02: Protect all workspace edits from stale Apply — P1
@@ -409,78 +409,93 @@ Owner: [control client](../crates/acheflow-ui/src/control_client.rs). Dependenci
 - [x] Test delayed GET/command responses, workspace switching and timeout recovery;
   manually verify native/browser controls remain usable.
 
-### LOGIC-04: Reclaim inactive executor registrations — P2
+### LOGIC-04: Reclaim inactive executor registrations — complete
 
-Expired registrations still count toward the client limit. The limit can be exhausted
-with no live executors; this behavior has a focused reproduction.
+Retired registrations release active slots while retaining generation history
+for a bounded window. Withdrawing a workspace releases its loaded policy.
 
 Owner: [execution registry](../crates/acheflow-control/src/client_execution.rs),
 [registry tests](../crates/acheflow-control/tests/client_execution.rs). Dependencies: none.
 
-- [ ] Reclaim inactive registration capacity using a bounded retention policy.
-- [ ] Preserve generation/replay barriers and cancellation or Unknown outcomes for
+- [x] Reclaim inactive registration capacity using a bounded retention policy.
+- [x] Preserve generation/replay barriers and cancellation or Unknown outcomes for
   instructions belonging to withdrawn authority; apply bounded retention to policies too.
-- [ ] Test more than 64 successive expired clients, active-capacity limits, stale
+- [x] Test more than 64 successive expired clients, active-capacity limits, stale
   generations, retained instructions and isolation between workspaces.
 
-### LOGIC-05: Recover from bounded audio lag — P2
+### LOGIC-05: Recover from bounded audio lag — complete
 
-An audio receiver lag currently fails the entire destination, using the same path
-as a closed audio channel. Recovery must preserve the output timeline.
+Replace up to 160 ms of missed PCM with silence per recovery so the encoder's
+sample timeline stays continuous. A destination that exceeds the budget fails
+independently.
 
 Owner: [output worker](../crates/acheflow-server/src/output.rs),
 [audio mixer](../crates/acheflow-server/src/audio_mixer.rs). Dependencies: none.
 
-- [ ] Reproduce lag with a deliberately slow consumer and distinguish Lagged,
+- [x] Reproduce lag with a deliberately slow consumer and distinguish Lagged,
   channel closure, cancellation and socket-write failure.
-- [ ] Define a bounded resynchronization policy with an explicit unrecoverable
+- [x] Define a bounded resynchronization policy with an explicit unrecoverable
   threshold; do not accumulate latency or silently corrupt A/V timing.
-- [ ] Verify short stalls recover, persistent failures remain visible, and another
+- [x] Verify short stalls recover, persistent failures remain visible, and another
   destination keeps delivering media during the affected output's recovery.
 
-### LOGIC-06: Reconnect failed destinations — P2
+### LOGIC-06: Reconnect failed destinations — complete
 
-Independent manual restart exists; automatic reconnect remains unfinished.
+Recognized transport failures retry per destination with bounded backoff. Studio
+shows the attempt and any terminal failure.
 
 Owner: [destination lifecycle](../crates/acheflow-server/src/compositor.rs),
 [output worker](../crates/acheflow-server/src/output.rs). Depends on LOGIC-05.
 
-- [ ] Add bounded retry/backoff for recoverable failures with visible attempt status
+- [x] Add bounded retry/backoff for recoverable failures with visible attempt status
   and an explicit terminal outcome for permanent errors or exhausted retries.
-- [ ] Ensure Stop, deactivation and workspace changes cancel pending retries and
+- [x] Ensure Stop, deactivation and workspace changes cancel pending retries and
   retire old workers before replacement; manual restart must not create duplicates.
-- [ ] Test connection loss/recovery with real FFmpeg output and two destinations,
+- [x] Test connection loss/recovery with real FFmpeg output and two destinations,
   including cancellation during backoff.
 
-### LOGIC-07: Measure sustained A/V timing — P2, investigation
+### LOGIC-07: Measure sustained A/V timing — complete
 
-Video uses the latest decoded image and receipt time, while audio has its own PTS
-mapping. Sustained drift under load has not been established by this review.
+The [loopback marker probe](development.md#sustained-av-timing) found offsets
+outside the provisional budget, including after an independent output restart.
+Both outgoing tracks kept continuous packet timestamps around the injected
+source jump, while the relative marker offset changed. Investigate the audio
+PTS rebase, the compositor's latest-frame selection and the independent audio
+and video encoder feed clocks in LOGIC-08.
 
 Owner: [ingest](../crates/acheflow-server/src/ingest.rs),
 [audio playout](../crates/acheflow-server/src/audio_mixer.rs),
 [media tests](../crates/acheflow-server/src/pipeline_tests.rs). Dependencies: none.
 
-- [ ] Build a repeatable real-media check with synchronized visual/audio markers;
+- [x] Build a repeatable real-media check with synchronized visual/audio markers;
   measure offset, drift and delivery continuity at the receiving output.
-- [ ] Exercise a sustained baseline, CPU/GPU load, source reconnect, timestamp
+- [x] Exercise a sustained baseline, CPU/GPU load, source reconnect, timestamp
   discontinuities and independent output restart; define duration and tolerances.
-- [ ] Identify whether a timing correction is needed and the owning clock/queue;
+- [x] Identify whether a timing correction is needed and the owning clock/queue;
   keep raw recordings and environment-specific results outside tracked docs.
 
-### LOGIC-08: Correct measured timing failures — P2, conditional
+### LOGIC-08: Correct measured timing failures — complete
 
-Choose the correction from LOGIC-07 evidence rather than assuming a particular
-clock redesign. If the agreed tolerances pass, close this item with that rationale.
+The marker trace located a slow clock reacquisition after reconnect and delays
+in vertical composition under load. Auto sync now acquires from several fresh
+presented frames before playing audio and bounds subsequent clock corrections.
+Encoder feeds share an epoch and preserve short gaps with silence or repeated
+frames. The video feed uses render time to decide which image fills each slot.
+GPU readback converts packed pixels by row to reduce CPU time at larger sizes.
+Studio exposes signed manual trim, per-track sync status and per-format load.
+The loopback probe passed its steady-state gates under load, after a source PTS
+jump, after publisher reconnect and after restarting the vertical output. It
+passed with a 30 fps source and horizontal output and a vertical output at both
+30 fps and 25 fps.
 
 Owner: the ingest, mixer, compositor or output path identified by LOGIC-07.
 Depends on LOGIC-07.
 
-- [ ] Specify the failing timeline transition and the expected timestamp, frame
+- [x] Specify the failing timeline transition and the expected timestamp, frame
   drop/duplication or silence policy before implementing a correction.
-- [ ] Keep queues and latency bounded across source/output reconnects and load;
+- [x] Keep queues and latency bounded across source/output reconnects and load;
   preserve relative timing between a source's audio tracks.
-- [ ] Pass the same baseline and stress checks used to reproduce the failure,
+- [x] Pass the same baseline and stress checks used to reproduce the failure,
   including both output orientations.
 
 ### LOGIC-09: Own executor registration in Studio — P2
@@ -601,7 +616,7 @@ These are development directions, not completed features or delivery commitments
 The server persists its active workspace configuration; live session/chat history
 and execution receipts remain in memory. Audio output is one AAC stereo track per destination,
 with no local monitoring playback. Final composition copies frames to CPU before
-FFmpeg. Output automatic reconnect, HDR/color management, glTF/GLB import, PBR,
+FFmpeg. HDR/color management, glTF/GLB import, PBR,
 lights and authored animation are not implemented as complete product workflows.
 
 A later managed bot/AI offering is optional. Its extension parts must follow the same explicit host ownership, grants and

@@ -10,7 +10,11 @@ mod audio_mixer;
 mod audio_packet;
 #[cfg(test)]
 mod audio_pipeline_tests;
+mod av_sync;
+#[cfg(test)]
+mod av_timing_tests;
 mod browser_access;
+mod camera_input;
 mod client_bridge;
 mod compositor;
 mod control;
@@ -28,6 +32,8 @@ mod integration_host;
 mod integration_tests;
 mod live;
 mod mcp;
+mod media_monitor;
+mod microphone_input;
 mod native_activation;
 mod output;
 #[cfg(test)]
@@ -36,6 +42,7 @@ mod providers;
 mod rtmp;
 mod server_workspace;
 mod settings;
+mod srt_input;
 mod tls;
 mod traffic;
 #[cfg(test)]
@@ -51,7 +58,22 @@ pub fn run_from(
     args: impl IntoIterator<Item = std::ffi::OsString>,
     request: Option<acheflow_launcher::Request>,
 ) -> Result<(), Box<dyn Error>> {
-    run_with_shutdown(args, request, Shutdown::new())
+    let args = settings::Args::parse_from(args);
+    #[cfg(target_os = "macos")]
+    {
+        std::thread::scope(|scope| {
+            let backend = scope.spawn(move || {
+                run_parsed(args, request, Shutdown::new()).map_err(|error| error.to_string())
+            });
+            // AVFoundation delivers hardware changes through the main run loop, even
+            // when discovery and capture are called from background threads.
+            acheflow_camera::run_main_loop_until(|| backend.is_finished());
+            backend.join().map_err(|_| "Server runtime failed")??;
+            Ok(())
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    run_parsed(args, request, Shutdown::new())
 }
 
 /// Runs the headless backend while an embedding application owns the OS event loop.
@@ -61,6 +83,14 @@ pub fn run_with_shutdown(
     shutdown: Shutdown,
 ) -> Result<(), Box<dyn Error>> {
     let args = settings::Args::parse_from(args);
+    run_parsed(args, request, shutdown)
+}
+
+fn run_parsed(
+    args: settings::Args,
+    request: Option<acheflow_launcher::Request>,
+    shutdown: Shutdown,
+) -> Result<(), Box<dyn Error>> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
@@ -165,6 +195,8 @@ async fn serve(
         .route("/api/live/source/{id}", get(live::source_preview))
         .with_state(runtime.clone());
     let app = Router::new()
+        .route("/api/media/cameras", get(camera_input::list))
+        .route("/api/media/microphones", get(microphone_input::list))
         .route("/api/server/logs", get(diagnostics::get))
         .route("/healthz", get(|| async { "ok\n" }))
         .route(

@@ -7,6 +7,7 @@ use peniko::{
     kurbo::{Affine, Rect},
 };
 use std::sync::{Arc, Mutex};
+use web_time::{Duration, Instant};
 use wgpu_context::DeviceHandle;
 
 struct Frame {
@@ -17,12 +18,54 @@ struct Frame {
 }
 type Latest = Arc<Mutex<Option<Arc<Frame>>>>;
 const MAX_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const DEFAULT_PREVIEW_FPS: u32 = 10;
+pub(crate) const MAX_PREVIEW_FPS: u32 = 60;
+
+type PreviewPreferences = Signal<crate::workspaces::Catalog>;
+
+pub(crate) fn preview_fps(preferences: Option<PreviewPreferences>) -> u32 {
+    preferences.map_or(DEFAULT_PREVIEW_FPS, |catalog| catalog.peek().preview_fps())
+}
+
+pub(crate) async fn wait_for_next_snapshot(started: Instant, fps: u32, received: bool) {
+    let target = if received {
+        Duration::from_secs_f64(1. / f64::from(fps))
+    } else {
+        Duration::from_millis(500)
+    };
+    let remaining = target.saturating_sub(started.elapsed());
+    #[cfg(target_arch = "wasm32")]
+    crate::scene_preview::pause((remaining.as_secs_f64() * 1000.).ceil() as u32).await;
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::time::sleep(remaining).await;
+}
+
+#[component]
+pub(crate) fn PreviewRate() -> Element {
+    let Some(mut catalog) = try_consume_context::<PreviewPreferences>() else {
+        return rsx! {};
+    };
+    rsx! {
+        section {class:"panel",
+            div {class:"panel-heading",h2 {"Preview"}}
+            div {class:"padded",
+                crate::slider::Slider {
+                    label:"Preview FPS",unit:" FPS",value:catalog.read().preview_fps() as i32,
+                    min:1,max:MAX_PREVIEW_FPS as i32,reset:Some(DEFAULT_PREVIEW_FPS as i32),
+                    change:move |fps:i32| catalog.write().set_preview_fps(fps as u32),
+                }
+                p {class:"form-help","Target refresh rate for video previews. Actual FPS depends on the source, server and connection."}
+            }
+        }
+    }
+}
 
 #[component]
 pub fn VideoPreview(
     url: String,
     #[props(default = "live-preview")] class: &'static str,
 ) -> Element {
+    let preferences = try_consume_context::<PreviewPreferences>();
     let latest: Latest = use_hook(|| Arc::new(Mutex::new(None)));
     let widget_latest = latest.clone();
     let widget = use_hook(move || {
@@ -37,10 +80,12 @@ pub fn VideoPreview(
         async move {
             let client = crate::server_access::client();
             loop {
+                let started = Instant::now();
                 let result = download_rgb(&client, &url).await.map(|image| {
                     let rgba = image::DynamicImage::ImageRgb8(image).to_rgba8();
                     (rgba.width(), rgba.height(), rgba.into_raw())
                 });
+                let received = result.is_some();
                 let sequence = *version.peek() + 1;
                 *latest.lock().unwrap() = result.map(|(width, height, rgba)| {
                     Arc::new(Frame {
@@ -51,10 +96,7 @@ pub fn VideoPreview(
                     })
                 });
                 version.set(sequence);
-                #[cfg(target_arch = "wasm32")]
-                gloo_timers::future::TimeoutFuture::new(500).await;
-                #[cfg(not(target_arch = "wasm32"))]
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                wait_for_next_snapshot(started, preview_fps(preferences), received).await;
             }
         }
     }));

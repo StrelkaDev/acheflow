@@ -33,6 +33,37 @@ pub struct AudioTrack {
     telemetry: Mutex<Telemetry>,
 }
 impl AudioTrack {
+    pub(crate) fn new(id: u8, codec: &str) -> Self {
+        let (frames, _) = broadcast::channel(32);
+        Self {
+            id,
+            codec: codec.into(),
+            frames,
+            telemetry: Mutex::new(Telemetry::default()),
+        }
+    }
+
+    pub(crate) fn publish(&self, input: &Input, pts: i64, samples: Arc<Vec<i16>>) {
+        let meter = pcm_meter(&samples);
+        {
+            let mut state = self.telemetry.lock().unwrap();
+            state.received = Some(Instant::now());
+            state.meter = meter;
+        }
+        input
+            .has_audio
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if self.id == 0 {
+            let _ = input.audio.send(samples.clone());
+        }
+        let _ = self.frames.send(Arc::new(AudioFrame { pts, samples }));
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn latest_sample(&self) -> Option<Instant> {
+        self.telemetry.lock().unwrap().received
+    }
+
     pub fn status(&self) -> AudioTrackStatus {
         let state = self.telemetry.lock().unwrap();
         let active = state
@@ -111,13 +142,7 @@ impl AudioInputs {
                     slots.entry(packet.track_id)
                 {
                     let cancel = self.cancel.child_token();
-                    let (frames, _) = broadcast::channel(32);
-                    let track = Arc::new(AudioTrack {
-                        id: packet.track_id,
-                        codec: packet.codec.into(),
-                        frames,
-                        telemetry: Mutex::new(Telemetry::default()),
-                    });
+                    let track = Arc::new(AudioTrack::new(packet.track_id, packet.codec));
                     let sender = start_decoder(self.input.clone(), track.clone(), cancel.clone())?;
                     self.input
                         .audio_tracks
@@ -198,21 +223,17 @@ fn start_decoder(
                             .map(|p| i16::from_le_bytes([p[0], p[1]]))
                             .collect::<Vec<_>>(),
                     );
-                    let meter = pcm_meter(&samples);
-                    {
-                        let mut state = read_track.telemetry.lock().unwrap();
-                        state.received = Some(Instant::now());
-                        state.meter = meter;
+                    #[cfg(test)]
+                    if read_input.config.id == 1 && read_track.id == 0 {
+                        crate::av_timing_tests::trace_pcm(
+                            "audio_decode",
+                            "Source",
+                            Instant::now(),
+                            Some(pts),
+                            samples.iter().copied(),
+                        );
                     }
-                    read_input
-                        .has_audio
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                    if read_track.id == 0 {
-                        let _ = read_input.audio.send(samples.clone());
-                    }
-                    let _ = read_track
-                        .frames
-                        .send(Arc::new(AudioFrame { pts, samples }));
+                    read_track.publish(&read_input, pts, samples);
                 }
                 Ok::<_, std::io::Error>(())
             }

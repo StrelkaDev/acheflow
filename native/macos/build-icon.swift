@@ -17,10 +17,12 @@ for size in [16, 32, 128, 256, 512] {
         let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: pixels,
             pixelsHigh: pixels, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
             isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
-        NSGraphicsContext.current?.imageInterpolation = .high
         let side = CGFloat(pixels)
+        let context = NSGraphicsContext(bitmapImageRep: bitmap)!
+        context.cgContext.clear(CGRect(x: 0, y: 0, width: side, height: side))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.imageInterpolation = .high
         // Preserve the logo's proportions with a little breathing room in the square tile.
         let height = side * 0.84
         let width = height * logo.size.width / logo.size.height

@@ -61,6 +61,16 @@ pub async fn set_enabled(
     id: &str,
     enabled: bool,
 ) -> Result<(), String> {
+    set_enabled_with_commit(host, owner, id, enabled, || Ok(())).await
+}
+
+pub(crate) async fn set_enabled_with_commit(
+    host: Arc<ControlHost>,
+    owner: &str,
+    id: &str,
+    enabled: bool,
+    commit: impl FnOnce() -> Result<(), String> + Send,
+) -> Result<(), String> {
     let extension = host.extension(id).ok_or("not_found: extension")?;
     if enabled && !host.package_execution_allowed(id) {
         return Err("forbidden: allow execution of this installed package first".into());
@@ -72,6 +82,11 @@ pub async fn set_enabled(
         return Err("client integrations cannot be installed or activated on the server".into());
     }
     let mut running = host.guests.lock().await;
+    let guest = enabled
+        .then(|| Guest::load_part(&extension.module, &manifest))
+        .transpose()?;
+    // Keep the old guest and its instance fence until the new settings are durable.
+    commit()?;
     host.disconnect_extension(owner, id);
     if let Some(old) = running.remove(id) {
         old.cancel.cancel();
@@ -90,11 +105,11 @@ pub async fn set_enabled(
         state: if enabled { "running" } else { "stopped" }.into(),
         ..Default::default()
     };
-    host.extension_status(owner, status.clone());
-    if !enabled {
+    host.extension_status(owner, status);
+    let Some(guest) = guest else {
         return Ok(());
-    }
-    let guest = Arc::new(Mutex::new(Guest::load_part(&extension.module, &manifest)?));
+    };
+    let guest = Arc::new(Mutex::new(guest));
     let instance = acheflow_media_api::workspace::new_token();
     host.services
         .lock()

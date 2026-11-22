@@ -41,6 +41,7 @@ pub fn ScenePreview(
     let client = use_context::<LiveClient>();
     let control = use_context::<crate::control_client::ControlClient>();
     let chat_preview = try_consume_context::<crate::visual_sources::ChatPreview>();
+    let preview_preferences = try_consume_context::<Signal<crate::workspaces::Catalog>>();
     let visual_epoch_ms = use_hook(visual_now_ms);
     let start = use_hook(Instant::now);
     let shared: Shared = use_hook(|| {
@@ -102,7 +103,7 @@ pub fn ScenePreview(
         }
         let frame_epoch_ms = state.visual_epoch_ms;
         if placeholders {
-            for source in workspace.sources.iter().filter(|s| s.kind.is_rtmp()) {
+            for source in workspace.sources.iter().filter(|s| s.kind.is_video_input()) {
                 if state
                     .patterns
                     .get(&source.id)
@@ -117,7 +118,7 @@ pub fn ScenePreview(
                 workspace
                     .sources
                     .iter()
-                    .any(|s| s.kind.is_rtmp() && s.id == *id)
+                    .any(|s| s.kind.is_video_input() && s.id == *id)
             });
         }
         let mut inputs = state
@@ -183,6 +184,8 @@ pub fn ScenePreview(
         async move {
             let client = crate::server_access::client();
             loop {
+                let started = Instant::now();
+                let mut received = false;
                 let request = {
                     let state = shared.lock().unwrap();
                     state.frame.as_ref().map(|f| {
@@ -204,7 +207,7 @@ pub fn ScenePreview(
                                 workspace
                                     .sources
                                     .iter()
-                                    .any(|s| s.id == *id && s.kind.is_rtmp())
+                                    .any(|s| s.id == *id && s.kind.is_video_input())
                             })
                             .map(|id| {
                                 let client = client.clone();
@@ -230,6 +233,7 @@ pub fn ScenePreview(
                             }),
                     )
                     .await;
+                    received = downloaded.iter().any(Option::is_some);
                     let mut state = shared.lock().unwrap();
                     if state.owner == owner && state.server == server {
                         let patterns = if placeholders {
@@ -247,7 +251,12 @@ pub fn ScenePreview(
                         version.set(state.revision);
                     }
                 }
-                pause(500).await;
+                crate::video_preview::wait_for_next_snapshot(
+                    started,
+                    crate::video_preview::preview_fps(preview_preferences),
+                    received,
+                )
+                .await;
             }
         }
     });

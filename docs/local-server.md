@@ -56,6 +56,9 @@ mode. Wildcard binding also accepts connections on other reachable interfaces.
 
 Independent servers are inspected without adoption. These preferences stay outside
 workspace exports.
+Set **FFmpeg executable** to an absolute path when the local server needs a
+specific build. Save the path and restart the managed server to apply it.
+See [FFmpeg discovery and SRT](ffmpeg.md#discovery).
 The managed data directory is `server` beside the native workspace catalog.
 The owning Tokio runtime outlives the UI tree and awaits the exit policy after
 the window closes. Browser clients never apply these process preferences.

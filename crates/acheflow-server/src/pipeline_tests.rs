@@ -19,7 +19,7 @@ use tokio::{
 
 // This fixture deliberately edits the current studio repeatedly. Acknowledge
 // each durable revision as a real synchronized operator would before Apply.
-async fn configure_current(
+pub(super) async fn configure_current(
     state: State<RuntimeState>,
     mut request: Json<Workspace>,
 ) -> live::ApiResult {
@@ -208,23 +208,7 @@ async fn restart_failed_output(
     );
     assert!(restart(workspace.id.clone(), 1).await.is_err()); // disabled destination
     assert!(restart(workspace.id.clone(), 100).await.is_err());
-    let listener = TcpListener::bind(("127.0.0.1", refused_port))
-        .await
-        .unwrap();
-    let mut recovered_workspace = Workspace::default();
-    recovered_workspace.add_source();
-    recovered_workspace.sources[0].url = workspace.horizontal.outputs[2].url.clone();
-    recovered_workspace.sources[0].key = workspace.horizontal.outputs[2].key.clone();
-    let recovered = Runtime::new(caps.clone(), listener.local_addr().unwrap().to_string());
-    let _ = configure_current(State(recovered.clone()), Json(recovered_workspace))
-        .await
-        .unwrap();
-    let recovered_runtime = recovered.clone();
-    let recovered_task = tokio::spawn(async move {
-        rtmp::serve(listener, recovered_runtime, None)
-            .await
-            .unwrap();
-    });
+    let (recovered, recovered_task) = bind_recovery_sink(workspace, caps, refused_port).await;
     let working_before = status.formats[0].outputs[0].frames;
     let restarted = restart(workspace.id.clone(), 2).await.unwrap().0;
     assert_eq!(
@@ -248,6 +232,25 @@ async fn restart_failed_output(
         &runtime.formats.lock().await[0].frames
     ));
     (recovered, recovered_task)
+}
+
+async fn bind_recovery_sink(
+    workspace: &Workspace,
+    caps: crate::ffmpeg::CapabilityState,
+    port: u16,
+) -> (RuntimeState, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+    let mut config = Workspace::default();
+    config.add_source();
+    config.sources[0].url = workspace.horizontal.outputs[2].url.clone();
+    config.sources[0].key = workspace.horizontal.outputs[2].key.clone();
+    let sink = Runtime::new(caps, listener.local_addr().unwrap().to_string());
+    let _ = configure_current(State(sink.clone()), Json(config))
+        .await
+        .unwrap();
+    let runtime = sink.clone();
+    let task = tokio::spawn(async move { rtmp::serve(listener, runtime, None).await.unwrap() });
+    (sink, task)
 }
 
 async fn output_pipeline(encoder: &str) {
@@ -365,6 +368,7 @@ async fn output_pipeline(encoder: &str) {
     workspace.horizontal.outputs.push(disabled);
     workspace.horizontal.outputs.push(failing);
     let (runtime, task, url) = server(workspace, caps.clone()).await;
+    let _shutdown = runtime.shutdown.clone().drop_guard();
     let mut workspace = runtime.workspace.read().unwrap().clone().unwrap();
     assert!(
         runtime
@@ -481,6 +485,7 @@ async fn output_pipeline(encoder: &str) {
     edited.scenes[0].layers[1]
         .effects
         .push(acheflow_media_api::workspace::LayerEffect {
+            chroma_key: None,
             id: acheflow_media_api::workspace::new_entity_id(),
             shader: String::new(),
             kind: acheflow_media_api::workspace::EffectKind::Opacity,
@@ -513,6 +518,11 @@ async fn output_pipeline(encoder: &str) {
         &before,
         &runtime.formats.lock().await[0].frames
     ));
+    let retrying_output = runtime.formats.lock().await[0].outputs[1].clone();
+    until(|| {
+        retrying_output.lock().unwrap().state == acheflow_media_api::live::OutputState::Failed
+    })
+    .await;
     let status = runtime.status().await;
     assert_eq!(
         status.formats[0].outputs[0].encoder.as_deref(),
@@ -528,6 +538,12 @@ async fn output_pipeline(encoder: &str) {
         acheflow_media_api::live::OutputState::Failed
     );
     assert!(
+        status.formats[0].outputs[1]
+            .error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("Reconnect attempts exhausted:"))
+    );
+    assert!(
         status
             .sources
             .iter()
@@ -537,6 +553,42 @@ async fn output_pipeline(encoder: &str) {
     assert!(status.formats[0].outputs[0].bitrate_kbps > 0.);
     let (recovered, recovered_task) =
         restart_failed_output(&runtime, &workspace, caps.clone(), refused_port).await;
+    recovered.close().await;
+    recovered_task.await.unwrap();
+    let healthy_output = runtime.formats.lock().await[0].outputs[0].clone();
+    let healthy_frames = healthy_output.lock().unwrap().frames;
+    until(|| {
+        let output = retrying_output.lock().unwrap();
+        output.reconnect_attempt.is_some()
+    })
+    .await;
+    let (recovered, recovered_task) =
+        bind_recovery_sink(&workspace, caps.clone(), refused_port).await;
+    until(|| colors(&recovered, "blue", "red")).await;
+    until(|| {
+        let output = healthy_output.lock().unwrap();
+        output.state == acheflow_media_api::live::OutputState::Streaming
+            && output.frames > healthy_frames
+    })
+    .await;
+    recovered.close().await;
+    recovered_task.await.unwrap();
+    until(|| retrying_output.lock().unwrap().reconnect_attempt.is_some()).await;
+    let (recovered, recovered_task) =
+        bind_recovery_sink(&workspace, caps.clone(), refused_port).await;
+    let restarted = live::restart_output(
+        State(runtime.clone()),
+        Json(acheflow_media_api::live::RestartOutputRequest {
+            workspace_id: workspace.id.clone(),
+            orientation: Orientation::Horizontal,
+            index: 2,
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert_eq!(restarted.formats[0].outputs[1].reconnect_attempt, None);
+    until(|| colors(&recovered, "blue", "red")).await;
     let mut changed_profile = workspace.clone();
     changed_profile.horizontal.fps = 30;
     assert!(
@@ -585,6 +637,13 @@ async fn output_pipeline(encoder: &str) {
         .await
         .unwrap();
     assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 320);
+    recovered.close().await;
+    recovered_task.await.unwrap();
+    until(|| {
+        let output = retrying_output.lock().unwrap();
+        output.reconnect_attempt.is_some()
+    })
+    .await;
     let _ = live::stop(
         State(runtime.clone()),
         Json(acheflow_media_api::live::ControlRequest {
@@ -593,6 +652,27 @@ async fn output_pipeline(encoder: &str) {
     )
     .await;
     assert!(runtime.status().await.formats.is_empty());
+    assert_eq!(
+        retrying_output.lock().unwrap().state,
+        acheflow_media_api::live::OutputState::Stopped
+    );
+    let (recovered, recovered_task) = bind_recovery_sink(&workspace, caps, refused_port).await;
+    assert!(
+        tokio::time::timeout(Duration::from_secs(6), async {
+            loop {
+                if recovered.inputs.lock().unwrap()[&1]
+                    .connected
+                    .load(Ordering::Relaxed)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .is_err(),
+        "the stopped destination reconnected"
+    );
     let _ = red.kill().await;
     let _ = red.wait().await;
     let _ = blue.kill().await;

@@ -14,7 +14,10 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[derive(Clone)]
 pub struct VideoFrame {
+    pub pts: Option<i64>,
+    pub generation: u64,
     pub received: Instant,
     pub image: Arc<RgbImage>,
 }
@@ -23,6 +26,7 @@ pub struct Input {
     pub config: Source,
     pub connected: AtomicBool,
     pub frames: AtomicU64,
+    pub generation: AtomicU64,
     pub traffic: Mutex<crate::traffic::Traffic>,
     pub frame: RwLock<Option<VideoFrame>>,
     pub audio: broadcast::Sender<Arc<Vec<i16>>>,
@@ -31,6 +35,7 @@ pub struct Input {
     pub metadata: Mutex<(Option<u32>, Option<u32>, Option<f32>)>,
     pub error: Mutex<Option<String>>,
     pub cancel: Mutex<Option<CancellationToken>>,
+    pub managed: Mutex<Option<(CancellationToken, tokio::task::JoinHandle<()>)>>,
 }
 
 impl Input {
@@ -40,6 +45,7 @@ impl Input {
             config,
             connected: AtomicBool::new(false),
             frames: AtomicU64::new(0),
+            generation: AtomicU64::new(0),
             traffic: Mutex::new(Default::default()),
             frame: RwLock::new(None),
             audio,
@@ -48,6 +54,7 @@ impl Input {
             metadata: Mutex::new((None, None, None)),
             error: Mutex::new(None),
             cancel: Mutex::new(None),
+            managed: Mutex::new(None),
         }
     }
     pub fn status(&self) -> SourceStatus {
@@ -86,6 +93,29 @@ impl Input {
             cancel.cancel();
         }
     }
+    pub fn stop_managed(&self) -> Option<tokio::task::JoinHandle<()>> {
+        let (cancel, task) = self.managed.lock().unwrap().take()?;
+        cancel.cancel();
+        Some(task)
+    }
+    pub(crate) fn next_generation(&self) -> u64 {
+        static GENERATION: AtomicU64 = AtomicU64::new(1);
+        let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
+        self.generation.store(generation, Ordering::Release);
+        generation
+    }
+    pub(crate) fn start_managed(
+        &self,
+        shutdown: &CancellationToken,
+        work: impl FnOnce(CancellationToken) -> tokio::task::JoinHandle<()>,
+    ) {
+        let mut managed = self.managed.lock().unwrap();
+        if managed.is_none() {
+            let cancel = shutdown.child_token();
+            let worker = work(cancel.clone());
+            *managed = Some((cancel, worker));
+        }
+    }
 }
 
 pub struct Publisher {
@@ -109,7 +139,8 @@ impl Drop for Publisher {
 impl Publisher {
     pub fn start(input: Arc<Input>, parent: &CancellationToken) -> Result<Self, String> {
         let cancel = parent.child_token();
-        let video = decoder(input.clone(), cancel.clone())?;
+        let generation = input.next_generation();
+        let video = decoder(input.clone(), cancel.clone(), generation)?;
         let audio = crate::audio_input::AudioInputs::new(input.clone(), cancel.clone());
         *input.error.lock().unwrap() = None;
         *input.metadata.lock().unwrap() = (None, None, None);
@@ -155,7 +186,11 @@ pub(crate) fn flv_tag(kind: u8, timestamp: u32, data: &[u8]) -> Vec<u8> {
     tag
 }
 
-fn decoder(input: Arc<Input>, cancel: CancellationToken) -> Result<mpsc::Sender<Vec<u8>>, String> {
+fn decoder(
+    input: Arc<Input>,
+    cancel: CancellationToken,
+    generation: u64,
+) -> Result<mpsc::Sender<Vec<u8>>, String> {
     use std::process::Stdio;
     let mut command = tokio::process::Command::new(crate::ffmpeg::executable());
     command.env("AV_LOG_FORCE_NOCOLOR", "1");
@@ -177,6 +212,7 @@ fn decoder(input: Arc<Input>, cancel: CancellationToken) -> Result<mpsc::Sender<
         "100000",
         "-fpsprobesize",
         "0",
+        "-copyts",
         "-f",
         "flv",
         "-i",
@@ -196,7 +232,7 @@ fn decoder(input: Arc<Input>, cancel: CancellationToken) -> Result<mpsc::Sender<
         "1",
         "-noautoscale",
         "-vf",
-        "format=pix_fmts=rgb24,showinfo@acheflow=checksum=0",
+        "format=pix_fmts=rgb24,settb=1/48000,showinfo@acheflow=checksum=0",
         "-pix_fmt",
         "rgb24",
         "-c:v",
@@ -230,7 +266,7 @@ fn decoder(input: Arc<Input>, cancel: CancellationToken) -> Result<mpsc::Sender<
         let read_input = input.clone();
         let read_cancel = cancel.clone();
         let reader = tokio::spawn(async move {
-            let result = read_video(read_input.clone(), stdout, sizes_rx).await;
+            let result = read_video(read_input.clone(), stdout, sizes_rx, generation).await;
             if let Err(error) = &result
                 && error.kind() != std::io::ErrorKind::UnexpectedEof
             {
@@ -261,12 +297,12 @@ const MAX_INPUT_PIXELS: u64 = 8_294_400;
 async fn read_decoder_events(
     input: Arc<Input>,
     stderr: ChildStderr,
-    sizes: mpsc::Sender<Result<(u32, u32), String>>,
+    sizes: mpsc::Sender<Result<FrameDescriptor, String>>,
 ) {
     use tokio::io::AsyncBufReadExt;
     let mut lines = BufReader::new(stderr).lines();
     while let Ok(Some(line)) = lines.next_line().await {
-        if let Some(size) = frame_size(&line) {
+        if let Some(size) = frame_descriptor(&line) {
             if sizes.send(size).await.is_err() {
                 break;
             }
@@ -277,7 +313,13 @@ async fn read_decoder_events(
     }
 }
 
-fn frame_size(line: &str) -> Option<Result<(u32, u32), String>> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FrameDescriptor {
+    size: (u32, u32),
+    pts: Option<i64>,
+}
+
+fn frame_descriptor(line: &str) -> Option<Result<FrameDescriptor, String>> {
     if !line.starts_with("[showinfo@acheflow @ ") || !line.contains(" n:") {
         return None;
     }
@@ -288,7 +330,13 @@ fn frame_size(line: &str) -> Option<Result<(u32, u32), String>> {
             }
             let size = line.split_once(" s:")?.1.split_whitespace().next()?;
             let (width, height) = size.split_once('x')?;
-            Some((width.parse().ok()?, height.parse().ok()?))
+            Some(FrameDescriptor {
+                size: (width.parse().ok()?, height.parse().ok()?),
+                pts: line
+                    .split_once(" pts:")
+                    .and_then(|(_, rest)| rest.split_whitespace().next())
+                    .and_then(|value| value.parse().ok()),
+            })
         })()
         .ok_or_else(|| "Invalid FFmpeg frame dimensions".into()),
     )
@@ -319,14 +367,32 @@ async fn read_rgb_frame(
 async fn read_video(
     input: Arc<Input>,
     stdout: ChildStdout,
-    mut sizes: mpsc::Receiver<Result<(u32, u32), String>>,
+    mut sizes: mpsc::Receiver<Result<FrameDescriptor, String>>,
+    generation: u64,
 ) -> std::io::Result<()> {
     let mut stdout = BufReader::new(stdout);
     while let Some(size) = sizes.recv().await {
-        let image = read_rgb_frame(&mut stdout, size.map_err(invalid_frame)?).await?;
+        let descriptor = size.map_err(invalid_frame)?;
+        let image = read_rgb_frame(&mut stdout, descriptor.size).await?;
+        if input.generation.load(Ordering::Acquire) != generation {
+            break;
+        }
+        let received = Instant::now();
+        #[cfg(test)]
+        if input.config.id == 1 {
+            crate::av_timing_tests::trace_image(
+                "decode",
+                acheflow_media_api::workspace::Orientation::Horizontal,
+                received,
+                descriptor.pts,
+                &image,
+            );
+        }
         input.frames.fetch_add(1, Ordering::Relaxed);
         *input.frame.write().unwrap() = Some(VideoFrame {
-            received: Instant::now(),
+            pts: descriptor.pts,
+            generation,
+            received,
             image: Arc::new(image),
         });
     }
@@ -382,18 +448,21 @@ mod tests {
     #[test]
     fn only_video_frame_descriptors_supply_rgb_dimensions() {
         assert_eq!(
-            frame_size(
+            frame_descriptor(
                 "[showinfo@acheflow @ 0x123] [info] n: 0 pts:0 fmt:rgb24 sar:1/1 s:160x90 i:P iskey:1"
             ),
-            Some(Ok((160, 90)))
+            Some(Ok(FrameDescriptor {
+                size: (160, 90),
+                pts: Some(0)
+            }))
         );
         assert_eq!(
-            frame_size("[showinfo@acheflow @ 0x123] [info] config in time_base: 1/1000"),
+            frame_descriptor("[showinfo@acheflow @ 0x123] [info] config in time_base: 1/1000"),
             None
         );
-        assert_eq!(frame_size("publisher: n:0 fmt:rgb24 s:1x1"), None);
+        assert_eq!(frame_descriptor("publisher: n:0 fmt:rgb24 s:1x1"), None);
         assert!(
-            frame_size("[showinfo@acheflow @ 0x123] [info] n: 0 fmt:rgb24 s:broken")
+            frame_descriptor("[showinfo@acheflow @ 0x123] [info] n: 0 fmt:rgb24 s:broken")
                 .unwrap()
                 .is_err()
         );
@@ -406,7 +475,7 @@ mod tests {
         workspace.add_source();
         let input = Arc::new(Input::new(workspace.sources.remove(0)));
         let cancel = CancellationToken::new();
-        let tx = decoder(input.clone(), cancel.clone()).unwrap();
+        let tx = decoder(input.clone(), cancel.clone(), 0).unwrap();
         for (index, (width, height)) in [(160, 90), (90, 160), (320, 180)].into_iter().enumerate() {
             let fixture = tokio::process::Command::new(crate::ffmpeg::executable())
                 .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])

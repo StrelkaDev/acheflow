@@ -36,6 +36,8 @@ pub(crate) fn Slider(
     #[props(default)] unit: String,
     #[props(default = false)] vertical: bool,
     #[props(default)] reset: Option<i32>,
+    #[props(default)] marker: Option<i32>,
+    #[props(default)] format_value: Option<Callback<i32, String>>,
 ) -> Element {
     let mut handle = use_signal(|| None::<NodeHandle>);
     let mut current = use_signal(|| value.clamp(min, max));
@@ -59,11 +61,14 @@ pub(crate) fn Slider(
         0.
     };
     let position = fraction.clamp(0., 1.) * 100.;
+    let format =
+        |value| format_value.map_or_else(|| format!("{value}{unit}"), |format| format.call(value));
+    let readout = format(current());
     rsx! {div {class:if vertical {"value-slider vertical-slider"}else{"value-slider"},
-        div {class:"slider-caption",span {"{label}"}if !vertical {span {class:"slider-readout","{current}{unit}"}}}
+        div {class:"slider-caption",span {"{label}"}if !vertical {span {class:"slider-readout","{readout}"}}}
         div {class:if vertical {"slider-control vertical"}else{"slider-control"},role:"slider",tabindex:0,
-            "aria-label":label.clone(),"aria-valuemin":min.to_string(),"aria-valuemax":max.to_string(),"aria-valuenow":current().to_string(),"aria-valuetext":format!("{}{unit}",current()),"aria-orientation":if vertical {"vertical"}else{"horizontal"},
-            title:format!("{label}: {}{unit}. Arrow keys: one step; Page Up/Down: ten steps.",current()),
+            "aria-label":label.clone(),"aria-valuemin":min.to_string(),"aria-valuemax":max.to_string(),"aria-valuenow":current().to_string(),"aria-valuetext":readout.clone(),"aria-orientation":if vertical {"vertical"}else{"horizontal"},
+            title:format!("{label}: {readout}. Arrow keys: one step; Page Up/Down: ten steps."),
             onmounted:move |e|handle.set(e.data().downcast::<NodeHandle>().cloned()),
             onpointerdown:move |e|{
                 if !e.is_primary() || e.trigger_button().is_some_and(|b|b!=MouseButton::Primary){return;}
@@ -108,11 +113,14 @@ pub(crate) fn Slider(
             },
             div {class:"slider-lane",
                 div {class:"slider-fill",style:format!("{}:{position:.2}%;",if vertical {"height"}else{"width"})}
+                if let Some(marker)=marker.filter(|_| max>min) {
+                    div {class:"slider-marker",style:format!("{}:{:.2}%;",if vertical {"bottom"}else{"left"},f64::from(marker.clamp(min,max)-min)*100./f64::from(max-min))}
+                }
                 div {class:"slider-thumb",style:format!("{}:calc({position:.2}% - {}px);",if vertical {"bottom"}else{"left"},if vertical {5}else{7})}
             }
             if dragging() {div {class:"slider-drag-shield"}}
         }
-        if vertical {span {class:"slider-readout","{current}{unit}"}}
-        if let Some(reset)=reset {button {class:"slider-reset",title:format!("Reset {label} to {reset}{unit}"),"aria-label":format!("Reset {label} to {reset}{unit}"),onclick:move |_|update(reset),"↺"}}
+        if vertical {span {class:"slider-readout","{readout}"}}
+        if let Some(reset)=reset {button {class:"slider-reset",title:format!("Reset {label} to {}",format(reset)),"aria-label":format!("Reset {label} to {}",format(reset)),onclick:move |_|update(reset),"↺"}}
     }}
 }

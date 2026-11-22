@@ -7,6 +7,8 @@ use acheflow_extension_api::{
 use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_CLIENTS: usize = 64;
+const MAX_RETAINED_CLIENTS: usize = 512;
+const RETIRED_REGISTRATION_RETENTION_MS: u64 = INTENT_RETENTION_MS;
 const MAX_CONNECTIONS: usize = 16;
 const MAX_WORKSPACES: usize = 64;
 const MAX_INSTRUCTIONS: usize = 512;
@@ -14,7 +16,16 @@ const MAX_INSTRUCTIONS: usize = 512;
 struct Registration {
     requested: ClientRegistration,
     status: ExecutorStatus,
-    active: bool,
+    retired_at_ms: Option<u64>,
+}
+impl Registration {
+    fn is_active(&self) -> bool {
+        self.retired_at_ms.is_none()
+    }
+
+    fn retire(&mut self, at_ms: u64) {
+        self.retired_at_ms.get_or_insert(at_ms);
+    }
 }
 struct Pending {
     instruction: Instruction,
@@ -136,7 +147,9 @@ impl ExecutionRegistry {
                     .iter()
                     .filter_map(|c| granted(c, &policy))
                     .collect();
-                registration.active &= !registration.status.connections.is_empty();
+                if registration.status.connections.is_empty() {
+                    registration.retire(now.min(registration.status.expires_at_ms));
+                }
             }
         }
         self.policies.insert(workspace.into(), policy);
@@ -160,7 +173,7 @@ impl ExecutionRegistry {
         if let Some(old) = self.clients.get_mut(&key) {
             if request.generation < old.requested.generation
                 || (request.generation == old.requested.generation
-                    && (!old.active || old.requested != request))
+                    && (!old.is_active() || old.requested != request))
             {
                 return Err("conflict: stale or changed registration".into());
             }
@@ -168,8 +181,13 @@ impl ExecutionRegistry {
                 old.status.expires_at_ms = now.saturating_add(REGISTRATION_TTL_MS);
                 return Ok(old.status.clone());
             }
-        } else if self.clients.len() >= MAX_CLIENTS {
-            return Err("unavailable: client registration limit".into());
+        } else if self.clients.len() >= MAX_RETAINED_CLIENTS {
+            return Err("unavailable: client generation retention limit".into());
+        }
+        if !self.clients.get(&key).is_some_and(Registration::is_active)
+            && self.clients.values().filter(|r| r.is_active()).count() >= MAX_CLIENTS
+        {
+            return Err("unavailable: active client registration limit".into());
         }
         let policy = self
             .policies
@@ -191,7 +209,7 @@ impl ExecutionRegistry {
             || self.clients.iter().any(|((owner, other), r)| {
                 owner == workspace
                     && other != actor
-                    && r.active
+                    && r.is_active()
                     && r.status.connections.iter().any(|old| {
                         connections
                             .iter()
@@ -212,7 +230,7 @@ impl ExecutionRegistry {
             Registration {
                 requested: request,
                 status: status.clone(),
-                active: true,
+                retired_at_ms: None,
             },
         );
         self.maintain(now);
@@ -227,7 +245,7 @@ impl ExecutionRegistry {
     ) -> Result<&ExecutorStatus, String> {
         self.clients
             .get(&(workspace.into(), actor.into()))
-            .filter(|r| r.active && r.status.generation == generation)
+            .filter(|r| r.is_active() && r.status.generation == generation)
             .map(|r| &r.status)
             .ok_or_else(|| "unavailable: client registration is not active".into())
     }
@@ -259,7 +277,7 @@ impl ExecutionRegistry {
         self.clients
             .get_mut(&(workspace.into(), actor.into()))
             .unwrap()
-            .active = false;
+            .retire(now);
         self.maintain(now);
         Ok(())
     }
@@ -269,7 +287,7 @@ impl ExecutionRegistry {
     pub fn forget_retired(&mut self, workspace: &str, actor: &str, now: u64) -> bool {
         self.maintain(now);
         let key = (workspace.into(), actor.into());
-        if self.clients.get(&key).is_some_and(|r| !r.active) {
+        if self.clients.get(&key).is_some_and(|r| !r.is_active()) {
             self.clients.remove(&key);
             true
         } else {
@@ -280,14 +298,15 @@ impl ExecutionRegistry {
         self.maintain(now);
         self.clients
             .iter()
-            .filter(|((owner, _), r)| owner == workspace && r.active)
+            .filter(|((owner, _), r)| owner == workspace && r.is_active())
             .map(|(_, r)| r.status.clone())
             .collect()
     }
     pub fn withdraw_workspace(&mut self, workspace: &str, now: u64) {
+        self.policies.remove(workspace);
         for ((owner, _), registration) in &mut self.clients {
             if owner == workspace {
-                registration.active = false;
+                registration.retire(now.min(registration.status.expires_at_ms));
             }
         }
         self.maintain(now);
@@ -477,7 +496,7 @@ impl ExecutionRegistry {
     fn maintain(&mut self, now: u64) {
         for registration in self.clients.values_mut() {
             if registration.status.expires_at_ms <= now {
-                registration.active = false;
+                registration.retire(registration.status.expires_at_ms);
             }
         }
         for pending in self.instructions.values_mut() {
@@ -492,7 +511,7 @@ impl ExecutionRegistry {
                 .clients
                 .get(&(item.workspace_id.clone(), item.client_id.clone()))
                 .is_some_and(|r| {
-                    r.active
+                    r.is_active()
                         && r.status.generation == item.generation
                         && r.status.connections.iter().any(|c| {
                             c.id == item.connection_id
@@ -509,6 +528,11 @@ impl ExecutionRegistry {
                 };
             }
         }
+        self.clients.retain(|_, registration| {
+            registration.retired_at_ms.is_none_or(|retired| {
+                retired.saturating_add(RETIRED_REGISTRATION_RETENTION_MS) > now
+            })
+        });
         self.instructions.retain(|_, p| {
             p.instruction
                 .created_at_ms

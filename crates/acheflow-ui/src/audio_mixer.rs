@@ -68,15 +68,106 @@ fn MixerText(label: &'static str, value: String, change: EventHandler<String>) -
 pub fn Meters(meter: AudioMeter, #[props(default = false)] vertical: bool) -> Element {
     rsx! {div {class:if vertical {"audio-meters vertical-meters"}else{"audio-meters"},
         for channel in 0..2 {
-            div {class:"audio-meter-row",span {if channel==0 {"L"}else{"R"}}
-                div {class:"audio-meter",role:"meter","aria-label":if channel==0 {"Left peak"}else{"Right peak"},"aria-valuemin":"0","aria-valuemax":"100","aria-valuenow":format!("{:.0}",meter.peak[channel].min(1.)*100.),
-                    div {class:if meter.peak[channel]>1.{"audio-level clipped"}else{"audio-level"},style:format!("{}: {:.1}%;",if vertical {"height"}else{"width"},meter.peak[channel].clamp(0.,1.)*100.)}
-                }
-                span {class:"audio-db",if meter.peak[channel]>0.00001 {"{20.*meter.peak[channel].log10():.1} dBFS"}else{"−∞ dBFS"}}
+            {
+                let peak=f64::from(meter.peak[channel]);
+                let db=decibels(peak);
+                let percentage=db_position(db, -60.);
+                let readout=db_text(peak, "dBFS");
+                rsx! {div {class:"audio-meter-row",span {if channel==0 {"L"}else{"R"}}
+                    div {class:"audio-meter",role:"meter","aria-label":if channel==0 {"Left peak"}else{"Right peak"},"aria-valuemin":"-60","aria-valuemax":"6.02","aria-valuenow":format!("{:.1}",db.clamp(-60.,max_gain_db())),"aria-valuetext":readout.clone(),
+                        div {class:"audio-level"}
+                        div {class:"audio-meter-mask",style:format!("{}:{:.2}%;",if vertical {"height"}else{"width"},100.-percentage)}
+                        div {class:"audio-meter-zero",title:"0 dBFS"}
+                    }
+                    span {class:"audio-db","{readout}"}
+                }}
             }
         }
         if meter.clipped_samples>0 {span {class:"field-error","Clipping: {meter.clipped_samples} samples / block"}}
     }}
+}
+
+const UNITY_POSITION: i32 = 800;
+const FADER_END: i32 = 1000;
+const FADER_MIN_DB: f64 = -40.;
+
+fn decibels(linear: f64) -> f64 {
+    20. * linear.max(0.).log10()
+}
+
+fn max_gain_db() -> f64 {
+    decibels(2.)
+}
+
+fn db_text(linear: f64, unit: &str) -> String {
+    if linear <= 0. {
+        format!("−∞ {unit}")
+    } else {
+        format!("{:+.1} {unit}", decibels(linear))
+    }
+}
+
+fn db_position(db: f64, floor: f64) -> f64 {
+    if db <= 0. {
+        80. * (1. - db.clamp(floor, 0.) / floor)
+    } else {
+        80. + 20. * (db / max_gain_db()).min(1.)
+    }
+}
+
+fn gain_position(gain: u32) -> i32 {
+    let db = decibels(f64::from(gain) / 100.);
+    if gain == 0 {
+        0
+    } else if gain <= 100 {
+        1 + ((db_position(db, FADER_MIN_DB) / 80.) * f64::from(UNITY_POSITION - 1)).round() as i32
+    } else {
+        (db_position(db, FADER_MIN_DB) * 10.).round() as i32
+    }
+}
+
+fn position_gain(position: i32) -> u32 {
+    if position == 0 {
+        return 0;
+    }
+    let db = if position <= UNITY_POSITION {
+        FADER_MIN_DB * (1. - f64::from(position - 1) / f64::from(UNITY_POSITION - 1))
+    } else {
+        max_gain_db() * f64::from(position - UNITY_POSITION) / f64::from(FADER_END - UNITY_POSITION)
+    };
+    (100. * 10_f64.powf(db / 20.)).round() as u32
+}
+
+#[component]
+pub(crate) fn GainFader(
+    label: String,
+    gain: u32,
+    change: EventHandler<u32>,
+    #[props(default = false)] vertical: bool,
+    #[props(default = true)] reset_unity: bool,
+) -> Element {
+    rsx! {Slider {
+        label, vertical, value:gain_position(gain),min:0,max:FADER_END,
+        marker:Some(UNITY_POSITION),reset:reset_unity.then_some(UNITY_POSITION),
+        format_value:Callback::new(|position:i32| db_text(f64::from(position_gain(position))/100., "dB")),
+        change:move |position|change.call(position_gain(position)),
+    }}
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+
+    #[test]
+    fn audio_scales_place_unity_at_eighty_percent_and_keep_saved_gain_exact() {
+        assert_eq!(gain_position(100), 800);
+        assert_eq!(db_position(decibels(1.), -60.), 80.);
+        assert_eq!(db_position(decibels(0.), -60.), 0.);
+        assert!(db_position(decibels(0.1), -60.) > 50.);
+        for gain in 0..=200 {
+            assert_eq!(position_gain(gain_position(gain)), gain);
+        }
+    }
 }
 #[component]
 pub fn AudioMixer(mut project: Signal<Workspace>) -> Element {
@@ -112,7 +203,7 @@ pub fn AudioMixer(mut project: Signal<Workspace>) -> Element {
             div {class:"audio-bus-grid",for bus in scene.audio.buses.clone() {
                 div {key:"{scene.id}-{bus.id}",class:"audio-bus",
                     MixerText {label:"Bus name",value:bus.name.clone(),change:move |v|{if let Some(b)=project.write().scenes.iter_mut().find(|s|s.id==scene.id).and_then(|s|s.audio.buses.iter_mut().find(|b|b.id==bus.id)){b.name=v;}}}
-                    Slider {label:"Master gain",unit:"%",value:bus.gain as i32,min:0,max:200,reset:Some(100),change:move |v:i32|{if let Some(b)=project.write().scenes.iter_mut().find(|s|s.id==scene.id).and_then(|s|s.audio.buses.iter_mut().find(|b|b.id==bus.id)){b.gain=v as u32;}}}
+                    GainFader {label:"Master gain",gain:bus.gain,change:move |v:u32|{if let Some(b)=project.write().scenes.iter_mut().find(|s|s.id==scene.id).and_then(|s|s.audio.buses.iter_mut().find(|b|b.id==bus.id)){b.gain=v;}}}
                     div {class:"row",button {class:if bus.muted{"selected"}else{""},"aria-pressed":bus.muted.to_string(),onclick:move |_|{if let Some(b)=project.write().scenes.iter_mut().find(|s|s.id==scene.id).and_then(|s|s.audio.buses.iter_mut().find(|b|b.id==bus.id)){b.muted= !b.muted;}},"Mute"}
                         if bus.id!=1 {button {onclick:move |_|project.write().remove_audio_bus(scene.id,bus.id),"Remove bus"}}
                     }
@@ -123,7 +214,7 @@ pub fn AudioMixer(mut project: Signal<Workspace>) -> Element {
             }
             section {class:"panel",div {class:"panel-heading",h2 {"Source tracks"}span {class:"badge","Stereo · 48 kHz"}}
                 div {class:"panel-note","Track 0 of sources in this scene starts on Program. Additional tracks start unrouted. Sends are independent; gain does not change when other sources connect. Solo applies across this scene."}
-                for source in workspace.sources.iter().filter(|s|s.kind.is_rtmp()) {
+                for source in workspace.sources.iter().filter(|s|s.kind.has_audio_input()) {
                     {
                         let input=status.as_ref().and_then(|s|s.sources.iter().find(|i|i.id==source.id));
                         let mut tracks=BTreeMap::from([(0,None)]);
@@ -143,7 +234,7 @@ pub fn AudioMixer(mut project: Signal<Workspace>) -> Element {
                                     }else{Meters {meter:AudioMeter::default()}}
                                     StripControls {project,scene_id:scene.id,strip:strip.clone()}
                                     div {class:"audio-sends",for bus in &scene.audio.buses {
-                                        div {class:"field",span {"Send → {bus.name}"}Slider {label:"Send · 0 = off",unit:"%",value:strip.sends.get(&bus.id).copied().unwrap_or(0) as i32,min:0,max:200,change:{let id=bus.id;move |v:i32|edit_strip(project,scene.id,key,|s|{if v==0{s.sends.remove(&id);}else{s.sends.insert(id,v as u32);}})}}}
+                                        div {class:"field",span {"Send → {bus.name}"}GainFader {label:"Send gain",gain:strip.sends.get(&bus.id).copied().unwrap_or(0),reset_unity:false,change:{let id=bus.id;move |v:u32|edit_strip(project,scene.id,key,|s|{if v==0{s.sends.remove(&id);}else{s.sends.insert(id,v);}})}}}
                                     }}
                                 }}
                             }
@@ -164,7 +255,7 @@ pub(crate) fn StripControls(
 ) -> Element {
     let key = strip.key();
     rsx! {div {class:"form-grid",
-        if show_gain {Slider {label:"Gain",unit:"%",value:strip.gain as i32,min:0,max:200,reset:Some(100),change:move |v:i32|edit_strip(project,scene_id,key,|s|s.gain=v as u32)}}
+        if show_gain {GainFader {label:"Gain",gain:strip.gain,change:move |v:u32|edit_strip(project,scene_id,key,|s|s.gain=v)}}
         Slider {label:"Balance L / R",value:strip.pan,min:-100,max:100,reset:Some(0),change:move |v|edit_strip(project,scene_id,key,|s|s.pan=v)}
         div {class:"field",span {"Controls"}div {class:"row",
             button {class:if strip.muted{"selected"}else{""},"aria-pressed":strip.muted.to_string(),onclick:move |_|edit_strip(project,scene_id,key,|s|s.muted= !s.muted),"Mute"}

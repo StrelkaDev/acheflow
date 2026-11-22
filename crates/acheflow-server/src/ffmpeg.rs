@@ -1,13 +1,21 @@
-use std::{path::PathBuf, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::Arc,
+    time::Duration,
+};
 
 use acheflow_media_api::{Encoder, MediaCapabilities, MediaType, valid_encoder_name};
-use axum::{Json, extract::State};
+use axum::{Json, extract::State, http::header, response::IntoResponse};
 use tokio::{process::Command, sync::Mutex};
 
 pub type CapabilityState = Arc<Mutex<MediaCapabilities>>;
 
-pub async fn get(State(state): State<CapabilityState>) -> Json<MediaCapabilities> {
-    Json(state.lock().await.clone())
+pub async fn get(State(state): State<CapabilityState>) -> impl IntoResponse {
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(state.lock().await.clone()),
+    )
 }
 
 pub async fn refresh(State(state): State<CapabilityState>) -> Json<MediaCapabilities> {
@@ -18,14 +26,26 @@ pub async fn refresh(State(state): State<CapabilityState>) -> Json<MediaCapabili
 }
 
 pub async fn discover() -> MediaCapabilities {
-    match scan(&executable()).await {
-        Ok(capabilities) => capabilities,
+    let executable = executable();
+    match scan(&executable).await {
+        Ok(mut capabilities) => {
+            if !capabilities.srt_input {
+                capabilities.srt_input = srt_fallback(&executable).await.is_some();
+            }
+            capabilities
+        }
         Err(error) => MediaCapabilities {
             error: Some(error),
             ..Default::default()
         },
     }
 }
+
+#[cfg(target_os = "macos")]
+const HOMEBREW_FFMPEG_FULL: [&str; 2] = [
+    "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg",
+    "/usr/local/opt/ffmpeg-full/bin/ffmpeg",
+];
 
 pub(crate) fn executable() -> PathBuf {
     if let Some(path) = std::env::var_os("ACHEFLOW_FFMPEG") {
@@ -44,12 +64,43 @@ pub(crate) fn executable() -> PathBuf {
         return path;
     }
     #[cfg(target_os = "macos")]
-    for path in ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"] {
+    for path in ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"]
+        .into_iter()
+        .chain(HOMEBREW_FFMPEG_FULL)
+    {
         if std::path::Path::new(path).is_file() {
             return path.into();
         }
     }
     name.into()
+}
+
+pub(crate) async fn srt_executable() -> Option<PathBuf> {
+    let primary = executable();
+    if supports_srt(&primary).await {
+        return Some(primary);
+    }
+    srt_fallback(&primary).await
+}
+
+async fn supports_srt(executable: &Path) -> bool {
+    output(executable, &["-protocols"])
+        .await
+        .is_ok_and(|protocols| has_protocol(&protocols, "Input:", "srt"))
+}
+
+async fn srt_fallback(primary: &Path) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("ACHEFLOW_FFMPEG").is_none() {
+        for candidate in HOMEBREW_FFMPEG_FULL.into_iter().map(Path::new) {
+            if candidate != primary && candidate.is_file() && supports_srt(candidate).await {
+                return Some(candidate.to_owned());
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = primary;
+    None
 }
 
 async fn output(executable: &std::path::Path, args: &[&str]) -> Result<String, String> {
@@ -108,9 +159,8 @@ async fn scan(executable: &std::path::Path) -> Result<MediaCapabilities, String>
         available: true,
         version: Some(version),
         encoders,
-        rtmp_output: protocols
-            .split_once("Output:")
-            .is_some_and(|(_, s)| s.lines().any(|l| l.trim() == "rtmp")),
+        rtmp_output: has_protocol(&protocols, "Output:", "rtmp"),
+        srt_input: has_protocol(&protocols, "Input:", "srt"),
         flv_muxer: muxers.lines().any(|line| {
             let mut parts = line.split_whitespace();
             let flags = parts.next().unwrap_or("");
@@ -120,6 +170,15 @@ async fn scan(executable: &std::path::Path) -> Result<MediaCapabilities, String>
         enhanced_rtmp,
         error: None,
     })
+}
+
+fn has_protocol(list: &str, section: &str, protocol: &str) -> bool {
+    list.lines()
+        .map(str::trim)
+        .skip_while(|line| *line != section)
+        .skip(1)
+        .take_while(|line| !line.ends_with(':'))
+        .any(|line| line == protocol)
 }
 
 fn hardware_encoder_help(help: &str) -> bool {
@@ -185,6 +244,20 @@ fn parse_encoders(output: &str) -> Vec<Encoder> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn srt_support_requires_the_exact_input_protocol() {
+        assert!(has_protocol(
+            "Input:\n  rtmp\n  srt\nOutput:\n  rtmp",
+            "Input:",
+            "srt"
+        ));
+        assert!(!has_protocol(
+            "Input:\n  srtp\nOutput:\n  srt",
+            "Input:",
+            "srt"
+        ));
+    }
     #[test]
     fn hardware_detection_uses_encoder_capabilities_not_description() {
         assert!(hardware_encoder_help(

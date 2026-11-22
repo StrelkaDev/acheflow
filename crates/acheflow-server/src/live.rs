@@ -23,6 +23,12 @@ use tokio_util::sync::CancellationToken;
 
 pub type RuntimeState = Arc<Runtime>;
 pub type ApiResult = Result<Json<LiveStatus>, (StatusCode, Json<ApiError>)>;
+type InputWorker = tokio::task::JoinHandle<()>;
+
+struct InputChanges {
+    retired: Vec<InputWorker>,
+    managed: Vec<Arc<Input>>,
+}
 
 pub struct Runtime {
     pub visual_services: RwLock<Option<Arc<Mutex<crate::control::Services>>>>,
@@ -36,6 +42,7 @@ pub struct Runtime {
     pub rtmp_tls: std::sync::atomic::AtomicBool,
     pub shutdown: CancellationToken,
     pub activated: std::sync::atomic::AtomicBool,
+    monitor: crate::media_monitor::ServerMonitor,
     saved: Mutex<(u64, Option<crate::workspace_store::Store>)>,
 }
 
@@ -53,6 +60,7 @@ impl Runtime {
             rtmp_tls: std::sync::atomic::AtomicBool::new(false),
             shutdown: CancellationToken::new(),
             activated: std::sync::atomic::AtomicBool::new(false),
+            monitor: Default::default(),
             saved: Mutex::new((0, None)),
         })
     }
@@ -92,6 +100,7 @@ impl Runtime {
             rtmp_tls: self.rtmp_tls.load(Ordering::Relaxed),
             sources,
             formats,
+            server_load: self.monitor.samples(),
         }
     }
 
@@ -166,7 +175,49 @@ impl Runtime {
     ) -> Result<(), String> {
         workspace.migrate_spatial();
         validate(&workspace)?;
+        let srt_available = self.capabilities.lock().await.srt_input;
         let formats = self.formats.lock().await;
+        let InputChanges { retired, managed } =
+            self.install_inputs(workspace, activate, &formats)?;
+        for worker in retired {
+            let _ = worker.await;
+        }
+        for input in managed {
+            use acheflow_media_api::visual::SourceKind;
+            match &input.config.kind {
+                SourceKind::Srt { port } => match self.rtmp_address.parse::<std::net::SocketAddr>()
+                {
+                    Ok(mut address) if srt_available => {
+                        address.set_port(*port);
+                        crate::srt_input::start(&input, address, &self.shutdown);
+                    }
+                    _ => {
+                        let worker = input.stop_managed();
+                        if let Some(worker) = worker {
+                            let _ = worker.await;
+                        }
+                        *input.error.lock().unwrap() =
+                            Some("SRT listener is unavailable on this server".into());
+                    }
+                },
+                SourceKind::Camera { .. } => {
+                    crate::camera_input::start(&input, &self.shutdown);
+                }
+                SourceKind::Microphone { .. } => {
+                    crate::microphone_input::start(&input, &self.shutdown);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn install_inputs(
+        &self,
+        workspace: Workspace,
+        activate: bool,
+        formats: &[RunningFormat],
+    ) -> Result<InputChanges, String> {
         let mut current = self.workspace.write().unwrap();
         if workspace.edit_revision != self.revision_for(&current) {
             return Err("conflict: Workspace changed on the server. Refresh or explicitly resolve your local edits before applying.".into());
@@ -180,7 +231,7 @@ impl Runtime {
                     "conflict: Stop streaming before replacing the server workspace.".into(),
                 );
             }
-            for format in formats.iter() {
+            for format in formats {
                 if !old.same_output_profile(&workspace, format.orientation) {
                     return Err("Stop streaming before changing resolution, FPS or outputs. Scene layers, mixers and audio routes can be changed live.".into());
                 }
@@ -201,29 +252,37 @@ impl Runtime {
         // Publish neither the new configuration nor input cancellations until saving succeeds.
         self.commit(&mut current, Some(workspace))?;
         let workspace = current.as_ref().unwrap();
+        let mut retired = Vec::new();
         inputs.retain(|id, input| {
             let keep = activate
                 && !switching
                 && workspace.sources.iter().any(|s| {
-                    s.kind.is_rtmp()
+                    s.kind.is_media_input()
                         && s.id == *id
+                        && s.kind == input.config.kind
                         && s.key == input.config.key
                         && s.url == input.config.url
                 });
             if !keep {
                 input.disconnect();
+                retired.extend(input.stop_managed());
             }
             keep
         });
         if activate {
-            for source in workspace.sources.iter().filter(|s| s.kind.is_rtmp()) {
+            for source in workspace.sources.iter().filter(|s| s.kind.is_media_input()) {
                 inputs
                     .entry(source.id)
                     .or_insert_with(|| Arc::new(Input::new(source.clone())));
             }
         }
         self.activated.store(activate, Ordering::Release);
-        Ok(())
+        let managed = inputs
+            .values()
+            .filter(|i| !i.config.kind.is_rtmp())
+            .cloned()
+            .collect();
+        Ok(InputChanges { retired, managed })
     }
     async fn apply(&self, workspace: Workspace) -> Result<(), String> {
         self.install(workspace, true).await
@@ -239,7 +298,8 @@ impl Runtime {
         let input = inputs
             .values()
             .find(|input| {
-                bool::from(input.config.key.as_bytes().ct_eq(key.as_bytes()))
+                input.config.kind.is_rtmp()
+                    && bool::from(input.config.key.as_bytes().ct_eq(key.as_bytes()))
                     && url::Url::parse(&input.config.url)
                         .is_ok_and(|url| url.path().trim_matches('/') == app)
             })
@@ -270,9 +330,21 @@ impl Runtime {
     pub async fn close(&self) {
         self.shutdown.cancel();
         self.stop().await;
-        for input in self.inputs.lock().unwrap().values() {
-            input.disconnect();
+        for worker in self.clear_inputs() {
+            let _ = worker.await;
         }
+    }
+
+    fn clear_inputs(&self) -> Vec<InputWorker> {
+        self.inputs
+            .lock()
+            .unwrap()
+            .drain()
+            .filter_map(|(_, input)| {
+                input.disconnect();
+                input.stop_managed()
+            })
+            .collect()
     }
 }
 
@@ -492,15 +564,11 @@ pub async fn deactivate(
     let _guard = runtime.control.lock().await;
     check_owner(&runtime, &request.workspace_id)?;
     runtime.stop().await;
-    {
-        let mut inputs = runtime.inputs.lock().unwrap();
-        for input in inputs.values() {
-            input.disconnect();
-        }
-        inputs.clear();
-        runtime.activated.store(false, Ordering::Release);
-        runtime.control_revision.fetch_add(1, Ordering::AcqRel);
+    for worker in runtime.clear_inputs() {
+        let _ = worker.await;
     }
+    runtime.activated.store(false, Ordering::Release);
+    runtime.control_revision.fetch_add(1, Ordering::AcqRel);
     Ok(Json(runtime.status().await))
 }
 
@@ -674,6 +742,8 @@ mod tests {
         };
         let image = Arc::new(image::RgbImage::new(16, 16));
         *input.frame.write().unwrap() = Some(crate::ingest::VideoFrame {
+            pts: None,
+            generation: 0,
             received: std::time::Instant::now(),
             image: image.clone(),
         });

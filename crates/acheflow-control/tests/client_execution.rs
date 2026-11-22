@@ -411,6 +411,190 @@ fn heartbeat_does_not_revive_an_expired_generation_and_uncertain_writes_stay_fin
 }
 
 #[test]
+fn expired_executors_release_active_capacity_without_reviving_stale_generations() {
+    let mut registry = setup();
+    let expired = 1000 + REGISTRATION_TTL_MS;
+    for n in 0..80 {
+        let now = expired + n * REGISTRATION_TTL_MS;
+        registry
+            .register(
+                "workspace",
+                &format!("client-{n}"),
+                registration("alpha", 1),
+                now,
+            )
+            .unwrap();
+    }
+    let now = expired + 80 * REGISTRATION_TTL_MS;
+    assert!(registry.connections("workspace", now).is_empty());
+    assert!(
+        registry
+            .register("workspace", "client-79", registration("alpha", 1), now)
+            .unwrap_err()
+            .starts_with("conflict:")
+    );
+    registry
+        .register("workspace", "client-79", registration("alpha", 2), now)
+        .unwrap();
+}
+
+#[test]
+fn withdrawing_workspaces_releases_policies_and_keeps_instructions_isolated() {
+    let mut registry = setup();
+    let request = intent("1000:send", "client-a", 1, "hello", 5000);
+    registry
+        .enqueue("workspace", request.clone(), 1000)
+        .unwrap();
+    let claim = registry.claim("workspace", "client-a", 1, 1, 1001).unwrap();
+    registry
+        .enqueue(
+            "workspace",
+            intent("1000:queued", "client-b", 1, "hello", 5000),
+            1001,
+        )
+        .unwrap();
+    registry.withdraw_workspace("workspace", 1002);
+    for n in 0..80 {
+        let workspace = format!("workspace-{n}");
+        registry
+            .set_policy(&workspace, vec![policy("alpha")], 1002)
+            .unwrap();
+        registry
+            .register(&workspace, "client-a", registration("alpha", 1), 1002)
+            .unwrap();
+        registry.withdraw_workspace(&workspace, 1002);
+    }
+    assert!(registry.instructions("workspace-0", 1002).is_empty());
+    assert_eq!(
+        registry
+            .instruction("workspace", "1000:queued", 1002)
+            .unwrap()
+            .state,
+        InstructionState::Cancelled
+    );
+    assert_eq!(
+        registry.enqueue("workspace", request, 1002).unwrap().state,
+        InstructionState::Unknown
+    );
+    assert!(
+        registry
+            .register("workspace", "fresh-client", registration("alpha", 1), 1002)
+            .unwrap_err()
+            .starts_with("forbidden:")
+    );
+    registry
+        .set_policy("workspace", vec![policy("alpha")], 1003)
+        .unwrap();
+    registry
+        .register("workspace", "client-a", registration("alpha", 2), 1003)
+        .unwrap();
+    assert!(
+        registry
+            .claim("workspace", "client-a", 2, 1, 1003)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        registry
+            .report(
+                "workspace",
+                "client-a",
+                2,
+                ExecutionReceipt {
+                    instruction_id: "1000:send".into(),
+                    lease: claim[0].lease,
+                    outcome: ExecutionOutcome::Sent,
+                    external_id: None,
+                },
+                1003
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn active_capacity_is_bounded_and_renewals_keep_their_slot() {
+    let mut registry = ExecutionRegistry::default();
+    for n in 0..64 {
+        let workspace = format!("workspace-{n}");
+        registry
+            .set_policy(&workspace, vec![policy("alpha")], 1000)
+            .unwrap();
+        registry
+            .register(&workspace, "client-a", registration("alpha", 1), 1000)
+            .unwrap();
+    }
+    assert!(
+        registry
+            .set_policy("overflow", vec![policy("alpha")], 1001)
+            .unwrap_err()
+            .starts_with("unavailable:")
+    );
+    registry
+        .set_policy("workspace-0", vec![policy("alpha"), policy("beta")], 1001)
+        .unwrap();
+    assert!(
+        registry
+            .register("workspace-0", "extra", registration("beta", 1), 1001)
+            .unwrap_err()
+            .starts_with("unavailable:")
+    );
+    registry
+        .register("workspace-0", "client-a", registration("alpha", 1), 1001)
+        .unwrap();
+    registry.withdraw_workspace("workspace-1", 1001);
+    registry
+        .register("workspace-0", "extra", registration("beta", 1), 1001)
+        .unwrap();
+}
+
+#[test]
+fn generation_history_is_bounded_without_evicting_recent_entries() {
+    let mut registry = ExecutionRegistry::default();
+    registry
+        .set_policy("workspace", vec![policy("alpha")], 1000)
+        .unwrap();
+    for n in 0..512 {
+        let actor = format!("client-{n}");
+        registry
+            .register("workspace", &actor, registration("alpha", 1), 1000)
+            .unwrap();
+        registry.unregister("workspace", &actor, 1, 1000).unwrap();
+    }
+    let last_retained = 1000 + INTENT_RETENTION_MS - 1;
+    assert!(
+        registry
+            .register(
+                "workspace",
+                "new-client",
+                registration("alpha", 1),
+                last_retained
+            )
+            .unwrap_err()
+            .starts_with("unavailable: client generation retention limit")
+    );
+    assert!(
+        registry
+            .register(
+                "workspace",
+                "client-0",
+                registration("alpha", 1),
+                last_retained
+            )
+            .unwrap_err()
+            .starts_with("conflict:")
+    );
+    registry
+        .register(
+            "workspace",
+            "new-client",
+            registration("alpha", 1),
+            last_retained + 1,
+        )
+        .unwrap();
+}
+
+#[test]
 fn retained_intents_are_bounded_and_old_ids_cannot_be_replayed_after_pruning() {
     let mut registry = setup();
     for n in 0..512 {

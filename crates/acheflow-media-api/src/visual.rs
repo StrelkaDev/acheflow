@@ -9,6 +9,21 @@ use std::collections::BTreeMap;
 pub enum SourceKind {
     #[default]
     Rtmp,
+    Srt {
+        port: u16,
+    },
+    Camera {
+        device_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<CameraMode>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mirrored: bool,
+    },
+    Microphone {
+        device_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<MicrophoneMode>,
+    },
     Chat(ChatSource),
     Extension(ExtensionSource),
 }
@@ -16,9 +31,52 @@ impl SourceKind {
     pub fn is_rtmp(&self) -> bool {
         matches!(self, Self::Rtmp)
     }
+    pub fn is_video_input(&self) -> bool {
+        matches!(self, Self::Rtmp | Self::Srt { .. } | Self::Camera { .. })
+    }
+    pub fn is_audio_only(&self) -> bool {
+        matches!(self, Self::Microphone { .. })
+    }
+    pub fn is_media_input(&self) -> bool {
+        self.is_video_input() || self.is_audio_only()
+    }
+    pub fn has_audio_input(&self) -> bool {
+        matches!(
+            self,
+            Self::Rtmp | Self::Srt { .. } | Self::Microphone { .. }
+        )
+    }
     pub fn validate(&self) -> Result<(), String> {
         match self {
             Self::Rtmp => Ok(()),
+            Self::Srt { port } if *port >= 1024 => Ok(()),
+            Self::Srt { .. } => Err("SRT port must be between 1024 and 65535".into()),
+            Self::Camera {
+                device_id, mode, ..
+            } => {
+                if device_id.is_empty()
+                    || device_id.len() > 512
+                    || device_id.chars().any(char::is_control)
+                {
+                    return Err("Invalid camera device identity".into());
+                }
+                if mode.is_some_and(|mode| !mode.is_valid()) {
+                    return Err("Invalid camera capture mode".into());
+                }
+                Ok(())
+            }
+            Self::Microphone { device_id, mode } => {
+                if device_id.is_empty()
+                    || device_id.len() > 512
+                    || device_id.chars().any(char::is_control)
+                {
+                    return Err("Invalid microphone device identity".into());
+                }
+                if mode.is_some_and(|mode| !mode.is_valid()) {
+                    return Err("Invalid microphone capture mode".into());
+                }
+                Ok(())
+            }
             Self::Chat(config) => config.validate(),
             Self::Extension(config) => {
                 if !acheflow_extension_api::integration::valid_id(&config.extension_id, 64)
@@ -36,6 +94,46 @@ impl SourceKind {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MicrophoneMode {
+    pub sample_rate: u32,
+    pub channels: u32,
+    pub bit_depth: u32,
+}
+
+impl MicrophoneMode {
+    pub fn is_valid(self) -> bool {
+        (1_000..=768_000).contains(&self.sample_rate)
+            && (1..=32).contains(&self.channels)
+            && (1..=64).contains(&self.bit_depth)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CameraMode {
+    pub width: u32,
+    pub height: u32,
+    pub duration_value: u32,
+    pub duration_scale: u32,
+}
+
+impl CameraMode {
+    pub fn fps(self) -> f64 {
+        f64::from(self.duration_scale) / f64::from(self.duration_value)
+    }
+
+    pub fn is_valid(self) -> bool {
+        (1..=7680).contains(&self.width)
+            && (1..=7680).contains(&self.height)
+            && u64::from(self.width) * u64::from(self.height) <= 8_294_400
+            && self.duration_scale <= i32::MAX as u32
+            && (1.0..=240.0).contains(&self.fps())
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ExtensionSource {
@@ -184,7 +282,12 @@ pub fn source_documents(
         .iter()
         .filter_map(|source| {
             let document = match &source.kind {
-                SourceKind::Rtmp => return None,
+                SourceKind::Rtmp
+                | SourceKind::Srt { .. }
+                | SourceKind::Camera { .. }
+                | SourceKind::Microphone { .. } => {
+                    return None;
+                }
                 SourceKind::Chat(settings) => settings.document(chat, now),
                 SourceKind::Extension(settings) => {
                     let mut document = frames
@@ -210,6 +313,21 @@ pub fn source_documents(
 mod tests {
     use super::*;
     use acheflow_extension_api::interaction::ChatMessage;
+
+    #[test]
+    fn older_camera_sources_default_to_auto_without_mirroring() {
+        let legacy = serde_json::json!({"type":"camera","device_id":"fixture"});
+        let source: SourceKind = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(
+            source,
+            SourceKind::Camera {
+                device_id: "fixture".into(),
+                mode: None,
+                mirrored: false,
+            }
+        );
+        assert_eq!(serde_json::to_value(source).unwrap(), legacy);
+    }
     fn entry(at: u64) -> ChatEntry {
         ChatEntry {
             cursor: 1,
@@ -286,5 +404,43 @@ mod tests {
                 .children
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn microphone_capture_quality_roundtrips_and_legacy_sources_use_auto() {
+        let legacy = serde_json::json!({"type": "microphone", "device_id": "test-mic"});
+        let source: SourceKind = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&source).unwrap(), legacy);
+        assert_eq!(
+            source,
+            SourceKind::Microphone {
+                device_id: "test-mic".into(),
+                mode: None
+            }
+        );
+
+        let configured = SourceKind::Microphone {
+            device_id: "test-mic".into(),
+            mode: Some(MicrophoneMode {
+                sample_rate: 44_100,
+                channels: 2,
+                bit_depth: 24,
+            }),
+        };
+        configured.validate().unwrap();
+        assert_eq!(
+            serde_json::from_value::<SourceKind>(serde_json::to_value(&configured).unwrap())
+                .unwrap(),
+            configured
+        );
+        let invalid = SourceKind::Microphone {
+            device_id: "test-mic".into(),
+            mode: Some(MicrophoneMode {
+                sample_rate: 0,
+                channels: 2,
+                bit_depth: 24,
+            }),
+        };
+        assert!(invalid.validate().is_err());
     }
 }

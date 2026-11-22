@@ -410,7 +410,11 @@ impl Workspace {
         }
     }
     pub fn add_layer(&mut self, scene_id: u32, source_id: u32) {
-        if !self.sources.iter().any(|s| s.id == source_id) {
+        if !self
+            .sources
+            .iter()
+            .any(|s| s.id == source_id && !s.kind.is_audio_only())
+        {
             return;
         }
         if let Some(o) = self
@@ -423,7 +427,7 @@ impl Workspace {
             let size = self
                 .sources
                 .iter()
-                .find(|source| source.id == source_id && !source.kind.is_rtmp())
+                .find(|source| source.id == source_id && !source.kind.is_video_input())
                 .map(|source| Resolution {
                     width: source.resolution.width.min(size.width),
                     height: source.resolution.height.min(size.height),
@@ -487,9 +491,15 @@ impl Workspace {
     }
     pub fn validate_audio(&self) -> Result<(), String> {
         let sources = self.sources.iter().map(|s| s.id).collect::<Vec<_>>();
+        let visual_sources = self
+            .sources
+            .iter()
+            .filter(|s| !s.kind.is_audio_only())
+            .map(|s| s.id)
+            .collect::<Vec<_>>();
         for scene in &self.scenes {
             if let Some(spatial) = &scene.spatial {
-                spatial.validate(&self.sources.iter().map(|s| s.id).collect::<Vec<_>>())?;
+                spatial.validate(&visual_sources)?;
             }
             scene.audio.validate(&sources)?;
         }
@@ -637,16 +647,48 @@ impl Workspace {
                         || source.url.len() <= 7
                         || source.key.trim().is_empty()))
             {
-                return Err("Invalid or duplicate RTMP source".into());
+                return Err("Invalid or duplicate source".into());
             }
         }
         let mut tokens = std::collections::HashSet::new();
+        let mut srt_ports = std::collections::HashSet::new();
+        let mut cameras = std::collections::HashSet::new();
+        let mut microphones = std::collections::HashSet::new();
         for source in &self.sources {
             if source.kind.is_rtmp() && !tokens.insert((&source.url, &source.key)) {
                 return Err("RTMP source tokens must be unique per ingest URL".into());
             }
-            if !valid_size(&source.resolution)
-                || source.resolution.width as u64 * source.resolution.height as u64 > 1920 * 1080
+            if let crate::visual::SourceKind::Srt { port } = source.kind {
+                if !srt_ports.insert(port) {
+                    return Err("Each SRT source needs a different UDP port".into());
+                }
+                if !(10..=64).contains(&source.key.len())
+                    || !source
+                        .key
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
+                {
+                    return Err("SRT passphrase must have 10–64 URL-safe characters".into());
+                }
+            }
+            if let crate::visual::SourceKind::Camera { device_id, .. } = &source.kind
+                && !cameras.insert(device_id)
+            {
+                return Err(
+                    "A camera can only be added once. Reuse its source in other scenes.".into(),
+                );
+            }
+            if let crate::visual::SourceKind::Microphone { device_id, .. } = &source.kind
+                && !microphones.insert(device_id)
+            {
+                return Err(
+                    "A microphone can only be added once. Route it in each scene mixer.".into(),
+                );
+            }
+            if !source.kind.is_audio_only()
+                && (!valid_size(&source.resolution)
+                    || source.resolution.width as u64 * source.resolution.height as u64
+                        > 1920 * 1080)
             {
                 return Err("Offline source preview must be at most 1920 × 1080 pixels (portrait also supported)".into());
             }
@@ -678,6 +720,7 @@ impl Workspace {
                     if effect.id == 0 || !effect_ids.insert(effect.id) {
                         return Err("Invalid or duplicate effect identity".into());
                     }
+                    effect.validate_chroma_key()?;
                     if effect.kind == EffectKind::Wgsl {
                         crate::appearance::validate_shader(&effect.shader)?;
                     } else if !effect.shader.is_empty() {
@@ -697,7 +740,10 @@ impl Workspace {
                         "Layer effects: maximum 8, with values in the supported range".into(),
                     );
                 }
-                if !self.sources.iter().any(|s| s.id == l.source_id)
+                if !self
+                    .sources
+                    .iter()
+                    .any(|s| s.id == l.source_id && !s.kind.is_audio_only())
                     || l.width == 0
                     || l.height == 0
                     || (l.css.is_empty()

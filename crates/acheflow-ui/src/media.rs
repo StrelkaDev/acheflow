@@ -45,6 +45,7 @@ pub fn use_capabilities(project: Signal<Workspace>) -> (Capabilities, Signal<u32
     let revision = use_signal(|| 0u32);
     let endpoint = use_memo(move || server_url(&project.read(), "/api/media/capabilities"));
     let capabilities = use_resource(move || {
+        let _ = crate::server_access::identity();
         let refresh = revision() > 0;
         let url = endpoint();
         async move { fetch(url?, refresh).await }

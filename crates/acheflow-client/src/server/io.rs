@@ -48,7 +48,7 @@ fn command(config: &LaunchConfig) -> Command {
     let mut command = Command::new(&config.binary);
     command.args(&config.server_args);
     // Listener/config credentials from a standalone invocation must not silently
-    // change the owned child's configuration. FFmpeg/PATH remain available.
+    // change the owned child's configuration.
     for name in [
         "ACHEFLOW_CONFIG",
         "ACHEFLOW_HTTP_ADDR",
@@ -64,6 +64,9 @@ fn command(config: &LaunchConfig) -> Command {
         "ACHEFLOW_MCP_PORT",
     ] {
         command.env_remove(name);
+    }
+    if let Some(path) = &config.ffmpeg_path {
+        command.env("ACHEFLOW_FFMPEG", path);
     }
     command
         .kill_on_drop(true)

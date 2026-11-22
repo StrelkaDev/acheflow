@@ -96,53 +96,432 @@ fn Analytics() -> Element {
 #[component]
 pub fn Sources(mut project: Signal<Workspace>) -> Element {
     let mut copied = use_signal(|| None::<u32>);
+    let mut picking = use_signal(|| false);
     let mut expanded = use_signal(std::collections::HashSet::<u32>::new);
+    let mut camera_picker = use_signal(|| false);
     let client = use_context::<LiveClient>();
+    let connected = use_memo(move || client.status.read().is_some());
+    let (camera_scan, camera_inventory, mut refresh_cameras) =
+        use_device_inventory(project, connected, "/api/media/cameras", "cameras");
+    let (microphone_scan, microphone_inventory, mut refresh_microphones) =
+        use_device_inventory(project, connected, "/api/media/microphones", "microphones");
+    let (mut capabilities, mut rescan_ffmpeg) = use_capabilities(project);
+    let checking_srt = capabilities.read().is_none();
+    let srt_available = capabilities
+        .read()
+        .as_ref()
+        .is_some_and(|r| r.as_ref().is_ok_and(|caps| caps.srt_input));
+    let full = project.read().sources.len() >= 8;
+    use_effect(move || {
+        if connected() {
+            capabilities.restart();
+        }
+    });
+    use_future(move || async move {
+        loop {
+            crate::scene_preview::pause(4_000).await;
+            let picker_open = *picking.peek();
+            let workspace = project.peek();
+            let camera_visible = picker_open
+                || workspace.sources.iter().any(|source| {
+                    matches!(
+                        source.kind,
+                        acheflow_media_api::visual::SourceKind::Camera { .. }
+                    ) && expanded.peek().contains(&source.id)
+                });
+            let microphone_visible = picker_open
+                || workspace
+                    .sources
+                    .iter()
+                    .any(|source| source.kind.is_audio_only());
+            if *connected.peek() {
+                if camera_visible && *camera_scan.peek() != UseResourceState::Pending {
+                    *refresh_cameras.write() += 1;
+                }
+                if microphone_visible && *microphone_scan.peek() != UseResourceState::Pending {
+                    *refresh_microphones.write() += 1;
+                }
+            }
+        }
+    });
     let state = if client.owns() {
         client.status.read().clone()
     } else {
         None
     };
     rsx! {
-        div {class:"page-heading",div {h1 {"Sources"}p {"Video inputs, chat overlays and extension visual sources."}}button {class:"primary",disabled:client.status.read().is_none(),onclick:move |_|client.add_source(),"+ RTMP source"}}
-        crate::visual_sources::VisualSources{project}
+        div {class:"page-heading",h1 {"Sources"}button {id:"add-source",class:"primary",disabled:full,"aria-expanded":picking().to_string(),"aria-controls":"source-types",onclick:move |_|{
+            let opening=!picking();
+            picking.set(opening);
+            camera_picker.set(false);
+            if opening {
+                *refresh_cameras.write()+=1;
+                *refresh_microphones.write()+=1;
+                capabilities.restart();
+            }
+        },if picking(){"Close source types"}else{"+ Add source"}}}
+        if picking() && !full {
+            crate::visual_sources::AddSourceOptions{
+                project,server_connected:connected(),srt_available,checking_srt,
+                on_refresh_ffmpeg:move |_|*rescan_ffmpeg.write()+=1,
+                camera_choices:rsx!{
+                    CameraChoices{project,open:camera_picker,inventory:camera_inventory,refresh:refresh_cameras,on_add:move |camera:acheflow_media_api::live::CameraDevice|{
+                            let mut workspace=project.write();
+                            workspace.add_source();
+                            if let Some(source)=workspace.sources.last_mut(){
+                                source.name=camera.name;
+                                source.kind=acheflow_media_api::visual::SourceKind::Camera{device_id:camera.id,mode:None,mirrored:false};
+                                source.url.clear();
+                                source.key.clear();
+                                expanded.write().insert(source.id);
+                            }
+                            picking.set(false);
+                            camera_picker.set(false);
+                        }}
+                },
+                microphone_choices:rsx! {
+                    crate::microphone_sources::MicrophoneChoices{
+                        project,inventory:microphone_inventory,refresh:refresh_microphones,
+                        on_added:move |_|picking.set(false),
+                    }
+                },
+                on_rtmp:move |_|{if let Some(id)=client.add_source(){expanded.write().insert(id);picking.set(false);}},
+                on_srt:move |_|{
+                    let mut workspace=project.write();
+                    let port=(9000..=65535).find(|port| !workspace.sources.iter().any(|source|
+                        matches!(source.kind, acheflow_media_api::visual::SourceKind::Srt { port:used } if used==*port)));
+                    if let Some(port)=port {
+                        workspace.add_source();
+                        if let Some(source)=workspace.sources.last_mut(){
+                            source.kind=acheflow_media_api::visual::SourceKind::Srt{port};
+                            source.url.clear();
+                            expanded.write().insert(source.id);
+                        }
+                        picking.set(false);
+                    }
+                },
+                on_added:move |_|picking.set(false),
+            }
+        }
         div {class:"source-actions row",
             button {disabled:(client.busy)(),onclick:move |_|client.command(Action::Apply),"Apply sources / listen"}
             button {disabled:(client.busy)() || !client.owns(),onclick:move |_|client.command(Action::Deactivate),"Deactivate sources"}
             span {class:"form-help",if let Some(state)=client.status.read().as_ref(){"RTMP listener: {state.rtmp_address}"}}
         }
-        p {class:"form-help source-help","Use the ingest URL as the server and the connection token as the RTMP stream key in OBS/FFmpeg. Apply changes after editing sources."}
-        if project.read().sources.is_empty(){div {class:"panel empty-state",h3 {"No expected sources"}p {"Add a source, then apply it to authorize its token on the server."}}}
-        for source in project.read().sources.iter().filter(|s|s.kind.is_rtmp()).cloned().collect::<Vec<_>>() {
-            section {key:"{source.id}",class:"panel",
+        if project.read().sources.is_empty(){div {class:"panel empty-state",h3 {"No sources yet"}p {"Add a source to make it available in scenes."}}}
+        for source in project.read().sources.iter().filter(|s|s.kind.is_video_input()).cloned().collect::<Vec<_>>() {
+            {
+            let srt = matches!(source.kind, acheflow_media_api::visual::SourceKind::Srt { .. });
+            let camera = matches!(source.kind, acheflow_media_api::visual::SourceKind::Camera { .. });
+            let input = state.as_ref().and_then(|s|s.sources.iter().find(|i|i.id==source.id));
+            let preview_class = "source-card-preview";
+            let key_label = if srt {"SRT passphrase"}else{"RTMP stream key"};
+            rsx!{section {key:"{source.id}",class:"panel",
                 div {class:"panel-heading",button{class:"destination-toggle",onkeydown:move |event|{if !event.is_auto_repeating() && (event.key()==Key::Named(NamedKey::Enter) || event.key()==Key::Character(" ".into())){event.prevent_default();let mut open=expanded.write();if !open.remove(&source.id){open.insert(source.id);}}},"aria-expanded":expanded.read().contains(&source.id).to_string(),onclick:move |_|{let mut open=expanded.write();if !open.remove(&source.id){open.insert(source.id);}},span{if expanded.read().contains(&source.id){"▾"}else{"▸"}}h2 {"{source.name}"}}
-                    span {class:"badge",if state.as_ref().and_then(|s|s.sources.iter().find(|i|i.id==source.id)).is_some_and(|s|s.connected){"Connected"}else{"Waiting for token"}}
+                    span {class:"badge",if camera {"Camera"} else if srt {"SRT"} else {"RTMP"}}
+                    span {class:"badge",if srt && !srt_available {"Unavailable"} else if input.is_some_and(|s|s.connected){"Connected"}else if input.is_some_and(|s|s.error.is_some()){"Source error"}else if input.is_some(){"Waiting for input"}else{"Apply to activate"}}
                     button {onclick:move |_|project.write().remove_source(source.id),"Remove"}
                 }
                 div {style:if expanded.read().contains(&source.id){"display:block"}else{"display:none"},
+                if expanded.read().contains(&source.id) && input.is_some_and(|status|status.connected) {
+                    VideoPreview {url:client.preview(&format!("/api/live/source/{}",source.id)),class:preview_class}
+                }
                 div {class:"form-grid",
                     Field {label:"Name",value:source.name,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.name=v;}}}
-                    Field {label:"RTMP ingest URL",value:source.url,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.url=v;}}}
-                    Field {label:"Connection token / RTMP key",secret:true,value:source.key,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.key=v;}}}
-                    div {class:"field",span {"Token"}button {onclick:move |_|{let key=project.peek().sources.iter().find(|s|s.id==source.id).map(|s|s.key.clone());if let Some(key)=key {spawn(async move {if client.copy_text(key).await {copied.set(Some(source.id));}});}},if copied()==Some(source.id){"Copied token"}else{"Copy token"}}button {onclick:move |_|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.key=crate::project::new_token();copied.set(None);}},"Generate new token"}span {class:"form-help","Apply to revoke the old token and reconnect this source."}}
+                    if let acheflow_media_api::visual::SourceKind::Srt { port } = source.kind {
+                        NumberField {label:"UDP port",value:u32::from(port),min:1024,max:65535,step:1,change:move |port|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.kind=acheflow_media_api::visual::SourceKind::Srt{port:port as u16};}}}
+                        if let Ok(url) = client.srt_url(port) {
+                            div {class:"field",span {"Publisher URL"},code{"{url}"},button {onclick:move |_|{
+                                let connection=project.peek().sources.iter().find(|s|s.id==source.id).and_then(|s| {
+                                    let mut url=reqwest::Url::parse(&url).ok()?;
+                                    url.query_pairs_mut().append_pair("pbkeylen","16").append_pair("passphrase",&s.key);
+                                    Some(url.to_string())
+                                });
+                                if let Some(connection)=connection {spawn(async move {client.copy_text(connection).await;});}
+                            },"Copy URL with passphrase"}}
+                        }
+                    } else if !camera {
+                        Field {label:"RTMP ingest URL",value:source.url,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.url=v;}}}
+                    }
+                    if !camera {
+                    Field {label:key_label,secret:true,value:source.key,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.key=v;}}}
+                    div {class:"field",button {onclick:move |_|{let key=project.peek().sources.iter().find(|s|s.id==source.id).map(|s|s.key.clone());if let Some(key)=key {spawn(async move {if client.copy_text(key).await {copied.set(Some(source.id));}});}},if copied()==Some(source.id){"Copied"}else if srt {"Copy passphrase"}else{"Copy stream key"}}button {onclick:move |_|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.key=crate::project::new_token();copied.set(None);}},"Generate new key"}}
+                    }
+                    if camera && expanded.read().contains(&source.id) {
+                        CameraSettings{project,source_id:source.id,inventory:camera_inventory,refresh:refresh_cameras}
+                    }
                     NumberField {label:"Offline preview width",value:source.resolution.width,min:16,max:((1920*1080/source.resolution.height.max(1)).min(3840)/2)*2,step:2,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.resolution.width=v;}}}
                     NumberField {label:"Offline preview height",value:source.resolution.height,min:16,max:((1920*1080/source.resolution.width.max(1)).min(3840)/2)*2,step:2,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.resolution.height=v;}}}
                 }
-                if let Some(input)=state.as_ref().and_then(|s|s.sources.iter().find(|i|i.id==source.id)) {
+                if let Some(input)=input {
                     div {class:"source-footer",
                         span {"Decoded frames: {input.frames}"}
-                        span {"Incoming: {input.width.unwrap_or(0)} × {input.height.unwrap_or(0)} / {input.fps.unwrap_or(0.):.1} FPS"}
-                        span {if input.audio{"Audio received"}else{"No audio received"}}
+                        if let Some((width,height))=input.width.zip(input.height) {
+                            span {"Incoming: {width} × {height}" if let Some(fps)=input.fps {" / {fps:.2} FPS"}}
+                        }
+                        if !camera {span {if input.audio{"Audio received"}else{"No audio received"}}}
                         for track in &input.audio_tracks {span {"Track {track.track_id}: {track.codec} / {track.sample_rate} Hz / {track.channels} ch · ",if track.active {"receiving"}else{"waiting"}}}
                     }
                     if let Some(error)=input.error.as_ref(){p {class:"field-error padded","{error}"}}
                 }
                 div {class:"panel-note","Incoming video keeps its original resolution. Resize and fit it in the scene layer. Offline preview dimensions only size the test pattern while no video is available."}
                 }
+            }}
+            }
+        }
+        crate::microphone_sources::MicrophoneSources{
+            project,inventory:microphone_inventory,refresh:refresh_microphones,status:state,
+        }
+        crate::visual_sources::VisualSources{project}
+    }
+}
+pub(crate) type DeviceInventory<T> = Memo<Option<Result<T, String>>>;
+type CameraInventory = DeviceInventory<acheflow_media_api::live::CameraInventory>;
+
+fn use_device_inventory<T: Clone + PartialEq + serde::de::DeserializeOwned + 'static>(
+    project: Signal<Workspace>,
+    connected: Memo<bool>,
+    path: &'static str,
+    devices: &'static str,
+) -> (
+    ReadSignal<UseResourceState>,
+    DeviceInventory<T>,
+    Signal<u32>,
+) {
+    let refresh = use_signal(|| 0u32);
+    let target = use_memo(move || {
+        (
+            crate::media::server_url(&project.read(), path),
+            crate::server_access::identity(),
+        )
+    });
+    let scan = use_resource(move || {
+        refresh();
+        let scope = target();
+        let online = connected();
+        async move {
+            let result = if online {
+                match &scope.0 {
+                    Ok(url) => fetch_device_inventory(url, devices).await,
+                    Err(error) => Err(error.clone()),
+                }
+            } else {
+                Err("Connect to the workspace server to list devices".into())
+            };
+            (scope, result)
+        }
+    });
+    // Keep the last response while refreshing the same server. A device ID from
+    // another server or access session must never populate this picker.
+    let inventory = use_memo(move || {
+        let target = target.read();
+        scan.read()
+            .as_ref()
+            .filter(|(scope, _)| scope == &*target)
+            .map(|(_, result)| result.clone())
+    });
+    (scan.state(), inventory, refresh)
+}
+
+async fn fetch_device_inventory<T: serde::de::DeserializeOwned>(
+    url: &str,
+    devices: &str,
+) -> Result<T, String> {
+    let response = crate::server_access::request(reqwest::Method::GET, url)?
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|_| format!("Could not reach the server to list {devices}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Could not list {devices} (HTTP {})",
+            response.status().as_u16()
+        ));
+    }
+    response
+        .json()
+        .await
+        .map_err(|_| format!("Invalid {devices} list"))
+}
+
+#[component]
+fn CameraChoices(
+    project: Signal<Workspace>,
+    mut open: Signal<bool>,
+    inventory: CameraInventory,
+    mut refresh: Signal<u32>,
+    on_add: EventHandler<acheflow_media_api::live::CameraDevice>,
+) -> Element {
+    let snapshot = inventory.read();
+    let loading = snapshot.is_none();
+    if snapshot
+        .as_ref()
+        .is_some_and(|result| result.as_ref().is_ok_and(|data| !data.supported))
+    {
+        return rsx! {};
+    }
+    let devices = snapshot
+        .as_ref()
+        .and_then(|result| result.as_ref().ok())
+        .map(|data| data.devices.as_slice())
+        .unwrap_or_default();
+    rsx! {
+        div {class:"camera-choice",
+            button {id:"camera-source-options", "aria-expanded":open().to_string(),onclick:move |_| {
+                let opening=!open();
+                open.set(opening);
+                if opening && !loading {*refresh.write()+=1;}
+            },strong{"Camera"}span{"Local video capture"}}
+            if open() {
+                div {class:"camera-device-list",
+                    if loading && devices.is_empty() {p {class:"form-help","Detecting cameras…"}}
+                    else if let Some(Err(error))=snapshot.as_ref() {p {class:"field-error","{error}"}}
+                    else if devices.is_empty() {p {class:"form-help","No cameras detected on the server."}}
+                    for (index, camera) in devices.iter().enumerate() {
+                        {
+                            let added=camera_assigned(&project.read(), &camera.id, None);
+                            let label=camera_name(devices,index);
+                            let camera=camera.clone();
+                            rsx!{button{key:"{camera.id}",disabled:loading||added,onclick:move |_|on_add.call(camera.clone()),"{label}",if added{span{"Already added"}}}}
+                        }
+                    }
+                    button{disabled:loading,onclick:move |_| *refresh.write()+=1,"Refresh cameras"}
+                }
             }
         }
     }
 }
+
+fn camera_assigned(workspace: &Workspace, id: &str, except: Option<u32>) -> bool {
+    use acheflow_media_api::visual::SourceKind;
+    workspace.sources.iter().any(|source| {
+        Some(source.id) != except
+            && matches!(&source.kind, SourceKind::Camera { device_id, .. } if device_id == id)
+    })
+}
+
+fn camera_name(devices: &[acheflow_media_api::live::CameraDevice], index: usize) -> String {
+    let name = &devices[index].name;
+    if devices.iter().filter(|device| &device.name == name).count() > 1 {
+        format!("{name} ({})", index + 1)
+    } else {
+        name.clone()
+    }
+}
+
+#[component]
+fn CameraSettings(
+    mut project: Signal<Workspace>,
+    source_id: u32,
+    inventory: CameraInventory,
+    mut refresh: Signal<u32>,
+) -> Element {
+    use acheflow_media_api::visual::SourceKind;
+    let workspace = project.read();
+    let Some(SourceKind::Camera {
+        device_id,
+        mode,
+        mirrored,
+    }) = workspace
+        .sources
+        .iter()
+        .find(|source| source.id == source_id)
+        .map(|source| source.kind.clone())
+    else {
+        return rsx! {};
+    };
+    let snapshot = inventory.read();
+    let loading = snapshot.is_none();
+    let devices = snapshot
+        .as_ref()
+        .and_then(|result| result.as_ref().ok())
+        .map(|inventory| inventory.devices.as_slice())
+        .unwrap_or_default();
+    let active = devices.iter().position(|device| device.id == device_id);
+    let device_value = active
+        .map(|index| camera_name(devices, index))
+        .unwrap_or_else(|| "Saved camera unavailable".into());
+    let device_options = devices
+        .iter()
+        .enumerate()
+        .filter(|(_, device)| !camera_assigned(&workspace, &device.id, Some(source_id)))
+        .map(|(index, device)| (camera_name(devices, index), device.id.clone()))
+        .collect::<Vec<_>>();
+    let modes = active
+        .map(|index| devices[index].modes.as_slice())
+        .unwrap_or_default();
+    let mut mode_options = vec![("Auto".to_owned(), None)];
+    for mode in modes {
+        let label = format!("{} × {} · {:.2} fps", mode.width, mode.height, mode.fps());
+        let label = if mode_options.iter().any(|(choice, _)| *choice == label) {
+            format!(
+                "{label} ({}/{} s)",
+                mode.duration_value, mode.duration_scale
+            )
+        } else {
+            label
+        };
+        mode_options.push((label, Some(*mode)));
+    }
+    let mode_value = mode_options
+        .iter()
+        .find(|(_, choice)| *choice == mode)
+        .map(|(label, _)| label.clone())
+        .unwrap_or_else(|| "Saved mode unavailable".into());
+    let mode_device_id = device_id.clone();
+    let device_labels = device_options
+        .iter()
+        .map(|(label, _)| label.clone())
+        .collect();
+    let mode_labels = mode_options
+        .iter()
+        .map(|(label, _)| label.clone())
+        .collect();
+    rsx! {
+        div {class:"field",
+            if loading {
+                span {"Camera device"}
+                p {class:"form-help","Detecting cameras…"}
+            } else {
+                crate::extension_panel::PanelSelect {label:"Camera device",value:device_value,options:device_labels,onselect:move |label:String|{
+                    let Some((_, next))=device_options.iter().find(|(choice, _)| *choice==label) else {return};
+                    if camera_assigned(&project.peek(), next, Some(source_id)) {return;}
+                    if let Some(source)=project.write().sources.iter_mut().find(|source|source.id==source_id)
+                        && let SourceKind::Camera{device_id,mode,..}=&mut source.kind
+                        && device_id!=next {
+                        device_id.clone_from(next);
+                        *mode=None;
+                    }
+                }}
+                if let Some(Err(error))=snapshot.as_ref(){span{class:"field-error","{error}"}}
+            }
+            button{disabled:loading,onclick:move |_| *refresh.write()+=1,"Refresh cameras"}
+        }
+        if loading {
+            div{class:"field",span{"Capture mode"},p{class:"form-help","Reading camera modes…"}}
+        } else {
+            crate::extension_panel::PanelSelect {label:"Capture mode",value:mode_value,options:mode_labels,onselect:move |label:String|{
+                let Some((_, next))=mode_options.iter().find(|(choice, _)| *choice==label) else {return};
+                if let Some(source)=project.write().sources.iter_mut().find(|source|source.id==source_id)
+                    && let SourceKind::Camera{device_id,mode,..}=&mut source.kind
+                    && *device_id==mode_device_id {*mode = *next;}
+            }}
+        }
+        div {class:"field",
+            span{"Mirror horizontally"}
+            button{
+                class:if mirrored {"selected"}else{""},
+                role:"switch","aria-label":"Mirror horizontally","aria-checked":mirrored.to_string(),
+                onclick:move |_|{
+                    if let Some(source)=project.write().sources.iter_mut().find(|source|source.id==source_id)
+                        && let SourceKind::Camera{mirrored,..}=&mut source.kind {*mirrored = !*mirrored;}
+                },
+                if mirrored {"On"} else {"Off"}
+            }
+        }
+    }
+}
+
 #[component]
 fn Settings(mut project: Signal<Workspace>) -> Element {
     let (capabilities, refresh) = use_capabilities(project);
@@ -151,6 +530,7 @@ fn Settings(mut project: Signal<Workspace>) -> Element {
     rsx! {
         div {class:"page-heading",div {h1 {"Stream settings"}p {"Separate canvases and RTMP outputs for each format."}}}
         FfmpegStatus {capabilities,refresh}
+        crate::video_preview::PreviewRate {}
         for orientation in Orientation::ALL {StreamSettings {key:"{orientation.label()}",project,orientation,capabilities:available.clone()}}
     }
 }
@@ -231,9 +611,9 @@ fn Scenes(mut project: Signal<Workspace>, visible: bool) -> Element {
                 crate::spatial_editor::SpatialEditor {key:"spatial-{project.read().id}-{scene.id}",project,scene_id:scene.id,
                 div {class:"panel-heading",h3 {"Primary viewport content"}}
                 Canvas {project,scene_id:Some(scene.id),orientation:scene.orientation,editable:true,live_images:visible,selection:Some(selected_layer)}
-                div {class:"row padded",button {disabled:(client.busy)(),onclick:move |_|client.command(Action::Apply),"Apply scene & sources"}span {class:"form-help","Select a layer, drag to move, or drag its corners to resize. Releasing applies live changes. CSS layout, crop and effects are in the layer inspector."}}
+                div {class:"row padded",button {disabled:(client.busy)(),onclick:move |_|client.command(Action::Apply),"Apply scene & sources"}span {class:"form-help","Drag a corner to resize. Hold Shift for the layer ratio or Shift + Option/Alt for the source ratio. The 2D canvas snaps to its edges. Releasing applies live changes."}}
                 div {class:"panel-heading",h3 {"Add a source layer"}}
-                div {class:"row padded",for source in project.read().sources.clone(){button {onclick:move |_|project.write().add_layer(scene.id,source.id),"+ {source.name}"}}if project.read().sources.is_empty(){p {"Register an RTMP source in Live / Sources first."}}}
+                div {class:"row padded",for source in project.read().sources.iter().filter(|s|!s.kind.is_audio_only()).cloned().collect::<Vec<_>>(){button {onclick:move |_|project.write().add_layer(scene.id,source.id),"+ {source.name}"}}if project.read().sources.is_empty(){p {"Add a video source or overlay in Live / Sources."}}}
                 div {class:"panel-heading",h3 {"Primary viewport layers"}}
                 LayerEditor {project,scene_id:scene.id,selection:selected_layer}
                 }
@@ -261,11 +641,14 @@ fn Studio(mut project: Signal<Workspace>, visible: bool) -> Element {
                 else {button {class:"primary",disabled:(client.busy)() || !has_scene,onclick:move |_|client.command(Action::Start),"Start live"}}
             }
         }
-        p {class:"studio-help form-help","Start runs the selected scenes and all enabled outputs. With no outputs it runs preview only. Scene placement can change live; restart for FPS/resolution/encoding changes. Preview refreshes twice per second."}
+        if let Some(status)=status.as_ref() && !status.server_load.is_empty() {
+            ServerLoad {samples:status.server_load.clone()}
+        }
+        p {class:"studio-help form-help","Start runs the selected scenes and all enabled outputs. With no outputs it runs preview only. Adjust Preview FPS in Live / Settings."}
         div {class:"studio-grid",for o in Orientation::ALL {
             section {class:"panel",div {class:"panel-heading",h2 {"{o.label()}"}
                 span {class:"badge",if let Some(format)=status.as_ref().and_then(|s|s.formats.iter().find(|f|f.orientation==o)) {
-                    if format.outputs.is_empty(){"Preview only"}else if format.outputs.iter().any(|out|out.state==OutputState::Streaming){"Broadcasting"}else if format.outputs.iter().any(|out|out.state==OutputState::Starting){"Starting"}else{"Output failed"}
+                    if format.outputs.is_empty(){"Preview only"}else if format.outputs.iter().any(|out|out.state==OutputState::Streaming){"Broadcasting"}else if format.outputs.iter().any(|out|out.reconnect_attempt.is_some()){"Reconnecting"}else if format.outputs.iter().any(|out|out.state==OutputState::Starting){"Starting"}else{"Output failed"}
                 }else{"Offline"}}
             }
                 div {class:"padded field",span {"Scene"}div {class:"row",
@@ -278,13 +661,23 @@ fn Studio(mut project: Signal<Workspace>, visible: bool) -> Element {
                         if let Some(renderer)=format.renderer.as_ref(){p {"Renderer: {renderer}"}}
                         if let Some(error)=format.error.as_ref(){p {class:"field-error",role:"alert","{error}"}}
                         span {"Rendered frames: {format.frames} · audio is mixed into RTMP outputs"}
+                        if format.render_load.target_fps > 0 {
+                            div {class:"studio-format-load",
+                                span {"{format.render_load.observed_fps:.1} / {format.render_load.target_fps} FPS"}
+                                span {"Render p95 {format.render_load.p95_ms:.1} ms"}
+                                span {"{format.render_load.deadline_miss_percent:.1}% over frame budget"}
+                            }
+                        }
                     }
 
                     for out in &format.outputs {
-                        div {class:"output-status",strong {"{out.name}"}span {class:"badge","{out.state:?}"}span {"{out.frames} frames · {out.bitrate_kbps:.0} kbps"}
+                        div {class:"output-status",strong {"{out.name}"}span {class:"badge",role:"status",if let Some(attempt)=out.reconnect_attempt {"Reconnecting · attempt {attempt}"}else{"{out.state:?}"}}span {"{out.frames} frames · {out.bitrate_kbps:.0} kbps"}
                             button {disabled:(client.busy)(),onclick:{let index=out.index;move |_|client.command(Action::RestartOutput(o,index))},"Restart output"}
                             if let Some(encoder)=out.encoder.as_ref(){span {"{encoder} · ",if out.hardware {"Hardware"}else{"Software"}}}
                             if let Some(bus)=out.audio_bus {span {"Audio: scene {out.audio_scene.unwrap_or(0)} → bus {bus}"}crate::audio_mixer::Meters {meter:out.audio_meter.clone()}}
+                            if out.repeated_video_frames > 0 || out.inserted_audio_blocks > 0 || out.reconnects > 0 {
+                                span {"{out.repeated_video_frames} repeated frames · {out.inserted_audio_blocks} silence blocks · {out.reconnects} reconnects"}
+                            }
                             if let Some(error)=out.error.as_ref(){p {class:"field-error","{error}"}}
                         }
                     }
@@ -292,6 +685,48 @@ fn Studio(mut project: Signal<Workspace>, visible: bool) -> Element {
                 crate::studio_mixer::StudioMixer {project,orientation:o}
             }
         }}
+    }
+}
+
+#[component]
+fn ServerLoad(samples: Vec<acheflow_media_api::live::ServerLoadSample>) -> Element {
+    let Some(latest) = samples.last() else {
+        return rsx! {};
+    };
+    let ram_gib = latest.ram_used_bytes as f64 / (1u64 << 30) as f64;
+    let total_gib = latest.ram_total_bytes as f64 / (1u64 << 30) as f64;
+    rsx! {
+        section {class:"panel studio-server-load",
+            div {class:"panel-heading",h2 {"Server load"}span {class:"form-help","Last 60 seconds"}}
+            div {class:"studio-load-history",
+                div {
+                    span {"CPU {latest.cpu_percent:.0}%"}
+                    div {class:"studio-load-bars",role:"img","aria-label":"Server CPU usage history, up to 60 seconds",
+                        for sample in &samples {
+                            span {key:"{sample.time_ms}",style:format!("height:{:.1}%",sample.cpu_percent.clamp(0.,100.))}
+                        }
+                    }
+                }
+                div {
+                    span {"RAM {ram_gib:.1} / {total_gib:.1} GiB"}
+                    div {class:"studio-load-bars",role:"img","aria-label":"Server memory usage history, up to 60 seconds",
+                        for sample in &samples {
+                            span {key:"{sample.time_ms}",style:format!("height:{:.1}%",(sample.ram_used_bytes as f64 * 100. / sample.ram_total_bytes.max(1) as f64).clamp(0.,100.))}
+                        }
+                    }
+                }
+                if let Some(gpu)=latest.busiest_gpu_percent {
+                    div {
+                        span {"Busiest GPU {gpu:.0}%"}
+                        div {class:"studio-load-bars",role:"img","aria-label":"Busiest reported server GPU usage history, up to 60 seconds",
+                            for sample in &samples {
+                                span {key:"{sample.time_ms}",style:format!("height:{:.1}%",sample.busiest_gpu_percent.unwrap_or(0.).clamp(0.,100.))}
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 #[component]
@@ -319,7 +754,7 @@ fn SceneInputStatus(project: Signal<Workspace>, orientation: Orientation) -> Ele
             let visual = workspace
                 .sources
                 .iter()
-                .any(|s| s.id == id && !s.kind.is_rtmp());
+                .any(|s| s.id == id && !s.kind.is_video_input());
             let connected = visual
                 || status
                     .as_ref()
@@ -437,4 +872,107 @@ pub(crate) fn Choice(
     rsx! {div {class:"field",span {"{label}"}div {class:"row",role:"group","aria-label":label,
         for (key,label) in choices {button {class:if value==key {"selected"}else{""},"aria-pressed":(value==key).to_string(),onclick:{let key=key.clone();move |_|change.call(key.clone())},"{label}"}}
     }}}
+}
+
+#[cfg(test)]
+mod camera_discovery_tests {
+    use super::*;
+    use acheflow_media_api::live::{CameraDevice, CameraInventory};
+    use blitz_dom::{Document, DocumentConfig};
+    use std::{cell::Cell, rc::Rc};
+
+    #[derive(Default)]
+    struct Harness {
+        refresh: Cell<Option<Signal<u32>>>,
+        open: Cell<Option<Signal<bool>>>,
+    }
+
+    fn app() -> Element {
+        let harness = use_context::<Rc<Harness>>();
+        let refresh = use_signal(|| 0);
+        harness.refresh.set(Some(refresh));
+        let project = use_signal(Workspace::default);
+        let open = use_signal(|| true);
+        harness.open.set(Some(open));
+        let scan = use_resource(move || {
+            let attempt = refresh();
+            async move {
+                if attempt == 0 {
+                    return Err("Camera inventory temporarily unavailable".to_owned());
+                }
+                if attempt == 2 {
+                    std::future::pending::<()>().await;
+                }
+                Ok(CameraInventory {
+                    supported: true,
+                    devices: vec![CameraDevice {
+                        id: "virtual-camera".into(),
+                        name: "OBS Virtual Camera".into(),
+                        modes: Vec::new(),
+                    }],
+                })
+            }
+        });
+        let inventory = use_memo(move || scan.read().clone());
+        rsx! {
+            style {{include_str!("dashboard.css")}}
+            div {id:"picker-grid", class:"source-types",
+                button {id:"rtmp-card","RTMP"}
+                CameraChoices {project,open,inventory,refresh,on_add:|_|{}}
+                button {"Chat"}
+            }
+            button {id:"apply-sources","Apply sources"}
+        }
+    }
+
+    fn settle(doc: &mut dioxus_native::DioxusDocument) {
+        for _ in 0..40 {
+            if !doc.poll(None) {
+                doc.inner.borrow_mut().resolve(0.);
+                return;
+            }
+        }
+        panic!("camera inventory UI did not settle");
+    }
+
+    fn inventory_text(doc: &dioxus_native::DioxusDocument) -> String {
+        let document = doc.inner.borrow();
+        let node = document
+            .query_selector(".camera-device-list")
+            .unwrap()
+            .unwrap();
+        document.get_node(node).unwrap().text_content()
+    }
+
+    #[tokio::test]
+    async fn camera_inventory_recovers_without_reflowing_the_grid() {
+        let harness = Rc::new(Harness::default());
+        let mut doc = dioxus_native::DioxusDocument::new(
+            VirtualDom::new(app).with_root_context(harness.clone()),
+            DocumentConfig::default(),
+        );
+        doc.initial_build();
+        settle(&mut doc);
+        assert!(inventory_text(&doc).contains("Camera inventory temporarily unavailable"));
+        assert!(inventory_text(&doc).contains("Refresh cameras"));
+        harness.open.get().unwrap().set(false);
+        settle(&mut doc);
+        let layout = |doc: &dioxus_native::DioxusDocument| {
+            let dom = doc.inner.borrow();
+            ["#rtmp-card", "#picker-grid", "#apply-sources"].map(|selector| {
+                let id = dom.query_selector(selector).unwrap().unwrap();
+                *dom.get_node(id).unwrap().final_layout()
+            })
+        };
+        let closed = layout(&doc);
+        harness.open.get().unwrap().set(true);
+        harness.refresh.get().unwrap().set(1);
+        settle(&mut doc);
+        assert!(inventory_text(&doc).contains("OBS Virtual Camera"));
+        assert_eq!(layout(&doc), closed);
+        harness.refresh.get().unwrap().set(2);
+        settle(&mut doc);
+        assert!(inventory_text(&doc).contains("OBS Virtual Camera"));
+        assert_eq!(layout(&doc), closed);
+    }
 }

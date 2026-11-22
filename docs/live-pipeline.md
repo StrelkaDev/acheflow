@@ -19,10 +19,9 @@ receive a display projection without stream keys or transport URLs. See
 
 ## User flow
 
-1. In Live / Sources add expected inputs. The source URL is built from the
-   connected HTTP server hostname and reported RTMP port. Copy the connection
-   token into the publisher's RTMP stream-key field. The token is distinct from
-   output destination keys. Apply sources to register them on the server.
+1. In **Live / Sources**, choose **Add source**, then add an RTMP stream, SRT
+   stream, camera, microphone, or overlay. Apply sources to activate them on the server.
+   Expand a live video source to see its preview and input status.
 2. In Scenes create a scene, add source layers, and set placement/size. Layer
    order is compositing order, last on top. Select a layer and drag its corners
    to resize, or set exact geometry in the CSS inspector.
@@ -47,7 +46,8 @@ receive a display projection without stream keys or transport URLs. See
    The encoder receives a GOP limit and periodic keyframe requests on the media
    timeline. Older JSON without `keyframe_interval_secs` uses 2 seconds. Changing
    this interval requires Stop/Start. Studio can restart one destination
-   independently with **Restart output**.
+   independently with **Restart output**. Temporary transport failures show a
+   reconnect attempt on the affected output.
 5. Apply scene/source/mixer/route edits while running. Drag release applies live
    placement; audio-only changes keep the video encoder running. Changing an
    active format's base, FPS, output transport or video profile is rejected until
@@ -55,22 +55,74 @@ receive a display projection without stream keys or transport URLs. See
    Stop live leaves registered inputs available; deactivate sources stops both
    composition and incoming publishers.
 
-Sources show actual RTMP connection state, decoded frame count, publisher
-decoded dimensions, publisher-reported FPS, audio availability and decoder errors. Studio shows
-each output's starting/streaming/failed state and FFmpeg progress frame count.
-It also lists each selected scene source as receiving video or waiting for RTMP,
+Sources show connection state, decoded frame count, native frame dimensions,
+reported FPS when available, audio availability and input errors. Studio shows
+each output's starting, reconnecting, streaming or failed state and FFmpeg progress frame count.
+It also lists each selected scene source as receiving video or waiting for input,
 so an active compositor with disconnected inputs is not mistaken for a frozen preview.
 Reloading the GUI does not stop a server-side live session.
-Preview is a JPEG snapshot refreshed twice a second, not a 2-FPS encoded stream.
+Studio shows CPU and RAM history for up to 60 seconds. On Linux it also shows
+the busiest GPU for which the server's driver reports a utilization counter.
+Each format shows observed and target FPS, p95 render time including readback,
+and the share of render attempts over the frame budget. Destination counters
+show repeated frames, inserted 20-ms silence blocks and automatic reconnect
+attempts since the format started.
+**Live / Settings / Preview FPS** sets the client's JPEG snapshot rate from 1
+to 60 FPS (default 10). The same preference applies to source cards, editor
+source snapshots and Studio. Source cadence, JPEG encoding and the connection
+determine the achieved rate. The broadcast render and encoder retain their own
+FPS settings.
 Preview audio playback is not implemented; source audio is carried by outputs.
 The Studio JPEG widget reuses two wgpu textures per visible preview; the editor
 uses the shared GPU scene renderer with bounded per-layer textures. It bypasses Blitz's unbounded URL/image caches; widget
 resource registrations are automatically released by Blitz when the node drops.
 Inactive tabs do not mount preview widgets or fetch snapshots.
 
+## Source setup
+
+On macOS, the camera and microphone pickers update when devices are connected
+or disconnected. For a USB camera such as an Osmo, select **Webcam** on the
+device so macOS exposes it as a video input.
+
+- **RTMP.** Copy the ingest URL to the publisher's server field and the source's
+  stream key to its key field. The listener address is shown in Sources.
+- **SRT.** Select a separate UDP port per source. The server listens on the same
+  interface as RTMP. Copy the caller URL with its passphrase into the publisher
+  and send an MPEG-TS stream with H.264 video and optional AAC audio. The
+  receiver uses the first video track and first audio track. **Add source**
+  shows whether SRT is available. Use **Refresh FFmpeg** after installing an
+  [SRT-enabled build](ffmpeg.md#srt-input) on the media server.
+- **Camera.** On macOS, select a connected camera by name. Apply sources and
+  grant camera access when the Acheflow app asks. The server opens each camera
+  by its saved device identity. Add each camera once and reuse it across scenes.
+  The source card can switch devices, choose a **Capture mode** reported by that
+  camera or keep **Auto**, and mirror the source horizontally. Apply sources to
+  use these settings. Camera capture preserves native dimensions, including
+  portrait modes. Set rotation on the layer in the scene.
+  The card reports the observed incoming FPS after frames arrive.
+  Camera sources provide video.
+  The device list refreshes while the picker is open. For OBS, start
+  **Virtual Camera** on the Mac running the media server. If macOS blocks the
+  OBS camera extension, enable it in System Settings. See
+  [OBS virtual camera troubleshooting](https://obsproject.com/kb/virtual-camera-troubleshooting).
+- **Microphone.** Choose a built-in, USB or other audio input detected by the
+  macOS server. The source card lets you change **Device** and select
+  **Capture quality** from the sample rates, bit depths and channel counts
+  reported by that device. **Auto** uses its current format and is selected
+  when you switch devices. Apply sources and grant microphone access when
+  prompted. The card shows input status and levels. In **Live / Mixer**, select
+  the receiving scene, set the microphone's **Send → Program** to the desired
+  level (0 dB for unity gain), then apply the mixer. Repeat for each scene
+  that needs the microphone, using whichever bus its output selects.
+  Studio shows gain, mute, balance and up to 250 ms of audio delay. Microphones
+  work without a scene layer and start unrouted. The browser lists devices on
+  its connected server. Reuse each microphone source across scenes.
+  Capture quality controls the hardware input. The mixer receives stereo
+  48 kHz PCM and the destination keeps its configured encoding.
+
 ## Chat and extension visual sources
 
-In **Live / Sources**, choose **+ Chat source**, then add that source as a layer
+In **Live / Sources**, choose **Add source → Chat**, then add that source as a layer
 in a scene. It displays the merged chat supplied by enabled provider extensions.
 The source settings select channels, a message limit, display lifetime and entry/
 exit durations. The defaults are twenty messages, fifteen seconds of display,
@@ -133,7 +185,10 @@ Use percentage geometry for layouts that adapt to a changed base canvas;
 explicit CSS pixels keep their size. Legacy geometry/crop fields remain as the
 fallback for old workspace files, while CSS takes precedence when supplied.
 
-Corner handles and dragging still work. They edit left/top/width/height in the last plain `.layer` rule
+Drag the layer's corner with **Shift** to preserve its current proportions, or
+with **Shift + Option/Alt** to use the incoming source dimensions. The opposite
+corner stays fixed. Moving and resizing snap to the orthographic canvas edges.
+The handles edit left/top/width/height in the last plain `.layer` rule
 in place, preserving crop/decoration/keyframes without growing the stylesheet. Handles describe
 the layout box before CSS transforms. The front-to-back list controls layer order.
 Draft code is validated on blur/Update layer (Load file is also available).
@@ -149,10 +204,17 @@ Apply scene & sources publishes local edits to the server. CSS is limited to
 against the common scene timeline, but transitions between separate stylesheet
 edits are not retained.
 
-The existing six effects now run as wgpu fragment passes: brightness, contrast,
-saturation, grayscale, bounded Gaussian blur approximation, opacity. Up to eight
+Built-in effects run as wgpu fragment passes, including brightness, contrast,
+saturation, grayscale, blur, opacity and Chroma key. Up to eight
 ordered effects per layer are allowed, each independently enabled/removed/moved.
-Custom WGSL uses:
+
+**Chroma key** uses a hex RGB key color in the layer inspector. **Tolerance**
+sets the chroma range to remove. **Softness** feathers the transition, **Edge
+smoothing** samples nearby pixels, and **Despill** reduces the key-color fringe.
+**Amount** controls the strength of the complete effect. Apply the scene to use
+the same settings in Studio and the broadcast.
+
+Custom WGSL uses this signature.
 
 ```wgsl
 fn effect(uv: vec2<f32>, color: vec4<f32>) -> vec4<f32> {
@@ -172,7 +234,7 @@ oversized functions are rejected. Shader code is capped at 32 KiB/effect.
 by the server's windowless wgpu + Blitz/Vello renderer. Input textures and the two
 processing textures per layer are reused; changed dimensions unregister the old
 resources. CSS decoration/animation is rendered by Blitz over the processed video.
-Editor source snapshots arrive at 2 Hz. Without a fresh decoded frame, only the
+Editor source snapshots use the configured preview refresh rate. Without a fresh decoded frame, only the
 scene editor substitutes a cached detailed test-pattern SourceFrame before GPU
 processing. Real snapshots carry their original dimensions in `X-Frame-Width`
 and `X-Frame-Height` headers, so px crop, object-fit and shader parameters use
@@ -186,7 +248,7 @@ CSS/WGSL animation can redraw between
 snapshots; the server renders at configured FPS independently of any open GUI.
 Server time/renderer/errors are exposed in format status. GPU readback produces
 RGB24 for FFmpeg; zero-copy hardware-encoder integration is not implemented.
-JPEG compression and the 2 Hz refresh can still differ from the full-rate output.
+JPEG compression and the preview refresh rate can differ from the full-rate output.
 
 ## Media path
 
@@ -197,7 +259,7 @@ tokens, playback requests and duplicate active publishers are rejected. Rotating
 or removing a source cancels its publisher/decoders. Authenticated streams are
 reconstructed as FLV tag sequences, with extended timestamps preserved.
 
-Each input has a video decoder and up to eight independent audio-track FFmpeg
+Each RTMP input has a video decoder and up to eight independent audio-track FFmpeg
 decoders, fed by bounded channels of eight packets (maximum packet 2 MiB).
 The RTMP adapter demultiplexes legacy track zero and Enhanced RTMP v2 OneTrack,
 ManyTracks and ManyTracksManyCodecs before decoding. Known Enhanced audio
@@ -228,7 +290,7 @@ Explicit strips override those defaults, including an empty send list.
 Gain/send/master controls span 0–200%, stereo balance −100 to +100, with mute and
 scene-wide solo. Float sums retain headroom until each destination gain/mute
 and final i16 saturation; there is no source-count averaging. Missing PCM is
-silent. Timestamped blocks share a per-source clock and bounded 16-block playout
+silent. Timestamped blocks share a per-source clock and bounded 48-block playout
 queues; large discontinuities rebase instead of building a backlog. This is not
 a claim of qualified end-to-end A/V synchronization.
 
@@ -237,20 +299,53 @@ can share one mix or use isolated mixes. Live / Mixer edits scene controls;
 Destination cards omit routing controls; existing JSON routes remain supported. Studio also shows a single row of vertical channel strips with horizontal scrolling under each format preview, following the applied scene during streaming and the selected scene while offline. It includes source levels/gain/mute/solo/balance, bus master controls and destination names. Apply updates
 mixers/routes without restarting video; video/transport changes still require
 stopping. Status reports source tracks, stereo peak/RMS, bus levels, clipping,
-and the actual applied destination scene/bus. UI meters show block peaks at the
+and the actual applied destination scene/bus.
+
+Each Studio track has **Auto**, **Auto + trim**, and **Manual** sync modes.
+Auto follows the same source's presented video PTS. Auto + trim adds a
+saved, signed correction of up to 250 ms. Manual applies that correction
+with the audio playout clock. Positive values delay the track. Negative values
+delay source video, which all its tracks share in that scene. Use **Apply mixer**
+to update the running format. Frame cadence and the bounded video history can
+limit the achieved delay, which Studio reports as buffering alongside the
+applied delays. Auto uses several distinct presented frames to acquire the
+clock and outputs silence during that interval. It reacquires after a source
+reconnect or a large PTS discontinuity. If usable video PTS are unavailable,
+the mixer uses bounded audio playout and reports the missing common timestamp.
+The clock correction in Studio is a PTS-derived estimate. The marker probe measures
+end-to-end offset. See [sustained A/V timing](development.md#sustained-av-timing).
+
+UI meters show block peaks at the
 status polling rate rather than latched maximum levels. Each output consumes the
 latest composed image and its own bounded PCM stream, encoded as one AAC stereo
-track, 48 kHz / 128 kbps.
-Internal PCM sockets bind to ephemeral loopback ports. Output failure/blocked IO
-does not stall the compositor or another output. FFmpeg children are cancelled,
-killed/reaped on stop/shutdown; kill-on-drop is also enabled.
+track, 48 kHz / 128 kbps. Each encoder attempt starts its video clock at the
+first PCM block's scheduled time and retains that block while FFmpeg connects
+to its audio socket.
+Internal PCM sockets bind to ephemeral loopback ports. The output replaces up to
+eight missed 20-ms PCM blocks with the same duration of silence, then drains the
+retained blocks in order to preserve the encoder's sample timeline. The loss
+budget covers both gaps in mixer scheduling and discarded queue entries and
+resets when the output catches up. For short gaps the video writer preserves
+each missing slot, using the previous image until the latest image's render
+time. Catch-up is limited to 160 ms rounded up to a frame (up to 300 ms while
+FFmpeg starts).
+Greater loss, a closed
+mixer channel or a failed or timed-out socket write marks that destination failed.
+A blocked or failed output does not stall the compositor or another destination.
+For recognized transport failures, the server starts a fresh encoder after
+1, 2, then 4 seconds of backoff. After 30 seconds worth of encoded video, the
+retry budget resets. Rejected credentials, encoder configuration errors and
+unrecognized failures are terminal, as is exhaustion of the three retries.
+Stop and deactivation cancel backoff and reap the process before the active
+format can be replaced. Restart output cancels its outstanding retry and starts
+one encoder with a fresh budget.
 
 Current execution limits: 8 sources, 32 layers per scene, 8 outputs, source decode
 frames at most 8,294,400 pixels, offline source patterns at most 2,073,600 pixels,
 and composed/output frames at most 8,294,400 pixels.
 FPS remains 1–120; throughput depends on scene size, hardware and encoder.
 Composition uses 8-bit RGBA GPU textures and RGB24 readback. HDR/color management,
-transition effects, recording, outgoing reconnect/backoff and production A/V
+transition effects, recording and production A/V
 latency qualification are not implemented. Chat and WASM guest execution remain
 separate work. Hardware encoders can fail at runtime even when listed by FFmpeg;
 their failures are shown in Studio.
@@ -262,7 +357,12 @@ previews and loopback clients. Mutations require `X-Acheflow-Request: 1` and the
 corresponding management grants; full Apply/Start requires workspace, scene, media
 and extension configure/run permissions because it replaces their configuration.
 
-- `GET /api/live/status`: owner workspace id, RTMP bind address, source and format/output state; no tokens or destination URLs/keys. Sources report cumulative `received_bytes` and rolling `bitrate_kbps`; outputs report their workspace `index`, `sent_bytes` and `bitrate_kbps`. Input bytes count compressed audio/video payload, output bytes count FFmpeg FLV mux bytes. Rates use a two-second rolling window; transport overhead and GUI preview traffic are excluded. Output counters reset on individual restart; input byte counters span publisher reconnects.
+- `GET /api/media/capabilities` reports SRT input support from the server's
+  FFmpeg. `GET /api/media/cameras` lists available local video devices for
+  operators with media management access. `GET /api/media/microphones` lists
+  available local audio inputs for the same operators.
+
+- `GET /api/live/status`: owner workspace id, RTMP bind address, source and format/output state; no tokens or destination URLs/keys. Sources report cumulative `received_bytes` and rolling `bitrate_kbps`; outputs report their workspace `index`, `sent_bytes` and `bitrate_kbps`. An output waiting for or making an automatic reconnection reports `state: "starting"` and the one-based `reconnect_attempt`. Input bytes count compressed audio/video payload, output bytes count FFmpeg FLV mux bytes. Rates use a two-second rolling window; transport overhead and GUI preview traffic are excluded. Output counters reset when a new encoder starts; input byte counters span publisher reconnects.
 - `PUT /api/live/config`: apply a workspace. Layout/source validation is independent of unfinished output drafts. Running encoding profiles cannot be changed.
 - `POST /api/live/start`: `{ "workspace": <workspace>, "formats": ["horizontal", "vertical"] }`. Starts only the requested formats; validates enabled outputs for those formats.
 - `POST /api/live/output/restart`: `{ "workspace_id": "...", "orientation": "horizontal", "index": 0 }`. Restarts one enabled destination with its applied profile. Index is the original workspace output index, including disabled entries. Owner mismatches return 409; inactive formats or absent/disabled destinations return 422. Other encoders, the compositor and audio mixer continue running.
@@ -302,7 +402,8 @@ rejection, decoding, actual red/blue pixels after RTMP re-encoding, non-silent
 source audio at the receiver, both orientations, live repositioning without
 restarting the format, missing-source fallback, reconnect, token revocation,
 stale-owner rejection, live crop/opacity/stacking edits through RTMP, JPEG delivery, and one destination surviving failure of
-another. Native-size regressions cover landscape/portrait reconnects despite a
+another. They also check retry exhaustion, automatic recovery after losing an
+active destination, manual restart and cancellation during backoff. Native-size regressions cover landscape/portrait reconnects despite a
 different offline pattern size, and resolution changes inside one decoder.
 No platform credentials or external streaming services are needed.
 

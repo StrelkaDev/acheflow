@@ -62,6 +62,8 @@ pub struct MediaCapabilities {
     pub version: Option<String>,
     pub encoders: Vec<Encoder>,
     pub rtmp_output: bool,
+    #[serde(default)]
+    pub srt_input: bool,
     pub flv_muxer: bool,
     /// Conservatively enabled on FFmpeg 7+; older builds retain H.264 only.
     pub enhanced_rtmp: bool,

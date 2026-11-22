@@ -6,6 +6,38 @@ pub const PROGRAM_BUS: u32 = 1;
 pub const AUDIO_RATE: u32 = 48_000;
 pub const AUDIO_FRAMES: usize = 960;
 pub const AUDIO_SAMPLES: usize = AUDIO_FRAMES * 2;
+pub const MAX_SYNC_OFFSET_MS: i32 = 250;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncMode {
+    #[default]
+    Auto,
+    AutoTrim,
+    Manual,
+}
+
+impl SyncMode {
+    fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
+}
+
+fn zero_offset(value: &i32) -> bool {
+    *value == 0
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrackSyncStatus {
+    pub key: TrackKey,
+    pub mode: SyncMode,
+    pub tracking_pts: bool,
+    pub buffering: bool,
+    pub video_delay_limited: bool,
+    pub offset_ms: i32,
+    pub audio_delay_ms: u32,
+    pub video_delay_ms: u32,
+    pub estimated_clock_offset_ms: Option<f64>,
+}
 
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
@@ -26,6 +58,10 @@ pub struct AudioStrip {
     pub solo: bool,
     pub pan: i32,
     pub sends: BTreeMap<u32, u32>,
+    #[serde(skip_serializing_if = "SyncMode::is_auto")]
+    pub sync_mode: SyncMode,
+    #[serde(skip_serializing_if = "zero_offset")]
+    pub sync_offset_ms: i32,
 }
 impl Default for AudioStrip {
     fn default() -> Self {
@@ -37,10 +73,19 @@ impl Default for AudioStrip {
             solo: false,
             pan: 0,
             sends: BTreeMap::new(),
+            sync_mode: SyncMode::Auto,
+            sync_offset_ms: 0,
         }
     }
 }
 impl AudioStrip {
+    pub fn active_sync_offset(&self) -> i32 {
+        if self.sync_mode == SyncMode::Auto {
+            0
+        } else {
+            self.sync_offset_ms
+        }
+    }
     pub fn key(&self) -> TrackKey {
         TrackKey {
             source_id: self.source_id,
@@ -120,12 +165,13 @@ impl SceneAudio {
                 || !tracks.insert(strip.key())
                 || strip.gain > 200
                 || !(-100..=100).contains(&strip.pan)
+                || !(-MAX_SYNC_OFFSET_MS..=MAX_SYNC_OFFSET_MS).contains(&strip.sync_offset_ms)
                 || strip
                     .sends
                     .iter()
                     .any(|(bus, gain)| !buses.contains(bus) || *gain > 200)
             {
-                return Err("Invalid audio strip, source, gain, pan or send".into());
+                return Err("Invalid audio strip, source, gain, pan, send or sync offset".into());
             }
         }
         Ok(())
@@ -148,6 +194,17 @@ impl SceneAudio {
             strips.insert(strip.key(), strip.clone());
         }
         strips
+    }
+
+    /// Advancing a track is represented by delaying its shared video. Other
+    /// tracks from that source receive the same baseline video delay.
+    pub fn video_delay_ms(&self, source_id: u32) -> u32 {
+        self.strips
+            .iter()
+            .filter(|strip| strip.source_id == source_id)
+            .map(|strip| strip.active_sync_offset().saturating_neg().max(0) as u32)
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -225,5 +282,31 @@ mod tests {
         scene.strips[0].sends.clear();
         scene.strips[0].pan = 101;
         assert!(scene.validate(&[4]).is_err());
+    }
+
+    #[test]
+    fn video_delay_uses_the_largest_active_advance_on_the_source() {
+        let mut scene = SceneAudio::default();
+        for (track_id, mode, offset) in [
+            (0, SyncMode::Auto, -200),
+            (1, SyncMode::AutoTrim, -110),
+            (2, SyncMode::Manual, 30),
+        ] {
+            scene.strips.push(AudioStrip {
+                source_id: 1,
+                track_id,
+                sync_mode: mode,
+                sync_offset_ms: offset,
+                ..Default::default()
+            });
+        }
+        assert_eq!(scene.video_delay_ms(1), 110);
+        assert_eq!(scene.video_delay_ms(2), 0);
+        scene.strips[1].sync_offset_ms = -MAX_SYNC_OFFSET_MS - 1;
+        assert!(scene.validate(&[1]).is_err());
+        assert_eq!(
+            serde_json::from_str::<AudioStrip>("{}").unwrap().sync_mode,
+            SyncMode::Auto
+        );
     }
 }

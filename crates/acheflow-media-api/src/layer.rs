@@ -26,16 +26,18 @@ pub enum EffectKind {
     Grayscale,
     Blur,
     Opacity,
+    ChromaKey,
     Wgsl,
 }
 impl EffectKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Brightness,
         Self::Contrast,
         Self::Saturation,
         Self::Grayscale,
         Self::Blur,
         Self::Opacity,
+        Self::ChromaKey,
         Self::Wgsl,
     ];
     pub fn label(self) -> &'static str {
@@ -46,6 +48,7 @@ impl EffectKind {
             Self::Grayscale => "Grayscale",
             Self::Blur => "Blur",
             Self::Opacity => "Opacity",
+            Self::ChromaKey => "Chroma key",
             Self::Wgsl => "WGSL shader",
         }
     }
@@ -67,13 +70,48 @@ impl EffectKind {
         match self {
             Self::Brightness | Self::Contrast => 120,
             Self::Saturation => 50,
-            Self::Grayscale => 100,
+            Self::Grayscale | Self::ChromaKey => 100,
             Self::Blur => 3,
             Self::Opacity => 75,
             Self::Wgsl => 100,
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ChromaKey {
+    pub color: [u8; 3],
+    pub tolerance: u8,
+    pub softness: u8,
+    pub edge: u8,
+    pub despill: u8,
+}
+
+impl Default for ChromaKey {
+    fn default() -> Self {
+        Self {
+            color: [13, 191, 20],
+            tolerance: 12,
+            softness: 12,
+            edge: 1,
+            despill: 85,
+        }
+    }
+}
+
+impl ChromaKey {
+    pub const MAX_EDGE: u8 = 4;
+    pub const MAX_PERCENT: u8 = 100;
+
+    pub fn is_valid(self) -> bool {
+        self.tolerance <= Self::MAX_PERCENT
+            && (1..=Self::MAX_PERCENT).contains(&self.softness)
+            && self.edge <= Self::MAX_EDGE
+            && self.despill <= Self::MAX_PERCENT
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LayerEffect {
@@ -81,6 +119,8 @@ pub struct LayerEffect {
     pub id: u64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub shader: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chroma_key: Option<ChromaKey>,
     pub kind: EffectKind,
     pub amount: u32,
     pub enabled: bool,
@@ -95,8 +135,19 @@ impl LayerEffect {
                 String::new()
             },
             kind,
+            chroma_key: (kind == EffectKind::ChromaKey).then(ChromaKey::default),
             amount: kind.default_amount(),
             enabled: true,
         }
+    }
+
+    pub(crate) fn validate_chroma_key(&self) -> Result<(), String> {
+        if self
+            .chroma_key
+            .is_some_and(|key| self.kind != EffectKind::ChromaKey || !key.is_valid())
+        {
+            return Err("Invalid Chroma key settings".into());
+        }
+        Ok(())
     }
 }

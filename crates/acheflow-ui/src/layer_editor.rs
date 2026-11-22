@@ -4,6 +4,7 @@ use crate::{
     project::{EffectKind, Layer, LayerEffect, Workspace},
     slider::Slider,
 };
+use acheflow_media_api::layer::ChromaKey;
 use dioxus_native::prelude::*;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -232,6 +233,9 @@ fn LayerInspector(
                             p {class:"form-help","fn effect(uv, color) → vec4f · sample_source(uv) · params.time (seconds), params.strength, params.size. Bounded fragment functions; no loops or custom bindings."}
                             CodeEditor {label:"WGSL shader",kind:CodeKind::Wgsl,value:effect.shader.clone(),change:move |v|edit_effect(project,target,layer_id,effect_id,|e|e.shader=v)}
                         }
+                        if effect.kind==EffectKind::ChromaKey {
+                            ChromaKeyControls {project,target,layer_id,effect_id,key_settings:effect.chroma_key.unwrap_or_default()}
+                        }
 
                     }
                 }}}
@@ -239,6 +243,69 @@ fn LayerInspector(
             }
 
     }
+}
+
+#[component]
+fn ChromaKeyControls(
+    project: Signal<Workspace>,
+    target: LayerTarget,
+    layer_id: u64,
+    effect_id: u64,
+    key_settings: ChromaKey,
+) -> Element {
+    let defaults = ChromaKey::default();
+    let mut color = use_signal(|| color_hex(key_settings.color));
+    use_effect(use_reactive((&key_settings.color,), move |(current,)| {
+        if parse_key_color(&color.peek()) != Some(current) {
+            color.set(color_hex(current));
+        }
+    }));
+    let valid = parse_key_color(&color.read()).is_some();
+    rsx! {
+        div {class:"chroma-key-controls",
+            crate::live::Field {label:"Key color (hex)",value:color(),change:move |value:String| {
+                let parsed=parse_key_color(&value);
+                color.set(value);
+                if let Some(rgb)=parsed {
+                    edit_key(project,target,layer_id,effect_id,|key| key.color=rgb);
+                }
+            }}
+            if !valid {p {class:"field-error","Enter a color such as #0DBF14."}}
+            Slider {label:"Tolerance",unit:"%",value:key_settings.tolerance as i32,min:0,max:100,reset:Some(defaults.tolerance as i32),change:move |v:i32|edit_key(project,target,layer_id,effect_id,|key|key.tolerance=v as u8)}
+            Slider {label:"Softness",unit:"%",value:key_settings.softness as i32,min:1,max:100,reset:Some(defaults.softness as i32),change:move |v:i32|edit_key(project,target,layer_id,effect_id,|key|key.softness=v as u8)}
+            Slider {label:"Edge smoothing",unit:" px",value:key_settings.edge as i32,min:0,max:ChromaKey::MAX_EDGE as i32,reset:Some(defaults.edge as i32),change:move |v:i32|edit_key(project,target,layer_id,effect_id,|key|key.edge=v as u8)}
+            Slider {label:"Despill",unit:"%",value:key_settings.despill as i32,min:0,max:100,reset:Some(defaults.despill as i32),change:move |v:i32|edit_key(project,target,layer_id,effect_id,|key|key.despill=v as u8)}
+        }
+    }
+}
+
+fn edit_key(
+    project: Signal<Workspace>,
+    target: LayerTarget,
+    layer_id: u64,
+    effect_id: u64,
+    change: impl FnOnce(&mut ChromaKey),
+) {
+    edit_effect(project, target, layer_id, effect_id, |effect| {
+        change(effect.chroma_key.get_or_insert_with(ChromaKey::default));
+    });
+}
+
+fn color_hex([red, green, blue]: [u8; 3]) -> String {
+    format!("#{red:02X}{green:02X}{blue:02X}")
+}
+
+fn parse_key_color(input: &str) -> Option<[u8; 3]> {
+    let input = input.trim();
+    let input = input.strip_prefix('#').unwrap_or(input);
+    if input.len() != 6 || !input.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some([
+        u8::from_str_radix(&input[..2], 16).ok()?,
+        u8::from_str_radix(&input[2..4], 16).ok()?,
+        u8::from_str_radix(&input[4..], 16).ok()?,
+    ])
 }
 
 #[cfg(test)]

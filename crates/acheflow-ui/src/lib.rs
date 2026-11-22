@@ -16,6 +16,7 @@ mod layer_editor;
 mod live;
 mod live_client;
 mod media;
+mod microphone_sources;
 #[cfg(target_arch = "wasm32")]
 mod mobile_input;
 #[cfg(not(target_arch = "wasm32"))]

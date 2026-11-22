@@ -594,6 +594,14 @@ impl ControlHost {
         self: &Arc<Self>,
         request: ControlRequest,
     ) -> Result<ControlSnapshot, String> {
+        if matches!(&request.action, ControlAction::SetExtension { .. }) {
+            // Finish the transition and record its result if the caller disconnects
+            // while the previous guest is draining after the settings were saved.
+            let host = self.clone();
+            return tokio::spawn(async move { host.execute_while(request, || true).await })
+                .await
+                .map_err(|_| "unavailable: extension configuration task stopped")?;
+        }
         self.execute_while(request, || true).await
     }
     /// Native receipts must still be live after waiting for command/guest locks.
@@ -794,25 +802,12 @@ impl ControlHost {
                 enabled,
                 config,
             } => {
-                if let Some(config) = config {
-                    crate::workspace_extensions::configure_extension(
-                        self,
-                        &request.workspace_id,
-                        id,
-                        config,
-                    )?;
-                }
-                crate::workspace_extensions::update_settings(
+                crate::workspace_extensions::set_extension(
                     self,
                     &request.workspace_id,
                     id,
-                    |settings| settings.enabled = *enabled,
-                )?;
-                crate::extension_host::set_enabled(
-                    self.clone(),
-                    &request.workspace_id,
-                    id,
                     *enabled,
+                    config.as_ref(),
                 )
                 .await?;
             }

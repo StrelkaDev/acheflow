@@ -15,8 +15,8 @@ cargo run -p acheflow --release --locked
 cargo run -p acheflow --release --locked -- --server
 ```
 
-The final two commands are alternative launch modes. The desktop manages its own
-server when needed; do not start another server on the same ports unnecessarily.
+The final two commands launch the desktop or the standalone server. Choose one
+when using the default ports. The desktop starts its managed server as needed.
 For browser UI assets, install the pinned Trunk version and build:
 
 ```sh
@@ -26,7 +26,9 @@ trunk build
 
 Trunk defaults to optimized WASM. `trunk serve` uses localhost:8081 and needs a
 separate backend allowing that origin. Native development entrypoints remain
-available, but installation docs and packages use the unified `acheflow` binary.
+available. Installations use the unified `acheflow` binary. For macOS camera
+and microphone verification, [build and launch the app bundle](desktop-installation.md#build-a-distribution-maintainers)
+so macOS can prompt for device permissions.
 
 ## Standard checks
 
@@ -61,6 +63,13 @@ cargo test -p acheflow-server --locked -- --ignored --nocapture
 cargo test -p acheflow-composition --features headless --locked -- --ignored --nocapture
 ```
 
+To exercise the optional SRT ingest, select an FFmpeg binary with SRT support
+and run the encrypted loopback receiver test.
+
+```sh
+ACHEFLOW_FFMPEG="<ffmpeg-with-srt>" cargo test -p acheflow-server --lib --locked real_srt_ingest -- --ignored --nocapture
+```
+
 Some native credential tests use the OS vault and should run with isolated fixture
 records. A sandbox blocking local listeners cannot validate process/IPC tests.
 The production-server HTTPS integration can also be run directly:
@@ -73,6 +82,58 @@ It needs OpenSSL and local listeners. It creates an ephemeral test CA without
 installing system trust, then checks cookie pairing, device grants, revocation and
 restart recovery with two real fixture WASM collectors. It does not replace
 physical-device or live-provider authorization checks.
+
+### Sustained A/V timing
+
+Run the loopback capture with FFmpeg, libx264 and a headless GPU adapter. Then pass
+the temporary directory printed by the test to the analyzer, which also uses
+ffprobe.
+
+```sh
+cargo test -p acheflow-server --lib --locked sustained_rtmp_av_markers -- --ignored --nocapture
+python3 crates/acheflow-server/tests/measure_av_timing.py "<capture-directory>" \
+  --markers-csv "<capture-directory>/markers.csv" > "<capture-directory>/report.json"
+```
+
+The fixture starts with 120 seconds of 320×180 at 30 fps. A second 1080×1920
+compositor and libx264 output add GPU and CPU work. Both outputs default to
+30 fps. Set `ACHEFLOW_AV_VERTICAL_FPS=25` on the capture command to test a
+different output cadence. The analyzer uses each capture's configured rate
+for its video packet-gap budget. During the loaded phase, the
+publisher inserts a 1.25-second PTS jump on both tracks, disconnects and
+reconnects. The fixture also independently restarts the vertical output while
+recording the horizontal output continuously. The run takes about four minutes.
+
+The analyzer checks the source reference, pairs flash and tone onsets by PTS,
+and reports signed offset (positive means audio later), drift, missing pairs,
+packet gaps and media duration. The provisional steady-state budget is 80 ms
+for the 95th percentile of absolute offset, 150 ms peak, and 20 ms/min baseline
+drift. It also checks at least 95% matched pulses, gaps of at most 4.1 seconds
+between matched pulses, and packet gaps of at most three video frame periods
+(plus 1 ms for timestamp rounding) or 65 ms of audio. Transition windows are
+reported separately, including the times of the first and last matched pulses.
+The capture and analysis can succeed while the reported output exceeds the
+budget. Keep captures and reports outside the repository.
+
+The capture also writes `marker-trace.csv`. It records flash and tone onsets at
+decode, composition, mixing, and the raw video encoder feed. `observed_s` is
+monotonic time since tracing started. `frame_or_block_s` is the image render time
+or the scheduled PCM block start at the mixer. `pts_48khz` is the source PTS
+through the mixer and the output slot PTS at the encoder. Each `epoch` row gives
+the scheduled origin for that encoder attempt. Use the trace to locate the stage
+where the onsets diverge and the FLV report to measure the receiver's offset.
+
+The shorter `live_manual_av_trim` probe changes a running scene from 200 ms of
+audio delay to 200 ms of source video delay, checks the applied track and
+server-load status, and saves the resulting RTMP stream.
+
+`audio_minus_video_ms` in the CSV is the sound onset PTS minus the matching
+flash PTS. Plot it against `video_pts_s` separately for each capture. A flat
+line above zero means the audio is consistently late. A sloping series means
+the offset is changing. A step after a reconnect or timestamp jump isolates
+a change in synchronization at that transition. Use `p95_absolute_offset_ms`
+to compare typical worst-case offsets across runs and `peak_absolute_offset_ms`
+to spot isolated outliers. Frame counters and bitrate cannot measure this offset.
 
 Run affected checks after changes; reuse successful evidence only for unchanged
 code/dependencies/environment. Documentation-only edits need link, command, content

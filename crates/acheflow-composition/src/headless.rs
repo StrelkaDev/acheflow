@@ -187,14 +187,27 @@ impl Headless {
             .slice(..)
             .get_mapped_range()
             .map_err(|e| format!("GPU mapped range: {e}"))?;
-        let image = RgbImage::from_fn(self.size.width, self.size.height, |x, y| {
-            let i = (y * stride + x * 4) as usize;
-            image::Rgb([data[i], data[i + 1], data[i + 2]])
-        });
+        let image = rgb_from_readback(&data, self.size.width, self.size.height, stride as usize);
         drop(data);
         self.buffer.unmap();
         Ok(image)
     }
+}
+
+fn rgb_from_readback(data: &[u8], width: u32, height: u32, stride: usize) -> RgbImage {
+    let row_bytes = width as usize * 3;
+    let mut pixels = vec![0; row_bytes * height as usize];
+    for (source, destination) in data
+        .chunks_exact(stride)
+        .zip(pixels.chunks_exact_mut(row_bytes))
+    {
+        let (source, _) = source.as_chunks::<4>();
+        let (destination, _) = destination.as_chunks_mut::<3>();
+        for (&[r, g, b, _], pixel) in source.iter().zip(destination) {
+            *pixel = [r, g, b];
+        }
+    }
+    RgbImage::from_raw(width, height, pixels).expect("RGB buffer matches readback dimensions")
 }
 
 #[cfg(test)]
@@ -203,6 +216,71 @@ mod tests {
     use crate::gpu::SourceFrame;
     use acheflow_media_api::workspace::{EffectKind, LayerEffect, Orientation, Workspace};
     use std::{collections::HashMap, sync::Arc};
+
+    #[test]
+    fn readback_preserves_rgb_order_and_discards_alpha_and_row_padding() {
+        let first = [1, 2, 3, 111, 4, 5, 6, 112, 200, 201, 202, 203];
+        let second = [7, 8, 9, 113, 10, 11, 12, 114, 204, 205, 206, 207];
+        let raw = [first, second].concat();
+        let image = rgb_from_readback(&raw, 2, 2, 12);
+        assert_eq!(image.dimensions(), (2, 2));
+        assert_eq!(image.into_raw(), (1..=12).collect::<Vec<u8>>());
+    }
+
+    #[test]
+    #[ignore = "requires an actual GPU adapter"]
+    fn chroma_key_removes_the_configured_color_and_can_change_it_live() {
+        use acheflow_media_api::layer::ChromaKey;
+        let size = Resolution {
+            width: 64,
+            height: 32,
+        };
+        let mut workspace = Workspace::default();
+        workspace.horizontal.base = size.clone();
+        workspace.add_source();
+        let scene = workspace.add_scene(Orientation::Horizontal);
+        workspace.add_layer(scene, 1);
+        let mut effect = LayerEffect::new(EffectKind::ChromaKey);
+        effect.chroma_key = Some(ChromaKey {
+            color: [0, 255, 0],
+            ..Default::default()
+        });
+        workspace.scenes[0].layers[0].effects.push(effect);
+        let source = RgbImage::from_fn(64, 32, |x, _| {
+            if x < 32 {
+                image::Rgb([0, 255, 0])
+            } else {
+                image::Rgb([255, 0, 0])
+            }
+        });
+        let mut frame = SceneFrame {
+            source_documents: Default::default(),
+            epoch_ms: 0,
+            scene: workspace.scenes[0].clone(),
+            size: size.clone(),
+            inputs: HashMap::from([(
+                1,
+                SourceFrame {
+                    image: Arc::new(source),
+                    size: size.clone(),
+                },
+            )]),
+            time: 0.,
+        };
+        let mut gpu = Headless::new(size).unwrap();
+        let pixels = gpu.render(&frame).unwrap();
+        assert_eq!(pixels.get_pixel(12, 16).0, [0, 0, 0]);
+        assert_eq!(pixels.get_pixel(48, 16).0, [255, 0, 0]);
+        frame.scene.layers[0].effects[0]
+            .chroma_key
+            .as_mut()
+            .unwrap()
+            .color = [255, 0, 0];
+        let pixels = gpu.render(&frame).unwrap();
+        assert_eq!(pixels.get_pixel(12, 16).0, [0, 255, 0]);
+        assert_eq!(pixels.get_pixel(48, 16).0, [0, 0, 0]);
+    }
+
     #[test]
     #[ignore = "requires an actual GPU adapter"]
     fn spatial_default_viewport_matches_legacy_and_depth_occludes() {
@@ -369,7 +447,8 @@ mod tests {
         assert!(image.get_pixel(16, 16)[2] > 240, "cover aligns right side");
         frame.scene.layers[0].css =
             "left:8px;top:8px;width:32px;height:32px;--crop-left:8px;".into();
-        frame.scene.layers[0].effects.push(LayerEffect { id: acheflow_media_api::workspace::new_entity_id(),kind:EffectKind::Wgsl,amount:100,enabled:true,shader:"fn effect(uv:vec2f,color:vec4f)->vec4f {return vec4f(vec3f(1.)-color.rgb,color.a);}".into()});
+        frame.scene.layers[0].effects.push(LayerEffect {
+                chroma_key: None, id: acheflow_media_api::workspace::new_entity_id(),kind:EffectKind::Wgsl,amount:100,enabled:true,shader:"fn effect(uv:vec2f,color:vec4f)->vec4f {return vec4f(vec3f(1.)-color.rgb,color.a);}".into()});
         let image = gpu.render(&frame).unwrap();
         assert!(
             image.get_pixel(20, 20)[0] > 240
@@ -406,6 +485,7 @@ mod tests {
         let pattern_pixels = gpu.render(&frame).unwrap();
         assert!(pattern_pixels.pixels().any(|p| p[0] > 180 && p[1] < 100));
         frame.scene.layers[0].effects.push(LayerEffect {
+            chroma_key: None,
             shader: "fn effect(uv:vec2f,c:vec4f)->vec4f{return vec4f(vec3f(1.)-c.rgb,c.a);}".into(),
             ..LayerEffect::new(EffectKind::Wgsl)
         });

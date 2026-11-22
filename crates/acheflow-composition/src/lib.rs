@@ -126,6 +126,7 @@ mod tests {
             height: 4,
         };
         let effect = |kind, amount| LayerEffect {
+            chroma_key: None,
             id: acheflow_media_api::workspace::new_entity_id(),
             shader: String::new(),
             kind,
@@ -174,6 +175,7 @@ mod tests {
             &size,
             SourceCrop::default(),
             &[LayerEffect {
+                chroma_key: None,
                 id: acheflow_media_api::workspace::new_entity_id(),
                 shader: String::new(),
                 kind: EffectKind::Blur,

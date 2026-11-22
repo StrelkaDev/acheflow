@@ -38,6 +38,10 @@ Homebrew users may use `brew install ffmpeg`. The server discovers FFmpeg on PAT
 or at `/opt/homebrew/bin/ffmpeg` and `/usr/local/bin/ffmpeg`. For another location,
 set `ACHEFLOW_FFMPEG` to the absolute executable path in the server/client launch
 environment. This distribution does not redistribute FFmpeg or its codec libraries.
+Use an [SRT-enabled FFmpeg](https://github.com/StrelkaDev/acheflow/blob/main/docs/ffmpeg.md#srt-input)
+for SRT sources. Allow access when macOS prompts for the camera or microphone
+you select. Review these grants under **Camera** and **Microphone** in
+**System Settings → Privacy & Security**.
 
 The current archive is ad-hoc signed for local execution and has **no Developer ID
 signature or notarization**. Public downloads require the signing/notarization
@@ -103,16 +107,21 @@ external rollout; local package verification does not establish them.
 
 ## Build a distribution (maintainers)
 
-From the source checkout on macOS with Rust/WASM target, Trunk and Xcode tools:
+From the repository root, install the [source build prerequisites](https://github.com/StrelkaDev/acheflow/blob/main/docs/getting-started.md#prerequisites),
+fetch both workspaces' locked dependencies, and install Trunk.
 
 ```sh
+cargo fetch --locked
+cargo fetch --manifest-path extensions/Cargo.toml --locked
+cargo install trunk --version 0.22.1 --locked
 python3 native/macos/build-app.py --output target/acheflow-app
 open target/acheflow-app/Acheflow.app
 ```
 
 This creates a complete ad-hoc-signed local app and registers its `acheflow://`
-scheme at the resulting path. Use `--no-register-links` to leave LaunchServices
-untouched. To create and register the app directly in Applications, use:
+scheme at the resulting path. The bundle declares camera and microphone usage
+so macOS can prompt for access. Use `--no-register-links` to skip LaunchServices registration.
+To create and register the app directly in Applications, use:
 
 ```sh
 python3 native/macos/build-app.py --output /Applications/Acheflow.app

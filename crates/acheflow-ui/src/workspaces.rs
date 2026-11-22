@@ -18,12 +18,14 @@ pub struct WorkspaceRecord {
 #[serde(default, deny_unknown_fields)]
 struct Preferences {
     background_animation: bool,
+    preview_fps: u32,
     server: crate::server_settings::ServerPreferences,
 }
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             background_animation: true,
+            preview_fps: crate::video_preview::DEFAULT_PREVIEW_FPS,
             server: Default::default(),
         }
     }
@@ -71,6 +73,14 @@ impl Catalog {
     }
     pub fn set_background_animation(&mut self, enabled: bool) {
         self.preferences.background_animation = enabled;
+    }
+    pub(crate) fn preview_fps(&self) -> u32 {
+        self.preferences
+            .preview_fps
+            .clamp(1, crate::video_preview::MAX_PREVIEW_FPS)
+    }
+    pub(crate) fn set_preview_fps(&mut self, fps: u32) {
+        self.preferences.preview_fps = fps.clamp(1, crate::video_preview::MAX_PREVIEW_FPS);
     }
     pub fn active_id(&self) -> u32 {
         self.active
@@ -527,6 +537,7 @@ mod preference_tests {
             allow_network: true,
             http_port: 22345,
             rtmp_port: 22346,
+            ffmpeg_path: Some("/path/to/ffmpeg".into()),
         };
         catalog.set_server_preferences(prefs.clone());
         catalog.add(new_workspace("Remote", "https://remote.example").unwrap());
@@ -537,6 +548,7 @@ mod preference_tests {
         assert!(!workspace.contains("start_with_client"));
         assert!(!workspace.contains("keep_running_on_exit"));
         assert!(!workspace.contains("allow_network"));
+        assert!(!workspace.contains("ffmpeg_path"));
         assert_eq!(restored.current().server_url, "https://remote.example");
         std::fs::remove_file(path).unwrap();
     }
@@ -546,12 +558,19 @@ mod preference_tests {
         legacy.as_object_mut().unwrap().remove("preferences");
         let mut catalog = Catalog::decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
         assert!(catalog.background_animation());
+        assert_eq!(
+            catalog.preview_fps(),
+            crate::video_preview::DEFAULT_PREVIEW_FPS
+        );
+        catalog.set_preview_fps(100);
         catalog.set_background_animation(false);
         catalog.add(new_workspace("Second", "https://server.example").unwrap());
         assert!(!catalog.background_animation());
         catalog.active = 1;
         let restored = Catalog::decode(&serde_json::to_vec(&catalog).unwrap()).unwrap();
         assert!(!restored.background_animation());
+        assert_eq!(restored.preview_fps(), 60);
+        assert!(!restored.current().json().unwrap().contains("preview_fps"));
         assert!(
             !restored
                 .current()

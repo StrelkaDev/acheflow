@@ -2,7 +2,7 @@
 use crate::{
     audio_input::tests::tone_amplitude,
     live,
-    pipeline_tests::{server, until},
+    pipeline_tests::{configure_current, server, until},
 };
 use acheflow_media_api::{audio::*, live::StartRequest, workspace::*};
 use axum::{Json, extract::State};
@@ -199,6 +199,7 @@ async fn real_scene_mixer_multitrack_sources_and_live_destination_routes() {
         });
     }
     let (runtime, task, url) = server(w, caps).await;
+    let _shutdown = runtime.shutdown.clone().drop_guard();
     let mut w = runtime.workspace.read().unwrap().clone().unwrap();
     let mut multi = publish(&url, &w.sources[0].key, &[[440, 660], [880, 1100]]);
     let mut single = publish(&url, &w.sources[1].key, &[[1320, 1540]]);
@@ -229,7 +230,7 @@ async fn real_scene_mixer_multitrack_sources_and_live_destination_routes() {
     let frames = runtime.formats.lock().await[0].frames.clone();
     let before = frames.load(Ordering::Relaxed);
     w.horizontal.outputs[0].audio.scene_buses.insert(scene, 2);
-    let _ = live::configure(State(runtime.clone()), Json(w.clone()))
+    let _ = configure_current(State(runtime.clone()), Json(w.clone()))
         .await
         .unwrap();
     signal(
@@ -244,7 +245,7 @@ async fn real_scene_mixer_multitrack_sources_and_live_destination_routes() {
     ));
     assert!(frames.load(Ordering::Relaxed) > before);
     w.horizontal.outputs[0].audio.muted = true;
-    let _ = live::configure(State(runtime.clone()), Json(w.clone()))
+    let _ = configure_current(State(runtime.clone()), Json(w.clone()))
         .await
         .unwrap();
     signal(
@@ -255,7 +256,7 @@ async fn real_scene_mixer_multitrack_sources_and_live_destination_routes() {
     .await;
     w.horizontal.outputs[0].audio.muted = false;
     w.set_active(Orientation::Horizontal, Some(other));
-    let _ = live::configure(State(runtime.clone()), Json(w.clone()))
+    let _ = configure_current(State(runtime.clone()), Json(w.clone()))
         .await
         .unwrap();
     signal(

@@ -43,6 +43,9 @@ shutil.copy2(root / "crates/acheflow-ui/assets/achedev-logo.icns", resources / "
 base_info = {
     "CFBundleIdentifier": bundle_id,
     "CFBundleName": "Acheflow",
+    "NSMicrophoneUsageDescription": "Use the microphones you select as audio sources in Acheflow.",
+    "NSCameraUsageDescription": "Use the cameras you select as video sources in Acheflow.",
+    "NSCameraUseContinuityCameraDeviceType": True,
     "CFBundleExecutable": "acheflow",
     "CFBundleIconFile": "Acheflow.icns",
     "CFBundlePackageType": "APPL",

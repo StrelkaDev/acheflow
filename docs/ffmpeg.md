@@ -13,6 +13,13 @@ PATH. On macOS the server also checks `/opt/homebrew/bin/ffmpeg` and
 `/usr/local/bin/ffmpeg`. An explicit override is respected even if it fails;
 there is no silent fallback to another FFmpeg build.
 
+For a server managed by the desktop app, enter an absolute path under
+**Settings / Server / Local server / FFmpeg executable**, save it, then restart
+the local server. The saved path takes precedence over an inherited
+`ACHEFLOW_FFMPEG`. Clear the field to restore the launch environment's selection
+and automatic detection. Configure an independently launched server through
+its own environment.
+
 At startup and on an explicit refresh the server runs these fixed commands:
 
 ```sh
@@ -33,14 +40,35 @@ does not prevent managing workspaces or serving the GUI.
 
 `GET /api/media/capabilities` reads the cache. `POST` to the same endpoint rescans.
 The response includes `available`, `version`, `encoders` (name, codec, media type,
-description, experimental and hardware flags), `rtmp_output`, `flv_muxer`, `enhanced_rtmp`
-and `error`. GET does not launch a child process.
+description, experimental and hardware flags), `srt_input`, `rtmp_output`,
+`flv_muxer`, `enhanced_rtmp` and `error`. GET does not launch a child process.
 
 The complete inventory includes video, audio and subtitle encoders. The current
 output UI offers non-experimental encoders for H.264 and, conservatively on
 FFmpeg 7+, HEVC/AV1/VP9, provided the RTMP output protocol and FLV muxer exist.
 Other codecs remain visible in the inventory but are not offered as this
 application's RTMP video profiles. AAC remains the audio profile.
+
+### SRT input
+
+Check that `srt` appears under **Input** in the selected FFmpeg's `-protocols`
+output. On macOS, when automatic detection selects a build without SRT, Acheflow
+also checks the standard Homebrew paths for
+[ffmpeg-full](https://formulae.brew.sh/formula/ffmpeg-full) and uses it for the
+SRT receiver. Other media operations keep the primary FFmpeg. For a source
+checkout with the native build and guest artifacts already prepared, use the
+following commands to select `ffmpeg-full` explicitly for all media operations:
+
+```sh
+brew install ffmpeg-full
+srt_ffmpeg="$(brew --prefix ffmpeg-full)/bin/ffmpeg"
+"$srt_ffmpeg" -hide_banner -protocols
+ACHEFLOW_FFMPEG="$srt_ffmpeg" ./target/release/acheflow --server
+```
+
+Omit `--server` to launch the desktop with the same override for its managed
+server. The override takes effect when that server starts. For source settings,
+see [source setup](live-pipeline.md#source-setup).
 
 Compiled hardware encoders are not evidence of a working hardware device,
 driver, supported pixel format or supported resolution. Discovery does not run

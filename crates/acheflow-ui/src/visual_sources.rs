@@ -38,28 +38,54 @@ fn add(mut project: Signal<Workspace>, kind: SourceKind, name: String) {
     }
 }
 #[component]
-pub(crate) fn VisualSources(mut project: Signal<Workspace>) -> Element {
-    let mut expanded = use_signal(std::collections::HashSet::<u32>::new);
+pub(crate) fn AddSourceOptions(
+    project: Signal<Workspace>,
+    server_connected: bool,
+    srt_available: bool,
+    checking_srt: bool,
+    on_refresh_ffmpeg: EventHandler<()>,
+    camera_choices: Element,
+    microphone_choices: Element,
+    on_rtmp: EventHandler<()>,
+    on_srt: EventHandler<()>,
+    on_added: EventHandler<()>,
+) -> Element {
     let control = use_context::<ControlClient>();
     let snapshot = control.state.read();
     let source_types = snapshot
         .as_ref()
         .map(|s| s.source_types.clone())
         .unwrap_or_default();
-    let full = project.read().sources.len() >= 8;
     rsx! {
-        div{class:"row source-actions",
-            button{id:"add-chat-source",class:"primary",disabled:full,onclick:move |_|add(project,SourceKind::Chat(ChatSource::default()),"Chat".into()),onkeydown:move |event|{if activates(&event){event.prevent_default();add(project,SourceKind::Chat(ChatSource::default()),"Chat".into());}},"+ Chat source"}
+        div{id:"source-types",class:"source-types",role:"group","aria-label":"Source type",
+            button{disabled:!server_connected,onclick:move |_|on_rtmp.call(()),strong{"RTMP"}span{"Incoming stream with a stream key"}}
+            button{id:"add-srt-source",disabled:!server_connected||!srt_available,onclick:move |_|on_srt.call(()),strong{"SRT"}
+                span {if !server_connected {"Connect to a server"} else if checking_srt {"Checking FFmpeg…"} else if !srt_available {"Needs an SRT-capable FFmpeg"} else {"Incoming MPEG-TS over UDP"}}
+            }
+            {camera_choices}
+            {microphone_choices}
+            button{id:"add-chat-source",onclick:move |_|{add(project,SourceKind::Chat(ChatSource::default()),"Chat".into());on_added.call(());},onkeydown:move |event|{if activates(&event){event.prevent_default();add(project,SourceKind::Chat(ChatSource::default()),"Chat".into());on_added.call(());}},strong{"Chat"}span{"Chat overlay"}}
             for definition in source_types {
                 {
-                    let label=format!("+ {}",definition.source_type.name);
                     let name=definition.source_type.name.clone();
                     let kind=SourceKind::Extension(ExtensionSource{extension_id:definition.extension_id.clone(),type_id:definition.source_type.id.clone(),..Default::default()});
-                    rsx!{button{disabled:full,onclick:move |_|add(project,kind.clone(),name.clone()),"{label}"}}
+                    let label = name.clone();
+                    rsx!{button{onclick:move |_|{add(project,kind.clone(),name.clone());on_added.call(());},strong{"{label}"}span{"Extension source"}}}
                 }
             }
         }
-        for source in project.read().sources.iter().filter(|s|!s.kind.is_rtmp()).cloned().collect::<Vec<_>>() {
+        if server_connected && !srt_available && !checking_srt {
+            div {class:"source-types-footer",button {onclick:move |_|on_refresh_ffmpeg.call(()),"Refresh FFmpeg"}}
+        }
+    }
+}
+#[component]
+pub(crate) fn VisualSources(mut project: Signal<Workspace>) -> Element {
+    let mut expanded = use_signal(std::collections::HashSet::<u32>::new);
+    let control = use_context::<ControlClient>();
+    let snapshot = control.state.read();
+    rsx! {
+        for source in project.read().sources.iter().filter(|s|!s.kind.is_media_input()).cloned().collect::<Vec<_>>() {
             section{key:"visual-{source.id}",class:"panel",
                 div{class:"panel-heading",button{id:"toggle-visual-{source.id}",class:"destination-toggle",onkeydown:move |event|{if activates(&event){event.prevent_default();let mut open=expanded.write();if !open.remove(&source.id){open.insert(source.id);}}},"aria-expanded":expanded.read().contains(&source.id).to_string(),onclick:move |_|{let mut open=expanded.write();if !open.remove(&source.id){open.insert(source.id);}},span{if expanded.read().contains(&source.id){"▾"}else{"▸"}}h2{"{source.name}"}}span{class:"badge",if matches!(source.kind,SourceKind::Chat(_)){"Chat overlay"}else{"Extension source"}}button{onclick:move |_|project.write().remove_source(source.id),"Remove"}}
                 div{style:if expanded.read().contains(&source.id){"display:block"}else{"display:none"},
@@ -84,7 +110,7 @@ pub(crate) fn VisualSources(mut project: Signal<Workspace>) -> Element {
                             CodeEditor{label:"Source CSS",kind:CodeKind::Css,value:settings.css,change:move|v|edit(project,source.id,|s|if let SourceKind::Extension(config)=&mut s.kind{config.css=v;})}
                         }}
                     },
-                    SourceKind::Rtmp=>rsx!{}
+                    SourceKind::Rtmp | SourceKind::Srt { .. } | SourceKind::Camera { .. } | SourceKind::Microphone { .. }=>rsx!{}
                 }
                 }
             }
@@ -170,6 +196,7 @@ mod tests {
     #[derive(Default)]
     struct Harness {
         project: Cell<Option<Signal<Workspace>>>,
+        srt_available: bool,
     }
     fn app() -> Element {
         let harness = use_context::<Rc<Harness>>();
@@ -185,7 +212,47 @@ mod tests {
             request_generation: use_signal(|| 0),
         };
         use_context_provider(|| client);
-        rsx! {VisualSources{project}}
+        rsx! {
+            AddSourceOptions{project,server_connected:true,srt_available:harness.srt_available,checking_srt:false,on_refresh_ffmpeg:|_|{},camera_choices:rsx!{},microphone_choices:rsx!{},on_rtmp:|_|{},on_srt:|_|{},on_added:|_|{}}
+            VisualSources{project}
+        }
+    }
+    #[tokio::test]
+    async fn srt_add_control_explains_availability_and_blocks_unsupported_servers() {
+        for supported in [false, true] {
+            let harness = Rc::new(Harness {
+                srt_available: supported,
+                ..Default::default()
+            });
+            let mut doc = dioxus_native::DioxusDocument::new(
+                VirtualDom::new(app).with_root_context(harness),
+                DocumentConfig::default(),
+            );
+            doc.initial_build();
+            settle(&mut doc);
+            assert_eq!(
+                doc.inner
+                    .borrow()
+                    .query_selector("#add-srt-source:not([disabled])")
+                    .unwrap()
+                    .is_some(),
+                supported
+            );
+            assert!(
+                doc.inner
+                    .borrow()
+                    .query_selector("#add-srt-source")
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                doc.inner
+                    .borrow()
+                    .query_selector("#add-chat-source")
+                    .unwrap()
+                    .is_some()
+            );
+        }
     }
     fn settle(doc: &mut dioxus_native::DioxusDocument) {
         for _ in 0..40 {

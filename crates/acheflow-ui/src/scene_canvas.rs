@@ -1,7 +1,7 @@
 use crate::{
     live_client::{Action, LiveClient},
     project::{Orientation, Workspace},
-    scene_geometry::{self, Bounds, Corner, DragKind},
+    scene_geometry::{self, Bounds, Corner, DragConstraints, DragKind},
     scene_preview::ScenePreview,
 };
 use dioxus_native::prelude::*;
@@ -16,7 +16,10 @@ struct LayerDrag {
     kind: DragKind,
     scale_x: f64,
     scale_y: f64,
+    source_aspect: Option<f64>,
 }
+
+const EDGE_SNAP_PX: f64 = 8.;
 
 #[component]
 pub fn Canvas(
@@ -54,7 +57,15 @@ pub fn Canvas(
         onmousemove:move |event| {
             if let Some(drag)=dragging() {
                 let point=event.client_coordinates();
-                let b=scene_geometry::transform(drag.bounds,drag.kind,(point.x-drag.client_x)*drag.scale_x,(point.y-drag.client_y)*drag.scale_y,(base.width,base.height));
+                let modifiers=event.modifiers();
+                let aspect=modifiers.contains(Modifiers::SHIFT).then(|| {
+                    let current=f64::from(drag.bounds.width.max(1))/f64::from(drag.bounds.height.max(1));
+                    if modifiers.contains(Modifiers::ALT) {drag.source_aspect.unwrap_or(current)} else {current}
+                });
+                // This canvas edits the viewport content in 2D. Spatial view transforms
+                // handle their own pointer gestures and never use canvas-edge snapping.
+                let constraints=DragConstraints{aspect,snap:(EDGE_SNAP_PX*drag.scale_x,EDGE_SNAP_PX*drag.scale_y)};
+                let b=scene_geometry::transform(drag.bounds,drag.kind,(point.x-drag.client_x)*drag.scale_x,(point.y-drag.client_y)*drag.scale_y,(base.width,base.height),constraints);
                 if let Some(scene)=project.write().scenes.iter_mut().find(|s|s.id==drag.scene) && let Some(layer)=scene.layers.iter_mut().find(|l|l.id==drag.layer_id) {
                     let css=if layer.css.is_empty(){acheflow_media_api::appearance::default_layer_css(layer)}else{layer.css.clone()};
                     layer.x=b.x;layer.y=b.y;layer.width=b.width;layer.height=b.height;
@@ -76,12 +87,16 @@ pub fn Canvas(
                 }},
                 div {class:"layer-label",span {{p.sources.iter().find(|s|s.id==layer.source_id).map(|s|s.name.clone()).unwrap_or_else(||"Missing source".into())}}small {if state.as_ref().and_then(|s|s.sources.iter().find(|s|s.id==layer.source_id)).is_some_and(|s|s.connected){"RTMP connected"}else{"Waiting for RTMP"}}}
                 if editable && selection()==Some(layer.id) {for corner in Corner::ALL {
+                    {let source_aspect=source_aspect(&p,state.as_ref(),layer.source_id); rsx! {
                     button {class:format!("resize-handle {}",corner.class()),"aria-label":corner.label(),title:corner.label(),
                         onmousedown:{let layer=layer.clone();let scene_id=scene.id;let base=base.clone();move |event:MouseEvent| {
                             event.prevent_default();event.stop_propagation();
-                            begin_drag(event,mounted,dragging,selection,DragStart::new(scene_id,layer.id,layer_bounds(&layer,metrics.peek().get(index).copied()),&base,DragKind::Resize(corner)));
+                            let mut start=DragStart::new(scene_id,layer.id,layer_bounds(&layer,metrics.peek().get(index).copied()),&base,DragKind::Resize(corner));
+                            start.source_aspect=source_aspect;
+                            begin_drag(event,mounted,dragging,selection,start);
                         }}
                     }
+                    }}
                 }}
             }
         }}}
@@ -105,6 +120,7 @@ struct DragStart {
     bounds: Bounds,
     kind: DragKind,
     base: (u32, u32),
+    source_aspect: Option<f64>,
 }
 fn begin_drag(
     event: MouseEvent,
@@ -130,6 +146,7 @@ fn begin_drag(
                 kind: start.kind,
                 scale_x: start.base.0 as f64 / rect.width(),
                 scale_y: start.base.1 as f64 / rect.height(),
+                source_aspect: start.source_aspect,
             }));
         }
     });
@@ -149,8 +166,28 @@ impl DragStart {
             bounds,
             kind,
             base: (base.width, base.height),
+            source_aspect: None,
         }
     }
+}
+
+fn source_aspect(
+    workspace: &Workspace,
+    status: Option<&acheflow_media_api::live::LiveStatus>,
+    id: u32,
+) -> Option<f64> {
+    let (width, height) = status
+        .and_then(|state| state.sources.iter().find(|input| input.id == id))
+        .and_then(|input| input.width.zip(input.height))
+        .filter(|&(width, height)| width > 0 && height > 0)
+        .or_else(|| {
+            workspace
+                .sources
+                .iter()
+                .find(|source| source.id == id)
+                .map(|source| (source.resolution.width, source.resolution.height))
+        })?;
+    (width > 0 && height > 0).then(|| f64::from(width) / f64::from(height))
 }
 
 fn layer_bounds(

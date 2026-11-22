@@ -1,5 +1,7 @@
+use crate::audio_mixer::PcmBlock;
 use acheflow_media_api::{
     MediaCapabilities,
+    audio::AUDIO_SAMPLES,
     live::{OutputState, OutputStatus},
     workspace::{BitrateMode, Output, Resolution},
 };
@@ -10,29 +12,49 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     net::TcpListener,
-    sync::{broadcast, watch},
+    sync::{broadcast, oneshot, watch},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
+
+const PCM_BLOCK_BYTES: usize = AUDIO_SAMPLES * size_of::<i16>();
+const MAX_AUDIO_GAP_BLOCKS: u64 = 8;
+const VIDEO_CATCH_UP: Duration = Duration::from_millis(160);
+const VIDEO_STARTUP_CATCH_UP: Duration = Duration::from_millis(300);
+const RECONNECT_DELAYS: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+];
+const STABLE_OUTPUT_SECONDS: u64 = 30;
+static AUDIO_GAP_SILENCE: [u8; PCM_BLOCK_BYTES * MAX_AUDIO_GAP_BLOCKS as usize] =
+    [0; PCM_BLOCK_BYTES * MAX_AUDIO_GAP_BLOCKS as usize];
+
+#[derive(Clone)]
+pub struct RenderedVideo {
+    pub image: Arc<RgbImage>,
+    pub rendered_at: std::time::Instant,
+}
 
 #[derive(Clone)]
 pub struct VideoSpec {
     pub base: Resolution,
     pub fps: u32,
+    #[cfg(test)]
+    pub orientation: acheflow_media_api::workspace::Orientation,
 }
 
 pub async fn start(
     output: Output,
     spec: VideoSpec,
     caps: &MediaCapabilities,
-    video: watch::Receiver<Arc<RgbImage>>,
-    mut audio: broadcast::Receiver<Arc<Vec<u8>>>,
+    video: watch::Receiver<RenderedVideo>,
+    audio: broadcast::Sender<Arc<PcmBlock>>,
     status: Arc<Mutex<OutputStatus>>,
     cancel: CancellationToken,
 ) -> Result<JoinHandle<()>, String> {
-    let VideoSpec { base, fps } = spec;
     let selected = caps.resolve_video_encoder(&output.codec, output.encoder.as_deref())?;
     let encoder = selected.name.clone();
     {
@@ -40,6 +62,105 @@ pub async fn start(
         status.encoder = Some(encoder.clone());
         status.hardware = selected.hardware;
     }
+    let mut attempt = prepare_attempt(
+        &output,
+        &spec,
+        &encoder,
+        video.clone(),
+        audio.subscribe(),
+        status.clone(),
+        cancel.clone(),
+    )
+    .await?;
+    Ok(tokio::spawn(async move {
+        let mut retries = 0;
+        loop {
+            let Some(failure) = attempt.await else { break };
+            if cancel.is_cancelled() {
+                break;
+            }
+            {
+                let mut output_status = status.lock().unwrap();
+                if output_status.frames >= u64::from(spec.fps) * STABLE_OUTPUT_SECONDS {
+                    retries = 0;
+                }
+                output_status.bitrate_kbps = 0.;
+                if !failure.retryable || retries == RECONNECT_DELAYS.len() {
+                    output_status.state = OutputState::Failed;
+                    output_status.reconnect_attempt = None;
+                    output_status.error = Some(if failure.retryable {
+                        format!("Reconnect attempts exhausted: {}", failure.message)
+                    } else {
+                        failure.message
+                    });
+                    return;
+                }
+                output_status.state = OutputState::Starting;
+                output_status.reconnect_attempt = Some(retries as u8 + 1);
+                output_status.error = Some(failure.message);
+            }
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => break,
+                _ = tokio::time::sleep(RECONNECT_DELAYS[retries]) => {}
+            }
+            retries += 1;
+            {
+                let mut status = status.lock().unwrap();
+                status.frames = 0;
+                status.sent_bytes = 0;
+                status.reconnects = status.reconnects.saturating_add(1);
+            }
+            let next = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => break,
+                next = prepare_attempt(
+                &output,
+                &spec,
+                &encoder,
+                video.clone(),
+                audio.subscribe(),
+                status.clone(),
+                cancel.clone(),
+                ) => next,
+            };
+            match next {
+                Ok(next) => attempt = next,
+                Err(error) => {
+                    let mut status = status.lock().unwrap();
+                    status.state = OutputState::Failed;
+                    status.reconnect_attempt = None;
+                    status.error = Some(error);
+                    return;
+                }
+            }
+        }
+        let mut status = status.lock().unwrap();
+        status.state = OutputState::Stopped;
+        status.reconnect_attempt = None;
+        status.error = None;
+        status.bitrate_kbps = 0.;
+    }))
+}
+
+struct AttemptFailure {
+    message: String,
+    retryable: bool,
+}
+
+async fn prepare_attempt(
+    output: &Output,
+    spec: &VideoSpec,
+    encoder: &str,
+    video: watch::Receiver<RenderedVideo>,
+    audio: broadcast::Receiver<Arc<PcmBlock>>,
+    status: Arc<Mutex<OutputStatus>>,
+    cancel: CancellationToken,
+) -> Result<impl Future<Output = Option<AttemptFailure>> + use<>, String> {
+    let fps = spec.fps;
+    #[cfg(test)]
+    let orientation = spec.orientation;
+    let base = &spec.base;
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| format!("Cannot create audio pipe: {e}"))?;
@@ -47,7 +168,9 @@ pub async fn start(
         "tcp://{}",
         listener.local_addr().map_err(|e| e.to_string())?
     );
-    let url = format!("{}/{}", output.url.trim_end_matches('/'), output.key);
+    let destination = output.url.trim_end_matches('/').to_owned();
+    let key = output.key.clone();
+    let url = format!("{destination}/{key}");
     let mut command = tokio::process::Command::new(crate::ffmpeg::executable());
     command
         .args([
@@ -85,15 +208,15 @@ pub async fn start(
             "scale={}:{}",
             output.resolution.width, output.resolution.height
         ))
-        .args(["-c:v", &encoder, "-pix_fmt", "yuv420p"])
+        .args(["-c:v", encoder, "-pix_fmt", "yuv420p"])
         .args(rate_control(
-            &encoder,
+            encoder,
             output.bitrate_mode,
             output.bitrate_kbps,
         ))
         .args(keyframe_options(fps, output.keyframe_interval_secs));
     command.args(stream_encoder_options(
-        &encoder,
+        encoder,
         &output.resolution,
         fps,
         output.bitrate_kbps,
@@ -127,92 +250,383 @@ pub async fn start(
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("Cannot start output encoder: {e}"))?;
-    let mut stdin = child.stdin.take().ok_or("Missing encoder stdin")?;
+    let stdin = child.stdin.take().ok_or("Missing encoder stdin")?;
     let stdout = child.stdout.take().ok_or("Missing encoder progress pipe")?;
     let stderr = child.stderr.take().ok_or("Missing encoder stderr")?;
     crate::diagnostics::record("info", "output", "Output encoder started");
-    Ok(tokio::spawn(async move {
-        let video_cancel = cancel.clone();
-        let video_status = status.clone();
-        let writer = tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_secs_f64(1. / fps as f64));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                tokio::select! {_=video_cancel.cancelled()=>break,_=ticker.tick()=>{}}
-                let image = video.borrow().clone();
-                if !matches!(
-                    tokio::time::timeout(Duration::from_secs(3), stdin.write_all(image.as_raw()))
-                        .await,
-                    Ok(Ok(()))
-                ) {
-                    fail(&video_status, "Video output stopped or stalled".into());
-                    video_cancel.cancel();
-                    break;
-                }
+    Ok(async move {
+        let progress = report_progress(stdout, status.clone());
+        let errors = read_encoder_errors(stderr, &url, &destination, &key);
+        let (epoch_tx, epoch_rx) = oneshot::channel();
+        tokio::pin!(errors);
+        let mut completed_errors = None;
+        let (reason, exited, local_failure) = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => (None, false, false),
+            result = child.wait() => (Some(format!("FFmpeg output exited: {result:?}")), true, false),
+            diagnostics = &mut errors => {
+                completed_errors = Some(diagnostics);
+                (Some("FFmpeg output closed its diagnostics pipe".into()), false, false)
             }
-        });
-        let audio_cancel = cancel.clone();
-        let audio_status = status.clone();
-        let audio_writer = tokio::spawn(async move {
-            let accepted = tokio::select! {_=audio_cancel.cancelled()=>return,result=tokio::time::timeout(Duration::from_secs(10),listener.accept())=>result};
-            let Ok(Ok((mut socket, _))) = accepted else {
-                fail(&audio_status, "Encoder audio connection failed".into());
-                audio_cancel.cancel();
-                return;
-            };
-            loop {
-                let packet =
-                    tokio::select! {_=audio_cancel.cancelled()=>break,packet=audio.recv()=>packet};
-                let Ok(packet) = packet else {
-                    fail(&audio_status, "Audio output fell behind or stopped".into());
-                    audio_cancel.cancel();
-                    break;
-                };
-                if !matches!(
-                    tokio::time::timeout(Duration::from_secs(3), socket.write_all(&packet)).await,
-                    Ok(Ok(()))
-                ) {
-                    fail(&audio_status, "Audio output stopped or stalled".into());
-                    audio_cancel.cancel();
-                    break;
-                }
-            }
-        });
-        let progress = tokio::spawn(report_progress(stdout, status.clone()));
-        let error_status = status.clone();
-        let errors = tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if !line.trim().is_empty() {
-                    let line = line
-                        .replace(&url, "[RTMP destination]")
-                        .replace(&output.key, "[key]");
-                    crate::diagnostics::record("error", "output", &line);
-                    error_status.lock().unwrap().error = Some(line.chars().take(400).collect());
-                }
-            }
-        });
-        tokio::select! {
-            _=cancel.cancelled()=>{let _=child.kill().await;let _=child.wait().await;let mut state=status.lock().unwrap();if state.state!=OutputState::Failed{state.state=OutputState::Stopped;}}
-            result=child.wait()=>{crate::diagnostics::record("error","output",&format!("Output encoder exited: {result:?}"));let mut state=status.lock().unwrap();state.state=OutputState::Failed;if state.error.is_none(){state.error=Some(format!("FFmpeg output exited: {result:?}"));}}
+            _ = progress => (Some("FFmpeg output closed its progress pipe".into()), false, false),
+            error = write_video(stdin, video, fps, epoch_rx, &status, #[cfg(test)] orientation) => (Some(error), false, true),
+            error = feed_audio(listener, audio, &cancel, epoch_tx, &status) => (error, false, true),
+        };
+        if !exited {
+            let _ = child.kill().await;
         }
-        cancel.cancel();
-        writer.abort();
-        audio_writer.abort();
-        progress.abort();
-        errors.abort();
-        let _ = writer.await;
-        let _ = audio_writer.await;
-        let _ = progress.await;
-        let _ = errors.await;
-        let mut status = status.lock().unwrap();
-        status.bitrate_kbps = 0.;
-        if status.state != OutputState::Failed {
-            status.state = OutputState::Stopped;
-            crate::diagnostics::record("info", "output", "Output encoder stopped");
+        let diagnostics = match completed_errors {
+            Some(diagnostics) => Some(diagnostics),
+            None => tokio::time::timeout(Duration::from_millis(250), errors)
+                .await
+                .ok(),
+        };
+        if cancel.is_cancelled() {
+            return None;
         }
-    }))
+        let reason = reason?;
+        let diagnostics = diagnostics.unwrap_or_default();
+        let message = diagnostics
+            .relevant_error
+            .or(diagnostics.last_line.filter(|_| !local_failure))
+            .unwrap_or(reason);
+        crate::diagnostics::record("error", "output", &message);
+        Some(AttemptFailure {
+            message,
+            retryable: diagnostics.retryable && !diagnostics.permanent,
+        })
+    })
 }
+
+async fn write_video(
+    mut stdin: tokio::process::ChildStdin,
+    video: watch::Receiver<RenderedVideo>,
+    fps: u32,
+    epoch: oneshot::Receiver<tokio::time::Instant>,
+    status: &Mutex<OutputStatus>,
+    #[cfg(test)] orientation: acheflow_media_api::workspace::Orientation,
+) -> String {
+    let Ok(started) = epoch.await else {
+        return "Encoder audio clock did not start".into();
+    };
+    let period = Duration::from_secs_f64(1. / fps as f64);
+    let mut ticker = tokio::time::interval_at(started, period);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut next = 0;
+    let mut previous = video.borrow().clone();
+    #[cfg(test)]
+    crate::av_timing_tests::trace_epoch(orientation, started.into_std());
+    loop {
+        ticker.tick().await;
+        let elapsed = started.elapsed();
+        let skipped =
+            skipped_video_frames(next, elapsed, period, VIDEO_CATCH_UP).or_else(|error| {
+                // FFmpeg probes the raw inputs before it reports progress. Allow
+                // a bounded initial burst without raising the on-air budget.
+                if status.lock().unwrap().frames == 0 {
+                    skipped_video_frames(next, elapsed, period, VIDEO_STARTUP_CATCH_UP)
+                } else {
+                    Err(error)
+                }
+            });
+        let skipped = match skipped {
+            Ok(Some(skipped)) => skipped,
+            Ok(None) => continue,
+            Err(error) => return error,
+        };
+        let image = video.borrow().clone();
+        let old_slots = skipped_before_render(
+            next,
+            skipped,
+            period,
+            image
+                .rendered_at
+                .saturating_duration_since(started.into_std()),
+        );
+        let write = async {
+            for i in 0..=skipped {
+                let frame = if i < old_slots { &previous } else { &image };
+                stdin.write_all(frame.image.as_raw()).await?;
+                #[cfg(test)]
+                crate::av_timing_tests::trace_image(
+                    "encoder",
+                    orientation,
+                    frame.rendered_at,
+                    Some(((next + i) * period.as_nanos() * 48_000 / 1_000_000_000) as i64),
+                    &frame.image,
+                );
+            }
+            Ok::<(), std::io::Error>(())
+        };
+        if !matches!(
+            tokio::time::timeout(Duration::from_secs(3), write).await,
+            Ok(Ok(()))
+        ) {
+            return "Video output stopped or stalled".into();
+        }
+        if skipped > 0 {
+            let mut status = status.lock().unwrap();
+            status.repeated_video_frames =
+                status.repeated_video_frames.saturating_add(skipped as u64);
+        }
+        previous = image;
+        next += skipped + 1;
+    }
+}
+
+fn skipped_before_render(next: u128, skipped: u128, period: Duration, completed: Duration) -> u128 {
+    completed
+        .as_nanos()
+        .div_ceil(period.as_nanos())
+        .saturating_sub(next)
+        .min(skipped)
+}
+
+#[test]
+fn catch_up_uses_a_new_frame_only_after_its_render_deadline() {
+    let period = Duration::from_millis(40);
+    assert_eq!(
+        skipped_before_render(2, 3, period, Duration::from_millis(109)),
+        1
+    );
+    assert_eq!(
+        skipped_before_render(2, 3, period, Duration::from_millis(80)),
+        0
+    );
+    assert_eq!(
+        skipped_before_render(2, 3, period, Duration::from_millis(205)),
+        3
+    );
+}
+
+fn skipped_video_frames(
+    next: u128,
+    elapsed: Duration,
+    period: Duration,
+    budget: Duration,
+) -> Result<Option<u128>, String> {
+    let slot = elapsed.as_nanos() / period.as_nanos();
+    let Some(skipped) = slot.checked_sub(next) else {
+        return Ok(None);
+    };
+    if skipped > budget.as_nanos().div_ceil(period.as_nanos()) {
+        return Err(format!(
+            "Video output fell behind: {skipped} frame slots missed"
+        ));
+    }
+    Ok(Some(skipped))
+}
+
+#[cfg(test)]
+#[test]
+fn video_clock_preserves_missed_slots_within_its_catch_up_budget() {
+    let frame = Duration::from_millis(40);
+    assert_eq!(
+        skipped_video_frames(1, frame, frame, VIDEO_CATCH_UP).unwrap(),
+        Some(0)
+    );
+    assert_eq!(
+        skipped_video_frames(1, Duration::from_millis(125), frame, VIDEO_CATCH_UP).unwrap(),
+        Some(2)
+    );
+    assert_eq!(
+        skipped_video_frames(4, Duration::from_millis(125), frame, VIDEO_CATCH_UP).unwrap(),
+        None
+    );
+    assert!(skipped_video_frames(1, Duration::from_millis(260), frame, VIDEO_CATCH_UP).is_err());
+    assert_eq!(
+        skipped_video_frames(1, Duration::from_millis(260), frame, VIDEO_STARTUP_CATCH_UP).unwrap(),
+        Some(5)
+    );
+}
+
+async fn feed_audio(
+    listener: TcpListener,
+    mut audio: broadcast::Receiver<Arc<PcmBlock>>,
+    cancel: &CancellationToken,
+    epoch: oneshot::Sender<tokio::time::Instant>,
+    status: &Mutex<OutputStatus>,
+) -> Option<String> {
+    // Wait for a mixer slot before feeding either encoder pipe. FFmpeg needs
+    // video before it opens the PCM socket, so retain this first block here.
+    let first = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match audio.recv().await {
+                Ok(block) => return Some(block),
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    })
+    .await;
+    let first = match first {
+        Ok(Some(block)) => block,
+        Ok(None) => return Some("Audio mixer channel closed".into()),
+        Err(_) => return Some("Audio mixer clock did not start".into()),
+    };
+    if epoch.send(first.scheduled).is_err() {
+        return None;
+    }
+    let Ok(Ok((socket, _))) =
+        tokio::time::timeout(Duration::from_secs(10), listener.accept()).await
+    else {
+        return Some("Encoder audio connection failed".into());
+    };
+    write_audio(socket, audio, cancel, Some(first), Some(status))
+        .await
+        .err()
+}
+
+#[derive(Default)]
+struct EncoderDiagnostics {
+    last_line: Option<String>,
+    relevant_error: Option<String>,
+    retryable: bool,
+    permanent: bool,
+}
+
+async fn read_encoder_errors(
+    stderr: tokio::process::ChildStderr,
+    url: &str,
+    destination: &str,
+    key: &str,
+) -> EncoderDiagnostics {
+    let mut lines = BufReader::new(stderr).lines();
+    let mut diagnostics = EncoderDiagnostics::default();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let line = line
+            .replace(url, "[RTMP destination]")
+            .replace(destination, "[RTMP destination]")
+            .replace(key, "[key]");
+        crate::diagnostics::record("error", "output", &line);
+        let message: String = line.chars().take(400).collect();
+        let lower = line.to_ascii_lowercase();
+        if [
+            "access denied",
+            "authentication",
+            "unauthorized",
+            "forbidden",
+            "invalid stream key",
+            "netstream.publish.badname",
+            "certificate verify failed",
+            "unrecognized option",
+            "error while opening encoder",
+        ]
+        .iter()
+        .any(|text| lower.contains(text))
+        {
+            diagnostics.permanent = true;
+            diagnostics.relevant_error = Some(message.clone());
+        } else if !diagnostics.permanent
+            && [
+                "connection refused",
+                "connection reset by peer",
+                "connection timed out",
+                "operation timed out",
+                "network is unreachable",
+                "no route to host",
+                "temporary failure in name resolution",
+                "broken pipe",
+            ]
+            .iter()
+            .any(|text| lower.contains(text))
+        {
+            diagnostics.retryable = true;
+            diagnostics.relevant_error = Some(message.clone());
+        }
+        diagnostics.last_line = Some(message);
+    }
+    diagnostics
+}
+
+async fn write_audio(
+    mut socket: impl AsyncWrite + Unpin,
+    mut audio: broadcast::Receiver<Arc<PcmBlock>>,
+    cancel: &CancellationToken,
+    mut first: Option<Arc<PcmBlock>>,
+    status: Option<&Mutex<OutputStatus>>,
+) -> Result<(), String> {
+    let mut lost_blocks = 0u64;
+    let mut next_sequence = None;
+    let mut initial_lag = 0u64;
+    loop {
+        let packet = if let Some(first) = first.take() {
+            Ok(first)
+        } else {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Ok(()),
+                packet = audio.recv() => packet,
+            }
+        };
+        let packet = match packet {
+            Ok(packet) => packet,
+            Err(broadcast::error::RecvError::Closed) => {
+                return Err("Audio mixer channel closed".into());
+            }
+            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                if next_sequence.is_none() {
+                    initial_lag = initial_lag.saturating_add(skipped);
+                }
+                continue;
+            }
+        };
+        let skipped = match next_sequence {
+            Some(next) => packet
+                .sequence
+                .checked_sub(next)
+                .ok_or("Audio mixer clock moved backwards")?,
+            None => initial_lag,
+        };
+        next_sequence = Some(packet.sequence + 1);
+        lost_blocks = lost_blocks.saturating_add(skipped);
+        if lost_blocks > MAX_AUDIO_GAP_BLOCKS {
+            return Err(format!(
+                "Audio output fell behind: {lost_blocks} audio blocks lost before catching up"
+            ));
+        }
+        // Raw PCM carries only sample count. Cover both mixer scheduling gaps
+        // and dropped receiver packets exactly once.
+        let write = async {
+            if skipped > 0 {
+                socket
+                    .write_all(&AUDIO_GAP_SILENCE[..skipped as usize * PCM_BLOCK_BYTES])
+                    .await?;
+            }
+            socket.write_all(&packet.bytes).await
+        };
+        let written = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok(()),
+            written = tokio::time::timeout(Duration::from_secs(3), write) => written,
+        };
+        match written {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Err(format!("Encoder audio socket write failed: {error}")),
+            Err(_) => return Err("Encoder audio socket write timed out".into()),
+        }
+        if skipped > 0
+            && let Some(status) = status
+        {
+            let mut status = status.lock().unwrap();
+            status.inserted_audio_blocks = status.inserted_audio_blocks.saturating_add(skipped);
+        }
+        if lost_blocks != 0 && audio.is_empty() {
+            crate::diagnostics::record(
+                "warn",
+                "output",
+                &format!("Audio output recovered after replacing {lost_blocks} lost PCM blocks"),
+            );
+            lost_blocks = 0;
+        }
+    }
+}
+
+#[cfg(test)]
+mod audio_tests;
 
 async fn report_progress(
     stdout: impl tokio::io::AsyncRead + Unpin,
@@ -241,6 +655,7 @@ async fn report_progress(
             status.frames = frames;
             if frames > 0 && status.state != OutputState::Failed {
                 status.state = OutputState::Streaming;
+                status.reconnect_attempt = None;
                 status.error = None;
             }
         }
@@ -369,13 +784,6 @@ fn stream_encoder_options(
     }
     Ok(options)
 }
-fn fail(status: &Mutex<OutputStatus>, error: String) {
-    crate::diagnostics::record("error", "output", &error);
-    let mut status = status.lock().unwrap();
-    status.state = OutputState::Failed;
-    status.error = Some(error);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
