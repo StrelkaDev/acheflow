@@ -148,29 +148,7 @@ struct AttemptFailure {
     retryable: bool,
 }
 
-async fn prepare_attempt(
-    output: &Output,
-    spec: &VideoSpec,
-    encoder: &str,
-    video: watch::Receiver<RenderedVideo>,
-    audio: broadcast::Receiver<Arc<PcmBlock>>,
-    status: Arc<Mutex<OutputStatus>>,
-    cancel: CancellationToken,
-) -> Result<impl Future<Output = Option<AttemptFailure>> + use<>, String> {
-    let fps = spec.fps;
-    #[cfg(test)]
-    let orientation = spec.orientation;
-    let base = &spec.base;
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(|e| format!("Cannot create audio pipe: {e}"))?;
-    let audio_url = format!(
-        "tcp://{}",
-        listener.local_addr().map_err(|e| e.to_string())?
-    );
-    let destination = output.url.trim_end_matches('/').to_owned();
-    let key = output.key.clone();
-    let url = format!("{destination}/{key}");
+pub(crate) fn video_input(spec: &VideoSpec) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(crate::ffmpeg::executable());
     command
         .args([
@@ -186,12 +164,66 @@ async fn prepare_attempt(
             "rgb24",
             "-video_size",
         ])
-        .arg(format!("{}x{}", base.width, base.height))
+        .arg(format!("{}x{}", spec.base.width, spec.base.height))
         .arg("-framerate")
-        .arg(fps.to_string())
+        .arg(spec.fps.to_string())
+        .args(["-i", "pipe:0"]);
+    command
+}
+
+pub(crate) fn configure_video_output(
+    command: &mut tokio::process::Command,
+    output: &Output,
+    encoder: &str,
+    fps: u32,
+) -> Result<(), String> {
+    command
+        .arg("-vf")
+        .arg(format!(
+            "scale={}:{}",
+            output.resolution.width, output.resolution.height
+        ))
+        .args(["-c:v", encoder, "-pix_fmt", "yuv420p"])
+        .args(rate_control(
+            encoder,
+            output.bitrate_mode,
+            output.bitrate_kbps,
+        ))
+        .args(keyframe_options(fps, output.keyframe_interval_secs))
+        .args(stream_encoder_options(
+            encoder,
+            &output.resolution,
+            fps,
+            output.bitrate_kbps,
+        )?);
+    Ok(())
+}
+
+async fn prepare_attempt(
+    output: &Output,
+    spec: &VideoSpec,
+    encoder: &str,
+    video: watch::Receiver<RenderedVideo>,
+    audio: broadcast::Receiver<Arc<PcmBlock>>,
+    status: Arc<Mutex<OutputStatus>>,
+    cancel: CancellationToken,
+) -> Result<impl Future<Output = Option<AttemptFailure>> + use<>, String> {
+    let fps = spec.fps;
+    #[cfg(test)]
+    let orientation = spec.orientation;
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("Cannot create audio pipe: {e}"))?;
+    let audio_url = format!(
+        "tcp://{}",
+        listener.local_addr().map_err(|e| e.to_string())?
+    );
+    let destination = output.url.trim_end_matches('/').to_owned();
+    let key = output.key.clone();
+    let url = format!("{destination}/{key}");
+    let mut command = video_input(spec);
+    command
         .args([
-            "-i",
-            "pipe:0",
             "-thread_queue_size",
             "64",
             "-f",
@@ -203,24 +235,8 @@ async fn prepare_attempt(
             "-i",
         ])
         .arg(audio_url)
-        .args(["-map", "0:v:0", "-map", "1:a:0", "-vf"])
-        .arg(format!(
-            "scale={}:{}",
-            output.resolution.width, output.resolution.height
-        ))
-        .args(["-c:v", encoder, "-pix_fmt", "yuv420p"])
-        .args(rate_control(
-            encoder,
-            output.bitrate_mode,
-            output.bitrate_kbps,
-        ))
-        .args(keyframe_options(fps, output.keyframe_interval_secs));
-    command.args(stream_encoder_options(
-        encoder,
-        &output.resolution,
-        fps,
-        output.bitrate_kbps,
-    )?);
+        .args(["-map", "0:v:0", "-map", "1:a:0"]);
+    configure_video_output(&mut command, output, encoder, fps)?;
     command
         .args([
             "-c:a",

@@ -488,6 +488,9 @@ pub async fn run(
             })
             .unwrap_or_default();
         for dest in &destinations {
+            if dest.sender.receiver_count() == 0 {
+                continue;
+            }
             let route = workspace
                 .as_ref()
                 .and_then(|w| w.stream(orientation).outputs.get(dest.index))

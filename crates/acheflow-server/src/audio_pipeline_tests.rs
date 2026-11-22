@@ -214,6 +214,8 @@ async fn real_scene_mixer_multitrack_sources_and_live_destination_routes() {
         Json(StartRequest {
             workspace: w.clone(),
             formats: vec![Orientation::Horizontal],
+            preview_only: false,
+            output: None,
         }),
     )
     .await

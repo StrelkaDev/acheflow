@@ -34,6 +34,32 @@ pub struct MicrophoneInventory {
 pub struct StartRequest {
     pub workspace: Workspace,
     pub formats: Vec<Orientation>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub preview_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<OutputTarget>,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputTarget {
+    pub orientation: Orientation,
+    pub index: usize,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputAction {
+    Start,
+    Restart,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManageOutputsRequest {
+    pub workspace_id: String,
+    pub action: OutputAction,
+    #[serde(default)]
+    pub output: Option<OutputTarget>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -100,6 +126,8 @@ pub struct SourceStatus {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FormatStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_scene: Option<AppliedScene>,
     #[serde(default)]
     pub time_seconds: f64,
     #[serde(default)]
@@ -109,12 +137,34 @@ pub struct FormatStatus {
     pub orientation: Orientation,
     pub frames: u64,
     pub outputs: Vec<OutputStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preview_profiles: Vec<OutputPreviewProfile>,
     #[serde(default)]
     pub audio_buses: Vec<crate::audio::AudioBusStatus>,
     #[serde(default)]
     pub audio_sync: Vec<crate::audio::TrackSyncStatus>,
     #[serde(default)]
     pub render_load: RenderLoad,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppliedScene {
+    pub id: u32,
+    pub name: String,
+}
+
+pub const ENCODED_PREVIEW_SNAPSHOT_FPS: u32 = 15;
+
+/// Public framing and encoder settings for a configured output.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OutputPreviewProfile {
+    pub index: usize,
+    pub name: String,
+    pub resolution: crate::workspace::Resolution,
+    pub codec: String,
+    pub bitrate_kbps: u32,
+    pub bitrate_mode: crate::workspace::BitrateMode,
+    pub fps: u32,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OutputStatus {

@@ -1,8 +1,12 @@
 use crate::project::{Orientation, Workspace};
 use acheflow_media_api::live::{
-    ApiError, ControlRequest, LiveStatus, RestartOutputRequest, StartRequest,
+    ApiError, ControlRequest, LiveStatus, ManageOutputsRequest, OutputAction, OutputTarget,
+    StartRequest,
 };
 use dioxus_native::prelude::*;
+
+#[derive(Clone, Copy)]
+pub(crate) struct LiveTelemetryInterval(pub Memo<Option<u32>>);
 
 #[derive(Clone, Copy)]
 pub struct LiveClient {
@@ -17,14 +21,16 @@ pub struct LiveClient {
 #[derive(Clone, Copy)]
 pub enum Action {
     Apply,
-    Start,
-    RestartOutput(Orientation, usize),
+    Start(Option<OutputTarget>),
+    StartPreview,
+    Outputs(OutputAction, Option<OutputTarget>),
     Stop,
     Deactivate,
     DeactivateActive,
 }
 
 pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
+    let telemetry = try_consume_context::<LiveTelemetryInterval>();
     let mut client = LiveClient {
         project,
         status: use_signal(|| None),
@@ -43,19 +49,25 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
             crate::server_access::identity(),
         )
     });
+    let mut previous_owner = use_signal(|| None);
     use_resource(move || {
         let owner = identity();
-        client.status.set(None);
-        client.traffic.set(Default::default());
-        client.error.set(None);
-        client
-            .connection
-            .set(Some("Connecting to workspace server…".into()));
-        client.busy.set(false);
-        *client.generation.write() += 1;
+        let foreground = telemetry.and_then(|interval| (interval.0)());
+        if previous_owner.peek().as_ref() != Some(&owner) {
+            previous_owner.set(Some(owner.clone()));
+            client.status.set(None);
+            client.traffic.set(Default::default());
+            client.error.set(None);
+            client
+                .connection
+                .set(Some("Connecting to workspace server…".into()));
+            client.busy.set(false);
+            *client.generation.write() += 1;
+        }
         async move {
             let mut failures = 0u8;
             loop {
+                let started = web_time::Instant::now();
                 if !*client.busy.peek() {
                     let generation = *client.generation.peek();
                     let workspace = project.peek().clone();
@@ -68,8 +80,12 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
                         match response {
                             Ok(status) => {
                                 failures = 0;
-                                client.traffic.write().record(&status, &workspace);
-                                client.status.set(Some(status));
+                                if foreground.is_none() || client.traffic.peek().sample_due() {
+                                    client.traffic.write().record(&status, &workspace);
+                                }
+                                if client.status.peek().as_ref() != Some(&status) {
+                                    client.status.set(Some(status));
+                                }
                                 if client.connection.peek().is_some() {
                                     client.connection.set(None);
                                 }
@@ -87,11 +103,20 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
                 let active = client.status.peek().as_ref().is_some_and(|s| {
                     s.workspace_id.as_deref() == Some(owner.0.as_str()) && !s.formats.is_empty()
                 });
-                crate::scene_preview::pause(polling_delay(active, failures, 500)).await;
+                let delay = live_polling_delay(foreground, active, failures);
+                let elapsed = started.elapsed().as_millis().min(u128::from(delay)) as u32;
+                crate::scene_preview::pause(delay - elapsed).await;
             }
         }
     });
     client
+}
+
+fn live_polling_delay(foreground_ms: Option<u32>, active: bool, failures: u8) -> u32 {
+    match foreground_ms {
+        Some(interval) => polling_delay(true, failures, interval),
+        None => polling_delay(active, failures, 500),
+    }
 }
 
 impl LiveClient {
@@ -118,14 +143,18 @@ impl LiveClient {
             "media",
             match action {
                 Action::Apply => "Applying workspace",
-                Action::Start => "Starting stream",
-                Action::RestartOutput(..) => "Restarting output",
+                Action::Start(_) | Action::Outputs(OutputAction::Start, _) => "Starting outputs",
+                Action::StartPreview => "Starting preview",
+                Action::Outputs(OutputAction::Restart, _) => "Restarting outputs",
                 Action::Stop => "Stopping stream",
                 Action::Deactivate | Action::DeactivateActive => "Deactivating workspace",
             },
         );
         let workspace = self.project.peek().clone();
-        let applies_workspace = matches!(&action, Action::Apply | Action::Start);
+        let applies_workspace = matches!(
+            &action,
+            Action::Apply | Action::Start(_) | Action::StartPreview
+        );
         let target = workspace.clone();
         let identity = crate::server_access::identity();
         let sync = try_consume_context::<crate::workspace_sync::WorkspaceSync>();
@@ -140,7 +169,7 @@ impl LiveClient {
                     "/api/live/config",
                     serde_json::to_value(workspace.server_configuration()),
                 ),
-                Action::Start => {
+                Action::Start(_) | Action::StartPreview => {
                     let formats = Orientation::ALL
                         .into_iter()
                         .filter(|o| workspace.active(*o).is_some())
@@ -151,16 +180,21 @@ impl LiveClient {
                         serde_json::to_value(StartRequest {
                             workspace: workspace.server_configuration(),
                             formats,
+                            preview_only: matches!(action, Action::StartPreview),
+                            output: match action {
+                                Action::Start(output) => output,
+                                _ => None,
+                            },
                         }),
                     )
                 }
-                Action::RestartOutput(orientation, index) => (
+                Action::Outputs(action, output) => (
                     reqwest::Method::POST,
-                    "/api/live/output/restart",
-                    serde_json::to_value(RestartOutputRequest {
+                    "/api/live/outputs",
+                    serde_json::to_value(ManageOutputsRequest {
                         workspace_id: workspace.id,
-                        orientation,
-                        index,
+                        action,
+                        output,
                     }),
                 ),
                 Action::Stop => (
@@ -343,6 +377,10 @@ mod tests {
 
     #[test]
     fn polling_is_slow_when_idle_and_backs_off_when_unreachable() {
+        assert_eq!(live_polling_delay(Some(100), false, 0), 100);
+        assert_eq!(live_polling_delay(Some(250), false, 0), 250);
+        assert_eq!(live_polling_delay(None, false, 0), 5000);
+        assert_eq!(live_polling_delay(Some(100), true, 1), 2000);
         assert_eq!(polling_delay(true, 0, 500), 500);
         assert_eq!(polling_delay(false, 0, 500), 5000);
         assert_eq!(polling_delay(true, 0, 1000), 1000);

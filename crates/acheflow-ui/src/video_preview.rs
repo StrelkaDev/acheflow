@@ -64,6 +64,7 @@ pub(crate) fn PreviewRate() -> Element {
 pub fn VideoPreview(
     url: String,
     #[props(default = "live-preview")] class: &'static str,
+    #[props(default)] notice: Option<Signal<Option<&'static str>>>,
 ) -> Element {
     let preferences = try_consume_context::<PreviewPreferences>();
     let latest: Latest = use_hook(|| Arc::new(Mutex::new(None)));
@@ -81,7 +82,14 @@ pub fn VideoPreview(
             let client = crate::server_access::client();
             loop {
                 let started = Instant::now();
-                let result = download_rgb(&client, &url).await.map(|image| {
+                let result = fetch_snapshot(&client, &url, notice.is_some()).await;
+                if let Some(mut notice) = notice {
+                    let message = result.as_ref().err().copied();
+                    if *notice.peek() != message {
+                        notice.set(message);
+                    }
+                }
+                let result = result.ok().map(|(image, _)| {
                     let rgba = image::DynamicImage::ImageRgb8(image).to_rgba8();
                     (rgba.width(), rgba.height(), rgba.into_raw())
                 });
@@ -96,30 +104,49 @@ pub fn VideoPreview(
                     })
                 });
                 version.set(sequence);
-                wait_for_next_snapshot(started, preview_fps(preferences), received).await;
+                let fps = preview_fps(preferences);
+                let fps = if notice.is_some() {
+                    fps.min(acheflow_media_api::live::ENCODED_PREVIEW_SNAPSHOT_FPS)
+                } else {
+                    fps
+                };
+                wait_for_next_snapshot(started, fps, received).await;
             }
         }
     }));
     rsx! {object {class,"data":widget,"data-frame":"{version}",role:"img","aria-label":"Live video snapshot"}}
 }
 
-pub(crate) async fn download_rgb(client: &reqwest::Client, url: &str) -> Option<image::RgbImage> {
-    download_snapshot(client, url).await.map(|(image, _)| image)
-}
-
 pub(crate) async fn download_snapshot(
     client: &reqwest::Client,
     url: &str,
 ) -> Option<(image::RgbImage, acheflow_media_api::workspace::Resolution)> {
+    fetch_snapshot(client, url, false).await.ok()
+}
+
+async fn fetch_snapshot(
+    client: &reqwest::Client,
+    url: &str,
+    encoded: bool,
+) -> Result<(image::RgbImage, acheflow_media_api::workspace::Resolution), &'static str> {
     let response = crate::server_access::authorize(client.get(url), url)
-        .ok()?
+        .map_err(|_| "Connect to the workspace server to view the preview.")?
         .header(reqwest::header::CACHE_CONTROL, "no-cache")
         .timeout(std::time::Duration::from_secs(3))
         .send()
         .await
-        .ok()?
-        .error_for_status()
-        .ok()?;
+        .map_err(|_| "Preview connection interrupted.")?;
+    if response.status() != reqwest::StatusCode::OK {
+        return Err(match response.status().as_u16() {
+            202 => "Starting encoded preview…",
+            429 => "All encoded preview slots are busy. Retrying…",
+            422 => {
+                "This profile cannot be encoded by the server. Check the output settings and FFmpeg."
+            }
+            502 => "The preview encoder or decoder stopped. Retrying…",
+            _ => "Preview unavailable.",
+        });
+    }
     let dimension = |name: &str| {
         response
             .headers()
@@ -134,21 +161,37 @@ pub(crate) async fn download_snapshot(
         .content_length()
         .is_some_and(|n| n > MAX_SNAPSHOT_BYTES as u64)
     {
-        return None;
+        return Err("Preview frame exceeds the size limit.");
     }
-    let bytes = response.bytes().await.ok()?;
+    let format = match response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+    {
+        Some("image/png") => image::ImageFormat::Png,
+        _ if encoded => {
+            return Err(
+                "The connected server returned a framing snapshot. Update it for encoded preview.",
+            );
+        }
+        _ => image::ImageFormat::Jpeg,
+    };
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "Preview frame download interrupted.")?;
     if bytes.len() > MAX_SNAPSHOT_BYTES {
-        return None;
+        return Err("Preview frame exceeds the size limit.");
     }
-    decode_snapshot(&bytes, native_size)
+    decode_snapshot(&bytes, native_size, format).ok_or("Unable to decode the preview frame.")
 }
 
 fn decode_snapshot(
     bytes: &[u8],
     native_size: Option<(u32, u32)>,
+    format: image::ImageFormat,
 ) -> Option<(image::RgbImage, acheflow_media_api::workspace::Resolution)> {
-    let mut reader =
-        image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Jpeg);
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
     let mut limits = image::Limits::default();
     // The server sends native-resolution JPEGs, including portrait and 4K frames.
     limits.max_image_width = Some(7680);
@@ -319,8 +362,12 @@ mod tests {
     #[test]
     fn native_hd_and_4k_snapshots_keep_their_pixels_and_dimensions() {
         for (width, height) in [(1920, 1080), (1080, 1920), (3840, 2160), (2160, 3840)] {
-            let (image, size) = decode_snapshot(&jpeg(width, height), Some((width, height)))
-                .expect("native server snapshots must reach source and studio previews");
+            let (image, size) = decode_snapshot(
+                &jpeg(width, height),
+                Some((width, height)),
+                image::ImageFormat::Jpeg,
+            )
+            .expect("native server snapshots must reach source and studio previews");
             assert_eq!(image.dimensions(), (width, height));
             assert_eq!((size.width, size.height), (width, height));
             let pixel = image.get_pixel(width / 2, height / 2).0;
@@ -332,19 +379,32 @@ mod tests {
     fn legacy_snapshots_keep_native_headers_or_fall_back_to_jpeg_dimensions() {
         let bytes = jpeg(480, 270);
         for (headers, expected) in [(Some((1920, 1080)), (1920, 1080)), (None, (480, 270))] {
-            let (image, size) = decode_snapshot(&bytes, headers).unwrap();
+            let (image, size) = decode_snapshot(&bytes, headers, image::ImageFormat::Jpeg).unwrap();
             assert_eq!(image.dimensions(), (480, 270));
             assert_eq!((size.width, size.height), expected);
         }
     }
 
     #[test]
+    fn encoded_preview_png_preserves_decoded_pixels() {
+        use image::ImageEncoder;
+        let pixels = [22, 88, 252, 81, 50, 32];
+        let mut bytes = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut bytes)
+            .write_image(&pixels, 2, 1, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        let (image, size) = decode_snapshot(&bytes, Some((2, 1)), image::ImageFormat::Png).unwrap();
+        assert_eq!(image.as_raw(), &pixels);
+        assert_eq!((size.width, size.height), (2, 1));
+    }
+
+    #[test]
     fn malformed_and_oversized_snapshot_dimensions_are_rejected() {
-        assert!(decode_snapshot(b"invalid JPEG", None).is_none());
-        assert!(decode_snapshot(&jpeg(7681, 1), None).is_none());
+        assert!(decode_snapshot(b"invalid JPEG", None, image::ImageFormat::Jpeg).is_none());
+        assert!(decode_snapshot(&jpeg(7681, 1), None, image::ImageFormat::Jpeg).is_none());
         let bytes = jpeg(16, 16);
         for size in [(0, 16), (16, 0), (7681, 16), (16, 7681)] {
-            assert!(decode_snapshot(&bytes, Some(size)).is_none());
+            assert!(decode_snapshot(&bytes, Some(size), image::ImageFormat::Jpeg).is_none());
         }
     }
 }

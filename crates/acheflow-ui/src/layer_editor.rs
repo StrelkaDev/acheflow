@@ -2,6 +2,7 @@ use crate::{
     code_editor::{CodeEditor, CodeKind},
     live_client::{Action, LiveClient},
     project::{EffectKind, Layer, LayerEffect, Workspace},
+    scene_canvas::SceneHistory,
     slider::Slider,
 };
 use acheflow_media_api::layer::ChromaKey;
@@ -78,11 +79,12 @@ fn edit(
 }
 
 #[component]
-pub fn LayerEditor(
+pub(crate) fn LayerEditor(
     mut project: Signal<Workspace>,
     scene_id: u32,
     mut selection: Signal<Option<u64>>,
     #[props(default)] viewport_id: Option<u64>,
+    #[props(default)] history: Option<Signal<SceneHistory>>,
 ) -> Element {
     let target = LayerTarget {
         scene: scene_id,
@@ -115,10 +117,10 @@ pub fn LayerEditor(
                     {{workspace.sources.iter().find(|s|s.id==layer.source_id).map(|s|s.name.clone()).unwrap_or_else(||"Missing source".into())}}
                 }
                 button {disabled:index+1==layers.len() || (client.busy)(),title:"Bring forward",onclick:move |_| {
-                    let changed = move_layer(project,target,layer_id,1); if changed && client.running(){client.command(Action::Apply);}
+                    let changed = move_layer(project,target,layer_id,1,history); if changed && client.running(){client.command(Action::Apply);}
                 },"Forward"}
                 button {disabled:index==0 || (client.busy)(),title:"Send backward",onclick:move |_| {
-                    let changed = move_layer(project,target,layer_id,-1); if changed && client.running(){client.command(Action::Apply);}
+                    let changed = move_layer(project,target,layer_id,-1,history); if changed && client.running(){client.command(Action::Apply);}
                 },"Backward"}
             }
         }}}if layers.is_empty(){p {class:"padded form-help","Add a source above to create a layer."}}}
@@ -129,7 +131,13 @@ pub fn LayerEditor(
     }
 }
 
-fn move_layer(mut project: Signal<Workspace>, target: LayerTarget, id: u64, delta: isize) -> bool {
+fn move_layer(
+    mut project: Signal<Workspace>,
+    target: LayerTarget,
+    id: u64,
+    delta: isize,
+    history: Option<Signal<SceneHistory>>,
+) -> bool {
     let mut workspace = project.write();
     let Some(layers) = workspace
         .scenes
@@ -148,7 +156,13 @@ fn move_layer(mut project: Signal<Workspace>, target: LayerTarget, id: u64, delt
     else {
         return false;
     };
+    let before = [layers[from].id, layers[to].id];
     layers.swap(from, to);
+    if let Some(mut history) = history {
+        history
+            .write()
+            .record_swap(target.scene, [from, to], before);
+    }
     true
 }
 fn edit_effect(

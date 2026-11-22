@@ -339,6 +339,8 @@ async fn sustained_capture(dir: &Path) {
         Json(StartRequest {
             workspace: workspace.clone(),
             formats: vec![Orientation::Horizontal],
+            preview_only: false,
+            output: None,
         }),
     )
     .await
@@ -352,7 +354,7 @@ async fn sustained_capture(dir: &Path) {
     let loaded_start = started.elapsed().as_secs_f64();
     let load_file = dir.join("loaded.flv");
     let load = capture(&vertical, &load_file);
-    let format = crate::compositor::start(runtime.clone(), Orientation::Vertical, &caps)
+    let format = crate::compositor::start(runtime.clone(), Orientation::Vertical, &caps, false)
         .await
         .unwrap();
     runtime.formats.lock().await.push(format);
@@ -452,6 +454,8 @@ async fn live_manual_av_trim() {
         Json(StartRequest {
             workspace,
             formats: vec![Orientation::Horizontal],
+            preview_only: false,
+            output: None,
         }),
     )
     .await

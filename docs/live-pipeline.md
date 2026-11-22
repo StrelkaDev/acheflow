@@ -34,8 +34,14 @@ receive a display projection without stream keys or transport URLs. See
    Track zero of each distinct video-layer source defaults to Program; additional
    tracks need explicit sends. Destination cards omit routing controls; new outputs
    use Program. Existing JSON routes are preserved. See [audio capabilities](audio-capabilities.md).
-4. In Studio choose a horizontal and/or vertical scene and start live. With no
-   outputs a format renders preview only. Each enabled output gets an independent
+4. In Studio choose a horizontal and/or vertical scene. **Start preview** renders
+   the selected scenes without sending them to destinations. Use **Start output**
+   on a destination to publish to it, or **Start all outputs** to launch the
+   enabled destinations for the selected formats. During a preview or broadcast,
+   starting an output keeps the composition and other running outputs in place.
+   **Restart output** reconnects one destination, and **Restart all outputs**
+   reconnects all enabled destinations in the running formats. Each active output
+   gets an independent
    FFmpeg process with its configured codec, encoder, resolution, bitrate and CBR/VBR
    mode. Settings cards expand/collapse and support removal. CBR uses matching
    min/target/max rates plus encoder-specific CBR switches (including x264 HRD
@@ -61,8 +67,9 @@ each output's starting, reconnecting, streaming or failed state and FFmpeg progr
 It also lists each selected scene source as receiving video or waiting for input,
 so an active compositor with disconnected inputs is not mistaken for a frozen preview.
 Reloading the GUI does not stop a server-side live session.
-Studio shows CPU and RAM history for up to 60 seconds. On Linux it also shows
-the busiest GPU for which the server's driver reports a utilization counter.
+Studio and Overview show line graphs for up to 60 seconds of CPU and RAM measurements. The
+server normally samples every 250 ms. On Linux it also shows the busiest GPU
+for which the server's driver reports a utilization counter.
 Each format shows observed and target FPS, p95 render time including readback,
 and the share of render attempts over the frame budget. Destination counters
 show repeated frames, inserted 20-ms silence blocks and automatic reconnect
@@ -72,6 +79,18 @@ to 60 FPS (default 10). The same preference applies to source cards, editor
 source snapshots and Studio. Source cadence, JPEG encoding and the connection
 determine the achieved rate. The broadcast render and encoder retain their own
 FPS settings.
+In Studio, **Preview profile** switches between the scene canvas and the
+destinations configured for the running format, including disabled destinations.
+It shows each profile's resolution, codec, bitrate mode, bitrate and FPS.
+**After encoding** runs a local video encoder and decoder with the destination's
+resolution, encoder, rate control, frame rate and keyframe interval. This shows
+compression before going live, without contacting the destination. The server
+sends lossless PNG snapshots at up to 15 FPS. **Before encoding** shows the
+framing with JPEG snapshots. The server reuses snapshots between viewers of the
+same profile. Two encoded profiles per format can be previewed concurrently,
+and the encoder closes after four seconds without requests. Studio shows the
+draft selection and the applied scene separately. **Apply scene & sources**
+updates the applied scene.
 Preview audio playback is not implemented; source audio is carried by outputs.
 The Studio JPEG widget reuses two wgpu textures per visible preview; the editor
 uses the shared GPU scene renderer with bounded per-layer textures. It bypasses Blitz's unbounded URL/image caches; widget
@@ -249,6 +268,11 @@ snapshots; the server renders at configured FPS independently of any open GUI.
 Server time/renderer/errors are exposed in format status. GPU readback produces
 RGB24 for FFmpeg; zero-copy hardware-encoder integration is not implemented.
 JPEG compression and the preview refresh rate can differ from the full-rate output.
+In the primary viewport, **Undo** and **Redo** cover layer moves, resizes and
+stacking order while the editor is open for that scene. Each drag, Forward
+or Backward action records one step. With the
+canvas focused, use **Cmd/Ctrl+Z** or **Cmd/Ctrl+Shift+Z**. Undo and redo apply
+the result to a running composition just like releasing a drag.
 
 ## Media path
 
@@ -315,8 +339,9 @@ the mixer uses bounded audio playout and reports the missing common timestamp.
 The clock correction in Studio is a PTS-derived estimate. The marker probe measures
 end-to-end offset. See [sustained A/V timing](development.md#sustained-av-timing).
 
-UI meters show block peaks at the
-status polling rate rather than latched maximum levels. Each output consumes the
+With Studio, Mixer or Sources open, the client requests status up to ten times
+per second. Audio meters move toward each reported block peak over 200 ms.
+Preview FPS controls image snapshots independently. Each output consumes the
 latest composed image and its own bounded PCM stream, encoded as one AAC stereo
 track, 48 kHz / 128 kbps. Each encoder attempt starts its video clock at the
 first PCM block's scheduled time and retains that block while FFmpeg connects
@@ -364,11 +389,18 @@ and extension configure/run permissions because it replaces their configuration.
 
 - `GET /api/live/status`: owner workspace id, RTMP bind address, source and format/output state; no tokens or destination URLs/keys. Sources report cumulative `received_bytes` and rolling `bitrate_kbps`; outputs report their workspace `index`, `sent_bytes` and `bitrate_kbps`. An output waiting for or making an automatic reconnection reports `state: "starting"` and the one-based `reconnect_attempt`. Input bytes count compressed audio/video payload, output bytes count FFmpeg FLV mux bytes. Rates use a two-second rolling window; transport overhead and GUI preview traffic are excluded. Output counters reset when a new encoder starts; input byte counters span publisher reconnects.
 - `PUT /api/live/config`: apply a workspace. Layout/source validation is independent of unfinished output drafts. Running encoding profiles cannot be changed.
-- `POST /api/live/start`: `{ "workspace": <workspace>, "formats": ["horizontal", "vertical"] }`. Starts only the requested formats; validates enabled outputs for those formats.
+- `POST /api/live/start`: `{ "workspace": <workspace>, "formats": ["horizontal", "vertical"] }`. Starts the requested formats. Set `"preview_only": true` to leave all enabled outputs stopped, or set `"output": {"orientation": "horizontal", "index": 0}` to start one output. With neither field, the session starts all enabled outputs in the requested formats.
+- `POST /api/live/outputs`: `{ "workspace_id": "<workspace id>", "action": "start" }` starts stopped or failed enabled outputs in the running formats. Use `"action": "restart"` to restart active outputs too. The optional `output` target uses the same orientation and zero-based index as the start request. The response reports individual destination errors in each output's status.
 - `POST /api/live/output/restart`: `{ "workspace_id": "...", "orientation": "horizontal", "index": 0 }`. Restarts one enabled destination with its applied profile. Index is the original workspace output index, including disabled entries. Owner mismatches return 409; inactive formats or absent/disabled destinations return 422. Other encoders, the compositor and audio mixer continue running.
 - `POST /api/live/stop`: `{ "workspace_id": "..." }`. Idempotent for the matching workspace.
 - `DELETE /api/live/config`: same control body; stop and unregister inputs.
 - `GET /api/live/preview/horizontal.jpg` and `vertical.jpg`: composed previews.
+  Optional `output` selects a zero-based destination index in that format
+  and returns a JPEG at the destination resolution up to a 4K pixel budget.
+  Larger profiles are scaled proportionally for the JPEG.
+  Add `mode=encoded` with `output` for a PNG decoded from the locally encoded
+  video. A warming-up encoder returns 202, a full preview pool returns 429,
+  and an unsupported profile returns 422.
 - `GET /api/live/source/{id}`: input snapshot.
 
 Preview URLs include `?workspace=<workspace-id>` to avoid displaying another

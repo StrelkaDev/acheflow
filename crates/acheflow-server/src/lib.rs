@@ -20,6 +20,7 @@ mod compositor;
 mod control;
 mod desktop;
 mod diagnostics;
+mod encoded_preview;
 mod extension_forwarding;
 #[cfg(test)]
 mod extension_forwarding_tests;
@@ -190,6 +191,10 @@ async fn serve(
         .route(
             "/api/live/output/restart",
             axum::routing::post(live::restart_output),
+        )
+        .route(
+            "/api/live/outputs",
+            axum::routing::post(live::manage_outputs),
         )
         .route("/api/live/preview/{format}", get(live::preview))
         .route("/api/live/source/{id}", get(live::source_preview))

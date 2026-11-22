@@ -5,6 +5,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+const LOAD_INTERVAL: Duration = Duration::from_millis(250);
+const MAX_LOAD_SAMPLES: usize = 240;
+
 #[derive(Default)]
 pub struct ServerMonitor {
     started: OnceLock<()>,
@@ -16,7 +19,8 @@ impl ServerMonitor {
         self.started.get_or_init(|| {
             let history = Arc::downgrade(&self.history);
             tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(Duration::from_secs(1));
+                let interval = LOAD_INTERVAL.max(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+                let mut ticker = tokio::time::interval(interval);
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 let mut system = sysinfo::System::new().ok();
                 let mut primed = false;
@@ -48,7 +52,7 @@ impl ServerMonitor {
                     if primed && sample.ram_total_bytes > 0 && sample.cpu_percent.is_finite() {
                         let mut history = history.lock().unwrap();
                         history.push_back(sample);
-                        if history.len() > 60 {
+                        if history.len() > MAX_LOAD_SAMPLES {
                             history.pop_front();
                         }
                     }

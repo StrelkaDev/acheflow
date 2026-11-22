@@ -4,8 +4,11 @@ use crate::{
 };
 use acheflow_media_api::{
     MediaCapabilities,
-    live::{ApiError, ControlRequest, LiveStatus, RestartOutputRequest, StartRequest},
-    workspace::Workspace,
+    live::{
+        ApiError, ControlRequest, LiveStatus, ManageOutputsRequest, OutputAction,
+        RestartOutputRequest, StartRequest,
+    },
+    workspace::{Output, Resolution, Workspace},
 };
 use axum::{
     Json,
@@ -14,8 +17,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, RwLock, atomic::Ordering},
+    collections::{HashMap, VecDeque},
+    sync::{Arc, Mutex, RwLock, Weak, atomic::Ordering},
 };
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex as AsyncMutex;
@@ -66,12 +69,10 @@ impl Runtime {
     }
 
     pub async fn status(&self) -> LiveStatus {
-        let workspace_id = self
-            .workspace
-            .read()
-            .unwrap()
-            .as_ref()
-            .map(|w| w.id.clone());
+        let running = self.formats.lock().await;
+        let workspace = self.workspace.read().unwrap();
+        let workspace = workspace.as_ref();
+        let workspace_id = workspace.map(|workspace| workspace.id.clone());
         let sources = self
             .inputs
             .lock()
@@ -79,22 +80,19 @@ impl Runtime {
             .values()
             .map(|i| i.status())
             .collect();
-        let formats = self
-            .formats
-            .lock()
-            .await
+        let formats = running
             .iter()
-            .map(RunningFormat::status)
+            .map(|format| {
+                let scene = workspace.and_then(|workspace| {
+                    let id = workspace.active(format.orientation)?;
+                    workspace.scenes.iter().find(|scene| scene.id == id)
+                });
+                format.status(scene)
+            })
             .collect();
         LiveStatus {
             activated: self.activated.load(Ordering::Acquire),
-            edit_revision: self
-                .workspace
-                .read()
-                .unwrap()
-                .as_ref()
-                .map(|w| w.edit_revision)
-                .unwrap_or(0),
+            edit_revision: workspace.map_or(0, |workspace| workspace.edit_revision),
             workspace_id,
             rtmp_address: self.rtmp_address.clone(),
             rtmp_tls: self.rtmp_tls.load(Ordering::Relaxed),
@@ -392,43 +390,33 @@ pub(crate) fn validate(workspace: &Workspace) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_outputs(
-    workspace: &Workspace,
-    formats: &[acheflow_media_api::workspace::Orientation],
+pub(crate) fn validate_destination(
+    output: &Output,
+    capabilities: &MediaCapabilities,
 ) -> Result<(), String> {
-    let mut execution = workspace.clone();
-    for orientation in acheflow_media_api::workspace::Orientation::ALL {
-        if formats.contains(&orientation) {
-            execution
-                .stream_mut(orientation)
-                .outputs
-                .retain(|o| o.enabled);
-        } else {
-            execution.stream_mut(orientation).outputs.clear();
-        }
+    output.validate()?;
+    let url = url::Url::parse(&output.url).map_err(|_| "Invalid output RTMP URL")?;
+    if url.scheme() != "rtmp"
+        || url.host_str().is_none()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+    {
+        return Err("Invalid output RTMP URL".into());
     }
-    execution.validate()?;
-    for orientation in formats {
-        for output in execution.stream(*orientation).outputs.iter() {
-            let url = url::Url::parse(&output.url).map_err(|_| "Invalid output RTMP URL")?;
-            if url.scheme() != "rtmp"
-                || url.host_str().is_none()
-                || url.query().is_some()
-                || url.fragment().is_some()
-                || !url.username().is_empty()
-            {
-                return Err("Invalid output RTMP URL".into());
-            }
-            if output.key.len() > 256 || output.key.chars().any(char::is_control) {
-                return Err("Invalid output key".into());
-            }
-            if u64::from(output.resolution.width) * u64::from(output.resolution.height)
-                > 3840 * 2160
-            {
-                return Err("Output resolution exceeds 3840 × 2160 pixels".into());
-            }
-        }
+    if output.key.len() > 256 || output.key.chars().any(char::is_control) {
+        return Err("Invalid output key".into());
     }
+    if u64::from(output.resolution.width) * u64::from(output.resolution.height) > 3840 * 2160 {
+        return Err("Output resolution exceeds 3840 × 2160 pixels".into());
+    }
+    if !capabilities.available {
+        return Err("FFmpeg is unavailable".into());
+    }
+    if !capabilities.rtmp_codecs().contains(&output.codec) {
+        return Err(format!("No RTMP encoder for {}", output.codec));
+    }
+    capabilities.resolve_video_encoder(&output.codec, output.encoder.as_deref())?;
     Ok(())
 }
 
@@ -472,40 +460,62 @@ pub async fn start(
     if request.formats.is_empty() || request.formats.len() > 2 {
         return Err(invalid("Choose at least one scene/format".into()));
     }
+    if let Some(target) = request.output
+        && (request.preview_only || !request.formats.contains(&target.orientation))
+    {
+        return Err(invalid("Choose an output in a requested format".into()));
+    }
     let mut seen = std::collections::HashSet::new();
-    validate_outputs(&request.workspace, &request.formats).map_err(invalid)?;
     let capabilities: MediaCapabilities = runtime.capabilities.lock().await.clone();
+    if !capabilities.available && !request.preview_only {
+        return Err(invalid("FFmpeg is unavailable".into()));
+    }
     for orientation in &request.formats {
         if !seen.insert(orientation.label()) || request.workspace.active(*orientation).is_none() {
             return Err(invalid("Select one scene for each requested format".into()));
         }
-        for output in request
-            .workspace
-            .stream(*orientation)
-            .outputs
-            .iter()
-            .filter(|o| o.enabled)
-        {
-            if !capabilities.rtmp_codecs().contains(&output.codec) {
-                return Err(invalid(format!("No RTMP encoder for {}", output.codec)));
+        let outputs = &request.workspace.stream(*orientation).outputs;
+        if let Some(target) = request.output {
+            if target.orientation == *orientation {
+                let output = outputs
+                    .get(target.index)
+                    .filter(|output| output.enabled)
+                    .ok_or_else(|| invalid("This destination is unavailable or disabled".into()))?;
+                validate_destination(output, &capabilities).map_err(invalid)?;
             }
-            capabilities
-                .resolve_video_encoder(&output.codec, output.encoder.as_deref())
-                .map_err(invalid)?;
+        } else if !request.preview_only {
+            for output in outputs.iter().filter(|output| output.enabled) {
+                validate_destination(output, &capabilities).map_err(invalid)?;
+            }
         }
-    }
-    if !capabilities.available {
-        return Err(invalid("FFmpeg is unavailable".into()));
     }
     runtime.apply(request.workspace).await.map_err(invalid)?;
     for orientation in request.formats {
-        let format = crate::compositor::start(runtime.clone(), orientation, &capabilities).await;
+        let format = crate::compositor::start(
+            runtime.clone(),
+            orientation,
+            &capabilities,
+            request.preview_only || request.output.is_some(),
+        )
+        .await;
         match format {
             Ok(format) => runtime.formats.lock().await.push(format),
             Err(error) => {
                 runtime.stop().await;
                 return Err(invalid(error));
             }
+        }
+    }
+    if let Some(target) = request.output {
+        let mut formats = runtime.formats.lock().await;
+        if let Some(format) = formats
+            .iter_mut()
+            .find(|format| format.orientation == target.orientation)
+        {
+            // The destination status owns encoder errors so the preview remains available.
+            format
+                .run_outputs(Some(target.index), &capabilities, false)
+                .await;
         }
     }
     Ok(Json(runtime.status().await))
@@ -557,6 +567,43 @@ pub async fn restart_output(
     }
     Ok(Json(runtime.status().await))
 }
+pub async fn manage_outputs(
+    State(runtime): State<RuntimeState>,
+    Json(request): Json<ManageOutputsRequest>,
+) -> ApiResult {
+    let _guard = runtime.control.lock().await;
+    check_owner(&runtime, &request.workspace_id)?;
+    let capabilities = runtime.capabilities.lock().await.clone();
+    {
+        let mut formats = runtime.formats.lock().await;
+        if formats.is_empty() {
+            return Err(invalid(
+                "Start the preview before controlling outputs".into(),
+            ));
+        }
+        let restart = matches!(request.action, OutputAction::Restart);
+        if let Some(target) = request.output {
+            let format = formats
+                .iter_mut()
+                .find(|format| {
+                    format.orientation == target.orientation && format.has_output(target.index)
+                })
+                .ok_or_else(|| invalid("This destination is unavailable or disabled".into()))?;
+            format
+                .run_outputs(Some(target.index), &capabilities, restart)
+                .await;
+        } else {
+            futures_util::future::join_all(
+                formats
+                    .iter_mut()
+                    .map(|format| format.run_outputs(None, &capabilities, restart)),
+            )
+            .await;
+        }
+    }
+    Ok(Json(runtime.status().await))
+}
+
 pub async fn deactivate(
     State(runtime): State<RuntimeState>,
     Json(request): Json<ControlRequest>,
@@ -577,29 +624,87 @@ pub async fn preview(
     Path(format): Path<String>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
-    if query.get("workspace").is_some_and(|id| {
-        runtime
-            .workspace
-            .read()
-            .unwrap()
-            .as_ref()
-            .is_none_or(|w| &w.id != id)
-    }) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
     let orientation = match format.as_str() {
         "horizontal.jpg" => acheflow_media_api::workspace::Orientation::Horizontal,
         "vertical.jpg" => acheflow_media_api::workspace::Orientation::Vertical,
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
-    let frame = runtime
-        .formats
-        .lock()
-        .await
-        .iter()
-        .find(|f| f.orientation == orientation)
-        .map(|f| f.frame.borrow().clone());
-    image_response(frame).await
+    let output = match query
+        .get("output")
+        .map(|index| index.parse::<usize>())
+        .transpose()
+    {
+        Ok(output) => output,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let mode = match query.get("mode").map(String::as_str) {
+        Some("encoded") if output.is_some() => Some(runtime.capabilities.lock().await.clone()),
+        Some(_) => return StatusCode::BAD_REQUEST.into_response(),
+        None => None,
+    };
+    let (frames, resolution, cache) = {
+        let mut formats = runtime.formats.lock().await;
+        let encoded_profile = {
+            let workspace = runtime.workspace.read().unwrap();
+            let workspace = workspace.as_ref();
+            if query
+                .get("workspace")
+                .is_some_and(|id| workspace.is_none_or(|w| &w.id != id))
+            {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            mode.as_ref()
+                .and_then(|_| workspace?.stream(orientation).outputs.get(output?).cloned())
+        };
+        let Some(format) = formats.iter_mut().find(|f| f.orientation == orientation) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        if let (Some(index), Some(capabilities)) = (output, mode.as_ref()) {
+            let Some(profile) = encoded_profile else {
+                return StatusCode::NOT_FOUND.into_response();
+            };
+            let view = format.encoded_view(index, profile, capabilities);
+            // No compositor or workspace lock is needed to serve a snapshot.
+            drop(formats);
+            return match view {
+                Ok(view) => view.response().await,
+                Err(status) => status.into_response(),
+            };
+        }
+        let resolution = if let Some(index) = output {
+            let Some(profile) = format
+                .preview_profiles
+                .iter()
+                .find(|profile| profile.index == index)
+            else {
+                return StatusCode::NOT_FOUND.into_response();
+            };
+            let Some(size) = preview_size(&profile.resolution) else {
+                return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+            };
+            Some(size)
+        } else {
+            None
+        };
+        (
+            format.frame.clone(),
+            resolution,
+            format.preview_cache.clone(),
+        )
+    };
+    cache.lock().await.response(&frames, resolution).await
+}
+
+fn preview_size(size: &Resolution) -> Option<Resolution> {
+    if !(1..=7680).contains(&size.width) || !(1..=7680).contains(&size.height) {
+        return None;
+    }
+    let pixels = f64::from(size.width) * f64::from(size.height);
+    let scale = (8_294_400. / pixels).sqrt().min(1.);
+    Some(Resolution {
+        width: (f64::from(size.width) * scale).floor().max(1.) as u32,
+        height: (f64::from(size.height) * scale).floor().max(1.) as u32,
+    })
 }
 pub async fn source_preview(
     State(runtime): State<RuntimeState>,
@@ -628,44 +733,257 @@ pub async fn source_preview(
             .filter(|f| f.received.elapsed() < std::time::Duration::from_secs(2))
             .map(|f| f.image.clone())
     });
-    image_response(frame).await
+    image_response(frame, None).await
 }
-async fn image_response(frame: Option<Arc<image::RgbImage>>) -> Response {
+async fn image_response(
+    frame: Option<Arc<image::RgbImage>>,
+    resolution: Option<Resolution>,
+) -> Response {
     let Some(frame) = frame else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let (width, height) = frame.dimensions();
-    let result = tokio::task::spawn_blocking(move || {
+    match encode_preview(frame, resolution).await {
+        Some(snapshot) => snapshot.response(),
+        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+struct PreviewSnapshot {
+    bytes: axum::body::Bytes,
+    width: u32,
+    height: u32,
+}
+
+impl PreviewSnapshot {
+    fn response(&self) -> Response {
+        let mut response = (
+            [
+                (header::CONTENT_TYPE, "image/jpeg"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            self.bytes.clone(),
+        )
+            .into_response();
+        response
+            .headers_mut()
+            .insert("x-frame-width", self.width.into());
+        response
+            .headers_mut()
+            .insert("x-frame-height", self.height.into());
+        response
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct PreviewCache {
+    frame: Weak<image::RgbImage>,
+    snapshots: VecDeque<PreviewSnapshot>,
+}
+
+impl PreviewCache {
+    async fn response(
+        &mut self,
+        frames: &tokio::sync::watch::Receiver<Arc<image::RgbImage>>,
+        resolution: Option<Resolution>,
+    ) -> Response {
+        // Read the current frame after waiting for an in-progress encode. Slow
+        // clients then skip old frames instead of building up an encode backlog.
+        let frame = frames.borrow().clone();
+        let dimensions = resolution
+            .as_ref()
+            .map_or_else(|| frame.dimensions(), |size| (size.width, size.height));
+        let identity = Arc::downgrade(&frame);
+        if !self.frame.ptr_eq(&identity) {
+            self.snapshots.clear();
+            self.frame = identity;
+        }
+        if let Some(snapshot) = self
+            .snapshots
+            .iter()
+            .find(|snapshot| (snapshot.width, snapshot.height) == dimensions)
+        {
+            return snapshot.response();
+        }
+        let Some(snapshot) = encode_preview(frame, resolution).await else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        };
+        let response = snapshot.response();
+        if self.snapshots.len() == 4 {
+            self.snapshots.pop_front();
+        }
+        self.snapshots.push_back(snapshot);
+        response
+    }
+}
+
+async fn encode_preview(
+    frame: Arc<image::RgbImage>,
+    resolution: Option<Resolution>,
+) -> Option<PreviewSnapshot> {
+    tokio::task::spawn_blocking(move || {
+        let resized = resolution
+            .filter(|size| frame.dimensions() != (size.width, size.height))
+            .map(|size| {
+                image::imageops::resize(
+                    frame.as_ref(),
+                    size.width,
+                    size.height,
+                    image::imageops::FilterType::CatmullRom,
+                )
+            });
+        let frame = resized.as_ref().unwrap_or(frame.as_ref());
         let mut bytes = Vec::new();
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 95)
-            .encode_image(frame.as_ref())
-            .map(|()| bytes)
+            .encode_image(frame)
+            .map(|()| PreviewSnapshot {
+                bytes: bytes.into(),
+                width: frame.width(),
+                height: frame.height(),
+            })
     })
-    .await;
-    match result {
-        Ok(Ok(bytes)) => {
-            let mut response = (
-                [
-                    (header::CONTENT_TYPE, "image/jpeg"),
-                    (header::CACHE_CONTROL, "no-store"),
-                ],
-                bytes,
-            )
-                .into_response();
-            // Dimensions of this exact frame, without rescaling the JPEG preview.
-            response.headers_mut().insert("x-frame-width", width.into());
-            response
-                .headers_mut()
-                .insert("x-frame-height", height.into());
-            response
-        }
-        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
+    .await
+    .ok()?
+    .ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn preview_session_keeps_enabled_destination_without_starting_encoder() {
+        use acheflow_media_api::workspace::{Orientation, Output, Resolution};
+
+        let runtime = Runtime::new(
+            Arc::new(AsyncMutex::new(MediaCapabilities::default())),
+            "127.0.0.1:0".into(),
+        );
+        let mut workspace = Workspace::default();
+        workspace.horizontal.base = Resolution {
+            width: 320,
+            height: 240,
+        };
+        let scene = workspace.add_scene(Orientation::Horizontal);
+        workspace.set_active(Orientation::Horizontal, Some(scene));
+        workspace.horizontal.outputs.push(Output {
+            name: "Preview test".into(),
+            url: "rtmp://127.0.0.1:1/live".into(),
+            key: "preview-test".into(),
+            resolution: Resolution {
+                width: 160,
+                height: 90,
+            },
+            quality: "Custom".into(),
+            codec: "h264".into(),
+            encoder: None,
+            bitrate_kbps: 2000,
+            bitrate_mode: Default::default(),
+            keyframe_interval_secs: 2,
+            enabled: true,
+            audio: Default::default(),
+        });
+        let workspace_id = workspace.id.clone();
+        let Json(status) = start(
+            State(runtime.clone()),
+            Json(StartRequest {
+                workspace,
+                formats: vec![Orientation::Horizontal],
+                preview_only: true,
+                output: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(
+            runtime
+                .workspace
+                .read()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .horizontal
+                .outputs[0]
+                .enabled
+        );
+        assert_eq!(
+            status.formats[0].outputs[0].state,
+            acheflow_media_api::live::OutputState::Stopped
+        );
+        assert_eq!(status.formats[0].preview_profiles[0].index, 0);
+        assert_eq!(status.formats[0].applied_scene.as_ref().unwrap().id, scene);
+        let response = preview(
+            State(runtime.clone()),
+            Path("horizontal.jpg".into()),
+            Query(HashMap::from([
+                ("workspace".into(), workspace_id),
+                ("output".into(), "0".into()),
+            ])),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["x-frame-width"], "160");
+        let outside_format = preview(
+            State(runtime.clone()),
+            Path("horizontal.jpg".into()),
+            Query(HashMap::from([("output".into(), "1".into())])),
+        )
+        .await;
+        assert_eq!(outside_format.status(), StatusCode::NOT_FOUND);
+        runtime.stop().await;
+        assert!(runtime.status().await.formats.is_empty());
+    }
+    #[tokio::test]
+    async fn output_framing_preview_uses_the_profile_dimensions() {
+        use acheflow_media_api::workspace::Resolution;
+        let target = Resolution {
+            width: 320,
+            height: 180,
+        };
+        assert_eq!(preview_size(&target), Some(target.clone()));
+        assert_eq!(
+            preview_size(&Resolution {
+                width: 7680,
+                height: 4320
+            }),
+            Some(Resolution {
+                width: 3840,
+                height: 2160
+            })
+        );
+        let response =
+            image_response(Some(Arc::new(image::RgbImage::new(640, 480))), Some(target)).await;
+        assert_eq!(response.headers()["x-frame-width"], "320");
+        assert_eq!(response.headers()["x-frame-height"], "180");
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        assert_eq!(
+            image::load_from_memory(&bytes)
+                .unwrap()
+                .to_rgb8()
+                .dimensions(),
+            (320, 180)
+        );
+    }
+    #[tokio::test]
+    async fn format_snapshot_cache_reuses_the_frame_and_expires_on_publish() {
+        let (tx, rx) = tokio::sync::watch::channel(Arc::new(image::RgbImage::new(32, 24)));
+        let mut cache = PreviewCache::default();
+        assert_eq!(cache.response(&rx, None).await.status(), StatusCode::OK);
+        let previous = cache.snapshots[0].bytes.clone();
+        let response = cache.response(&rx, None).await;
+        let reused = axum::body::to_bytes(response.into_body(), 16 * 1024)
+            .await
+            .unwrap();
+        assert_eq!(previous.as_ptr(), reused.as_ptr());
+        tx.send_replace(Arc::new(image::RgbImage::from_pixel(
+            32,
+            24,
+            image::Rgb([255, 255, 255]),
+        )));
+        assert_eq!(cache.response(&rx, None).await.status(), StatusCode::OK);
+        assert_ne!(previous, cache.snapshots[0].bytes);
+        assert_eq!(cache.snapshots.len(), 1);
+    }
     #[tokio::test]
     async fn jpeg_preview_preserves_native_detail_and_never_upscales() {
         for (width, height) in [(1920, 1080), (1080, 1920), (64, 32)] {
@@ -673,7 +991,7 @@ mod tests {
                 let value = if (x / 3 + y / 3) % 2 == 0 { 32 } else { 224 };
                 image::Rgb([value; 3])
             });
-            let response = image_response(Some(Arc::new(image.clone()))).await;
+            let response = image_response(Some(Arc::new(image.clone())), None).await;
             assert_eq!(response.headers()["x-frame-width"], width.to_string());
             let bytes = axum::body::to_bytes(response.into_body(), 16 * 1024 * 1024)
                 .await

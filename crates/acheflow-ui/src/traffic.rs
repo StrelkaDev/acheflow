@@ -29,6 +29,12 @@ impl Default for History {
     }
 }
 impl History {
+    pub(crate) fn sample_due(&self) -> bool {
+        self.samples
+            .back()
+            .is_none_or(|latest| self.started.elapsed().as_secs_f64() - latest.at >= 0.5)
+    }
+
     pub fn record(&mut self, state: &LiveStatus, workspace: &Workspace) {
         if state.workspace_id.as_deref() != Some(&workspace.id) {
             *self = Self::default();

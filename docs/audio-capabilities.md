@@ -85,9 +85,10 @@ the applied delay and sync status are reported.
 
 Edits save locally and reach the server through Apply mixer/routes. Audio-only
 edits do not restart video encoders; transport/video-profile changes still require
-Stop/Start. Source meters become zero after 500 ms without decoded PCM. UI meters
-show block peaks at status polling time, not latched maxima. Meter movement is
-not local audio playback; monitoring is not implemented.
+Stop/Start. Source meters report zero after 500 ms without decoded PCM. On the
+visible Mixer, Studio or Sources tab, the client requests block peaks up to ten
+times per second and interpolates the meter bars over 200 ms. These indicators
+show level only. Local audio playback remains unimplemented.
 
 ## Verification required across the complete path
 

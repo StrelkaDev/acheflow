@@ -81,6 +81,38 @@ pub struct Output {
     #[serde(default)]
     pub audio: crate::audio::OutputAudio,
 }
+impl Output {
+    pub fn has_valid_video_profile(&self) -> bool {
+        valid_stream_size(&self.resolution)
+            && crate::RTMP_VIDEO_CODECS.contains(&self.codec.as_str())
+            && self
+                .encoder
+                .as_ref()
+                .is_none_or(|name| crate::valid_encoder_name(name))
+            && (100..=100000).contains(&self.bitrate_kbps)
+            && (1..=20).contains(&self.keyframe_interval_secs)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty()
+            || !self.url.starts_with("rtmp://")
+            || self.url.len() <= 7
+            || self.key.trim().is_empty()
+            || !self.has_valid_video_profile()
+            || !["Low", "Standard", "High", "Custom"].contains(&self.quality.as_str())
+        {
+            return Err("Each output needs a name, rtmp:// URL, key, valid resolution, RTMP video codec/encoder bitrate (100–100000 kbps) and keyframe interval (1–20 seconds)".into());
+        }
+        Ok(())
+    }
+}
+
+fn valid_stream_size(size: &Resolution) -> bool {
+    (16..=7680).contains(&size.width)
+        && (16..=7680).contains(&size.height)
+        && size.width.is_multiple_of(2)
+        && size.height.is_multiple_of(2)
+}
 fn default_keyframe_interval_secs() -> u32 {
     2
 }
@@ -602,36 +634,13 @@ impl Workspace {
         if self.name.trim().is_empty() {
             return Err("Workspace name is required".into());
         }
-        let valid_size = |r: &Resolution| {
-            r.width >= 16
-                && r.height >= 16
-                && r.width <= 7680
-                && r.height <= 7680
-                && r.width.is_multiple_of(2)
-                && r.height.is_multiple_of(2)
-        };
         for o in Orientation::ALL {
             let s = self.stream(o);
-            if !valid_size(&s.base) || !(1..=120).contains(&s.fps) {
+            if !valid_stream_size(&s.base) || !(1..=120).contains(&s.fps) {
                 return Err("Invalid base resolution or FPS".into());
             }
             for out in &s.outputs {
-                if out.name.trim().is_empty()
-                    || !out.url.starts_with("rtmp://")
-                    || out.url.len() <= 7
-                    || out.key.trim().is_empty()
-                    || !valid_size(&out.resolution)
-                    || !crate::RTMP_VIDEO_CODECS.contains(&out.codec.as_str())
-                    || out
-                        .encoder
-                        .as_ref()
-                        .is_some_and(|name| !crate::valid_encoder_name(name))
-                    || !["Low", "Standard", "High", "Custom"].contains(&out.quality.as_str())
-                    || !(100..=100000).contains(&out.bitrate_kbps)
-                    || !(1..=20).contains(&out.keyframe_interval_secs)
-                {
-                    return Err("Each output needs a name, rtmp:// URL, key, valid resolution, RTMP video codec/encoder bitrate (100–100000 kbps) and keyframe interval (1–20 seconds)".into());
-                }
+                out.validate()?;
             }
         }
         let mut ids = std::collections::HashSet::new();
@@ -686,7 +695,7 @@ impl Workspace {
                 );
             }
             if !source.kind.is_audio_only()
-                && (!valid_size(&source.resolution)
+                && (!valid_stream_size(&source.resolution)
                     || source.resolution.width as u64 * source.resolution.height as u64
                         > 1920 * 1080)
             {

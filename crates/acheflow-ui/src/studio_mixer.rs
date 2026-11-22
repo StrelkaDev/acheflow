@@ -192,12 +192,14 @@ mod tests {
         let second = workspace.add_scene(Orientation::Horizontal);
         workspace.set_active(Orientation::Horizontal, Some(second));
         let mut running = FormatStatus {
+            applied_scene: None,
             orientation: Orientation::Horizontal,
             time_seconds: 0.,
             renderer: None,
             error: None,
             frames: 1,
             outputs: vec![],
+            preview_profiles: vec![],
             audio_sync: vec![],
             render_load: Default::default(),
             audio_buses: vec![AudioBusStatus {

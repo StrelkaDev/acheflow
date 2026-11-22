@@ -406,16 +406,109 @@ async fn output_pipeline(encoder: &str) {
             .is_err()
     );
     workspace.edit_revision = runtime.saved_state().0;
-    let _ = live::start(
+    let started = live::start(
         State(runtime.clone()),
         Json(StartRequest {
             workspace: workspace.clone(),
             formats: vec![Orientation::Horizontal, Orientation::Vertical],
+            preview_only: false,
+            output: Some(acheflow_media_api::live::OutputTarget {
+                orientation: Orientation::Horizontal,
+                index: 0,
+            }),
         }),
     )
     .await
+    .unwrap()
+    .0;
+    use acheflow_media_api::live::{ManageOutputsRequest, OutputAction, OutputState, OutputTarget};
+    assert_eq!(started.formats[0].outputs.len(), 2);
+    assert_eq!(started.formats[0].outputs[1].index, 2);
+    assert_eq!(started.formats[0].outputs[1].state, OutputState::Stopped);
+    if tokio::time::timeout(Duration::from_secs(20), async {
+        while !colors(&sink, "red", "blue") {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .is_err()
+    {
+        panic!(
+            "Initial output did not deliver the expected scene. Publisher: {:?}. Receiver: {:?}",
+            runtime.status().await.formats[0].outputs[0],
+            sink.status().await.sources[0],
+        );
+    }
+    let healthy = runtime.formats.lock().await[0].outputs[0].clone();
+    until(|| healthy.lock().unwrap().state == OutputState::Streaming).await;
+    let sent_before = healthy.lock().unwrap().sent_bytes;
+    let decoded = tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            let response = live::preview(
+                State(runtime.clone()),
+                axum::extract::Path("horizontal.jpg".into()),
+                axum::extract::Query(std::collections::HashMap::from([
+                    ("workspace".into(), workspace.id.clone()),
+                    ("output".into(), "1".into()),
+                    ("mode".into(), "encoded".into()),
+                ])),
+            )
+            .await;
+            if response.status() != axum::http::StatusCode::ACCEPTED {
+                break response;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
     .unwrap();
-    until(|| colors(&sink, "red", "blue")).await;
+    assert_eq!(decoded.status(), axum::http::StatusCode::OK);
+    assert_eq!(decoded.headers()["content-type"], "image/png");
+    assert_eq!(decoded.headers()["x-frame-width"], "320");
+    until(|| {
+        let output = healthy.lock().unwrap();
+        output.state == OutputState::Streaming && output.sent_bytes > sent_before
+    })
+    .await;
+    for (workspace_id, output) in [
+        ("other-workspace".to_owned(), None),
+        (
+            workspace.id.clone(),
+            Some(OutputTarget {
+                orientation: Orientation::Horizontal,
+                index: 1,
+            }),
+        ),
+    ] {
+        assert!(
+            live::manage_outputs(
+                State(runtime.clone()),
+                Json(ManageOutputsRequest {
+                    workspace_id,
+                    action: OutputAction::Start,
+                    output
+                }),
+            )
+            .await
+            .is_err()
+        );
+    }
+    let all = live::manage_outputs(
+        State(runtime.clone()),
+        Json(ManageOutputsRequest {
+            workspace_id: workspace.id.clone(),
+            action: OutputAction::Start,
+            output: None,
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert!(all.formats[0].outputs[0].sent_bytes >= sent_before);
+    assert!(matches!(
+        all.formats[0].outputs[1].state,
+        OutputState::Starting | OutputState::Streaming
+    ));
     spatial_chat_roundtrip(&runtime, &sink, scene).await;
     let portrait = runtime.formats.lock().await[1].frame.clone();
     until(|| {
@@ -576,12 +669,15 @@ async fn output_pipeline(encoder: &str) {
     until(|| retrying_output.lock().unwrap().reconnect_attempt.is_some()).await;
     let (recovered, recovered_task) =
         bind_recovery_sink(&workspace, caps.clone(), refused_port).await;
-    let restarted = live::restart_output(
+    let restarted = live::manage_outputs(
         State(runtime.clone()),
-        Json(acheflow_media_api::live::RestartOutputRequest {
+        Json(ManageOutputsRequest {
             workspace_id: workspace.id.clone(),
-            orientation: Orientation::Horizontal,
-            index: 2,
+            action: OutputAction::Restart,
+            output: Some(OutputTarget {
+                orientation: Orientation::Horizontal,
+                index: 2,
+            }),
         }),
     )
     .await
@@ -637,6 +733,34 @@ async fn output_pipeline(encoder: &str) {
         .await
         .unwrap();
     assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 320);
+    let restarted_all = live::manage_outputs(
+        State(runtime.clone()),
+        Json(ManageOutputsRequest {
+            workspace_id: workspace.id.clone(),
+            action: OutputAction::Restart,
+            output: None,
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert_eq!(restarted_all.formats[0].outputs.len(), 2);
+    assert!(
+        restarted_all.formats[0]
+            .outputs
+            .iter()
+            .all(|output| matches!(output.state, OutputState::Starting | OutputState::Streaming))
+    );
+    until(|| {
+        [&healthy_output, &retrying_output]
+            .into_iter()
+            .all(|status| {
+                let status = status.lock().unwrap();
+                status.state == OutputState::Streaming && status.sent_bytes > 0
+            })
+    })
+    .await;
+    until(|| colors(&sink, "blue", "red") && colors(&recovered, "blue", "red")).await;
     recovered.close().await;
     recovered_task.await.unwrap();
     until(|| {

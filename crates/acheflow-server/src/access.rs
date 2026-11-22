@@ -325,7 +325,10 @@ async fn authorize(
         }
         (
             &Method::POST,
-            "/api/media/capabilities" | "/api/live/stop" | "/api/live/output/restart",
+            "/api/media/capabilities"
+            | "/api/live/stop"
+            | "/api/live/output/restart"
+            | "/api/live/outputs",
         ) => principal.allows(P::MediaManage),
         (&Method::GET, path)
             if path.starts_with("/api/live/preview/") || path.starts_with("/api/live/source/") =>
@@ -378,6 +381,7 @@ async fn authorize(
                 | "/api/live/start"
                 | "/api/live/stop"
                 | "/api/live/output/restart"
+                | "/api/live/outputs"
         )
     {
         let bytes = to_bytes(response.into_body(), 16 * 1024 * 1024)

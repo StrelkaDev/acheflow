@@ -86,6 +86,10 @@ fn fixture() -> (Directory, Arc<Access>, Router, String) {
             put(|| async { Json(LiveStatus::default()) }),
         )
         .route(
+            "/api/live/outputs",
+            post(crate::live::manage_outputs).with_state(access.host.runtime.clone()),
+        )
+        .route(
             "/api/control/executor",
             post(crate::client_bridge::studio).with_state(access.host.clone()),
         )
@@ -160,6 +164,7 @@ async fn every_api_boundary_requires_authentication_even_with_loopback_proxy_hea
         ("POST", "/api/live/start"),
         ("POST", "/api/live/stop"),
         ("POST", "/api/live/output/restart"),
+        ("POST", "/api/live/outputs"),
         ("GET", "/api/live/preview/horizontal.jpg"),
         ("GET", "/api/live/source/1"),
         ("POST", "/api/control/executor"),

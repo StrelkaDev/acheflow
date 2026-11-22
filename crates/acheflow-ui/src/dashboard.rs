@@ -19,6 +19,13 @@ pub fn dashboard() -> Element {
     });
     let backend = use_signal(|| "Starting GPU...".to_owned());
     let mut page = use_signal(|| "Overview");
+    let monitor_tab = use_signal(|| true);
+    let telemetry_interval = use_memo(move || match page() {
+        "Overview" => Some(250),
+        "Live" if monitor_tab() => Some(100),
+        _ => None,
+    });
+    use_context_provider(|| crate::live_client::LiveTelemetryInterval(telemetry_interval));
     let (project, mut catalog, storage_status) = use_workspaces();
     use_context_provider(|| catalog);
     crate::server_settings::provide(project, catalog);
@@ -68,7 +75,7 @@ pub fn dashboard() -> Element {
                 div {class:if live.running(){"workspace-body with-live-chat"}else{"workspace-body"},
                 div {class:"tab-viewport",for tab in ["Overview","Live","Extensions","Settings"] {
                     div {key:"{tab}",class:if page()==tab{"tab-scroll active"}else{"tab-scroll"},"aria-hidden":if page()==tab{"false"}else{"true"},
-                        if tab=="Live"{Live {key:"{catalog.read().active_id()}",project,visible:page()=="Live"}}else{
+                        if tab=="Live"{Live {key:"{catalog.read().active_id()}",project,visible:page()=="Live",monitor_tab}}else{
                             main {class:"content",
                                 if tab=="Overview"{
                                     div {class:"page-heading",div {h1 {"Overview"}p {"Your broadcast workspace, in one place."}}span {class:"badge",if live.running(){"Running"}else{"Idle"}}}
@@ -77,6 +84,10 @@ pub fn dashboard() -> Element {
                                         Stat {title:"SCENES",value:project.read().scenes.len().to_string(),detail:"Horizontal + vertical"}
                                         Stat {title:"RESTREAM OUTPUTS",value:(project.read().horizontal.outputs.len()+project.read().vertical.outputs.len()).to_string(),detail:"Configured destinations"}
                                         Stat {title:"SESSION",value:if live.running(){"Running"}else{"Idle"},detail:"Media worker state"}
+                                    }
+                                    if page()=="Overview" && let Some(status)=live.status.read().as_ref()
+                                        && !status.server_load.is_empty() {
+                                        crate::live::ServerLoad {samples:status.server_load.clone()}
                                     }
                                     section {class:"panel",div {class:"panel-heading",h2 {"Prepare your broadcast"}}div {class:"padded",h3 {"Sources → Scenes → Studio"}p {"Register expected RTMP inputs in Live / Sources. Build compositions in Live / Scenes, set separate output profiles in Settings and monitor both formats in Studio."}p {"FFmpeg ingests authorized RTMP sources and renders scenes. Manage the live session in Studio."}}}
                                 }

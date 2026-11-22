@@ -30,6 +30,9 @@ pub struct RunningFormat {
     pub frame: watch::Receiver<Arc<RgbImage>>,
     pub frames: Arc<AtomicU64>,
     pub outputs: Vec<Arc<Mutex<OutputStatus>>>,
+    pub(crate) preview_profiles: Vec<acheflow_media_api::live::OutputPreviewProfile>,
+    pub(crate) preview_cache: Arc<tokio::sync::Mutex<crate::live::PreviewCache>>,
+    encoded_previews: crate::encoded_preview::EncodedPreviews,
     output_workers: Vec<OutputWorker>,
     encoder_frame: watch::Receiver<crate::output::RenderedVideo>,
     spec: crate::output::VideoSpec,
@@ -62,8 +65,94 @@ impl OutputWorker {
         }
         self.task = None;
     }
+
+    async fn start(
+        &mut self,
+        format_cancel: &CancellationToken,
+        spec: &crate::output::VideoSpec,
+        frame: &watch::Receiver<crate::output::RenderedVideo>,
+        capabilities: &MediaCapabilities,
+        restart: bool,
+    ) -> Result<(), String> {
+        if !restart
+            && matches!(
+                self.status.lock().unwrap().state,
+                OutputState::Starting | OutputState::Streaming
+            )
+        {
+            return Ok(());
+        }
+        self.stop().await;
+        {
+            let mut status = self.status.lock().unwrap();
+            status.state = OutputState::Starting;
+            status.reconnect_attempt = None;
+            status.error = None;
+            status.frames = 0;
+            status.sent_bytes = 0;
+            status.bitrate_kbps = 0.;
+            status.repeated_video_frames = 0;
+            status.inserted_audio_blocks = 0;
+            status.reconnects = 0;
+            status.encoder = None;
+            status.hardware = false;
+        }
+        self.cancel = format_cancel.child_token();
+        let result = match crate::live::validate_destination(&self.config, capabilities) {
+            Ok(()) => {
+                crate::output::start(
+                    self.config.clone(),
+                    spec.clone(),
+                    capabilities,
+                    frame.clone(),
+                    self.audio.clone(),
+                    self.status.clone(),
+                    self.cancel.clone(),
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(task) => {
+                self.task = Some(task);
+                Ok(())
+            }
+            Err(error) => {
+                let mut status = self.status.lock().unwrap();
+                status.state = OutputState::Failed;
+                status.error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
 }
+
 impl RunningFormat {
+    pub fn has_output(&self, index: usize) -> bool {
+        self.output_workers
+            .iter()
+            .any(|worker| worker.index == index)
+    }
+
+    pub(crate) fn encoded_view(
+        &mut self,
+        index: usize,
+        output: acheflow_media_api::workspace::Output,
+        capabilities: &MediaCapabilities,
+    ) -> Result<Arc<crate::encoded_preview::EncodedView>, axum::http::StatusCode> {
+        self.encoded_previews.view(
+            index,
+            output,
+            crate::encoded_preview::PreviewSource {
+                spec: self.spec.clone(),
+                frames: self.frame.clone(),
+                cancel: self.cancel.clone(),
+            },
+            capabilities,
+        )
+    }
+
     pub async fn restart_output(
         &mut self,
         index: usize,
@@ -72,45 +161,43 @@ impl RunningFormat {
         let worker = self
             .output_workers
             .iter_mut()
-            .find(|w| w.index == index)
-            .ok_or("This destination is not running or is disabled")?;
-        worker.stop().await;
-        {
-            let mut status = worker.status.lock().unwrap();
-            status.state = OutputState::Starting;
-            status.reconnect_attempt = None;
-            status.error = None;
-            status.frames = 0;
-            status.sent_bytes = 0;
-            status.bitrate_kbps = 0.;
-        }
-        worker.cancel = self.cancel.child_token();
-        match crate::output::start(
-            worker.config.clone(),
-            self.spec.clone(),
-            capabilities,
-            self.encoder_frame.clone(),
-            worker.audio.clone(),
-            worker.status.clone(),
-            worker.cancel.clone(),
-        )
-        .await
-        {
-            Ok(task) => {
-                worker.task = Some(task);
-                Ok(())
-            }
-            Err(error) => {
-                let mut status = worker.status.lock().unwrap();
-                status.state = OutputState::Failed;
-                status.error = Some(error.clone());
-                Err(error)
-            }
-        }
+            .find(|worker| worker.index == index)
+            .ok_or("This destination is unavailable or disabled")?;
+        worker
+            .start(
+                &self.cancel,
+                &self.spec,
+                &self.encoder_frame,
+                capabilities,
+                true,
+            )
+            .await
     }
 
-    pub fn status(&self) -> FormatStatus {
+    pub async fn run_outputs(
+        &mut self,
+        index: Option<usize>,
+        capabilities: &MediaCapabilities,
+        restart: bool,
+    ) -> Vec<Result<(), String>> {
+        let cancel = &self.cancel;
+        let spec = &self.spec;
+        let frame = &self.encoder_frame;
+        futures_util::future::join_all(
+            self.output_workers
+                .iter_mut()
+                .filter(|worker| index.is_none_or(|index| worker.index == index))
+                .map(|worker| worker.start(cancel, spec, frame, capabilities, restart)),
+        )
+        .await
+    }
+
+    pub fn status(&self, scene: Option<&Scene>) -> FormatStatus {
         FormatStatus {
+            applied_scene: scene.map(|scene| acheflow_media_api::live::AppliedScene {
+                id: scene.id,
+                name: scene.name.clone(),
+            }),
             audio_buses: self.audio_buses.lock().unwrap().clone(),
             audio_sync: self.sync.audio.lock().unwrap().clone(),
             render_load: self
@@ -123,6 +210,7 @@ impl RunningFormat {
             error: self.error.lock().unwrap().clone(),
             orientation: self.orientation,
             frames: self.frames.load(Ordering::Relaxed),
+            preview_profiles: self.preview_profiles.clone(),
             outputs: self
                 .outputs
                 .iter()
@@ -150,6 +238,7 @@ pub async fn start(
     runtime: RuntimeState,
     orientation: Orientation,
     capabilities: &MediaCapabilities,
+    preview_only: bool,
 ) -> Result<RunningFormat, String> {
     let workspace = runtime
         .workspace
@@ -276,7 +365,25 @@ pub async fn start(
         encoder_frame,
         frames,
         outputs: vec![],
+        preview_profiles: stream
+            .outputs
+            .iter()
+            .enumerate()
+            .map(
+                |(index, output)| acheflow_media_api::live::OutputPreviewProfile {
+                    index,
+                    name: output.name.clone(),
+                    resolution: output.resolution.clone(),
+                    codec: output.codec.clone(),
+                    bitrate_kbps: output.bitrate_kbps,
+                    bitrate_mode: output.bitrate_mode,
+                    fps,
+                },
+            )
+            .collect(),
         output_workers: vec![],
+        preview_cache: Default::default(),
+        encoded_previews: Default::default(),
         spec: crate::output::VideoSpec {
             base: stream.base.clone(),
             fps,
@@ -309,7 +416,7 @@ pub async fn start(
             audio_scene: None,
             audio_bus: None,
             audio_meter: Default::default(),
-            state: OutputState::Starting,
+            state: OutputState::Stopped,
             reconnect_attempt: None,
             repeated_video_frames: 0,
             inserted_audio_blocks: 0,
@@ -317,44 +424,31 @@ pub async fn start(
             frames: 0,
             error: None,
         }));
-        let output_cancel = running.cancel.child_token();
-        match crate::output::start(
-            output.clone(),
-            crate::output::VideoSpec {
-                base: stream.base.clone(),
-                fps,
-                #[cfg(test)]
-                orientation,
-            },
-            capabilities,
-            running.encoder_frame.clone(),
-            audio_tx.clone(),
-            status.clone(),
-            output_cancel.clone(),
-        )
-        .await
+        destinations.push(crate::audio_mixer::Destination {
+            index,
+            sender: audio_tx.clone(),
+            status: status.clone(),
+        });
+        running.outputs.push(status.clone());
+        running.output_workers.push(OutputWorker {
+            index,
+            config: output,
+            audio: audio_tx,
+            status,
+            cancel: running.cancel.child_token(),
+            task: None,
+        });
+    }
+    if !preview_only {
+        if let Some(error) = running
+            .run_outputs(None, capabilities, false)
+            .await
+            .into_iter()
+            .find_map(Result::err)
         {
-            Ok(task) => {
-                destinations.push(crate::audio_mixer::Destination {
-                    index,
-                    sender: audio_tx.clone(),
-                    status: status.clone(),
-                });
-                running.outputs.push(status.clone());
-                running.output_workers.push(OutputWorker {
-                    index,
-                    config: output,
-                    audio: audio_tx,
-                    status,
-                    cancel: output_cancel,
-                    task: Some(task),
-                });
-            }
-            Err(error) => {
-                running.cancel.cancel();
-                running.join().await;
-                return Err(error);
-            }
+            running.cancel.cancel();
+            running.join().await;
+            return Err(error);
         }
     }
     running.tasks.push(tokio::spawn(crate::audio_mixer::run(
