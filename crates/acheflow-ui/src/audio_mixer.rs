@@ -177,66 +177,104 @@ pub fn AudioMixer(project: Signal<Workspace>, visible: bool) -> Element {
     } else {
         None
     };
+    let audio_sources = workspace
+        .sources
+        .iter()
+        .filter(|s| s.kind.has_audio_input());
     rsx! {
-        div {class:"page-heading",div {h1 {"Audio mixer"}p {"Each scene owns its mix. Destinations select a stereo bus."}}
-            if (client.scoped_pending)() {span {class:"form-help",role:"status","Saving mix…"}}
+        div {class:"page-heading mixer-heading",
+            h1 {"Audio mixer"}
+            span {class:"form-help",role:"status",if (client.scoped_pending)() {"Saving mix…"}}
         }
-        p {class:"form-help","Mixer edits are saved as you work. Edits to the server’s scenes update the mix immediately. Local scenes keep their mix with the draft."}
-        div {class:"scene-list",for scene in &workspace.scenes {
-            button {class:if current.as_ref().is_some_and(|s|s.id==scene.id){"selected"}else{""},onclick:{let id=scene.id;move |_|selected.set(Some(id))},"{scene.name} / {scene.orientation.label()}"}
-        }}
         if let Some(scene)=current {
-            section {class:"panel",div {class:"panel-heading",h2 {"{scene.name} · buses"}
+            div {class:"mixer-scenes",role:"group","aria-label":"Scene mix",
+                for option in &workspace.scenes {
+                    {
+                        let id=option.id;
+                        let active=id==scene.id;
+                        rsx! {button {key:"{id}",class:if active {"selected"} else {""},"aria-pressed":active.to_string(),onclick:move |_|selected.set(Some(id)),
+                            strong {"{option.name}"}
+                            span {"{option.orientation.label()}"}
+                        }}
+                    }
+                }
+            }
+            div {class:"mixer-layout",
+            section {class:"panel mixer-buses",div {class:"panel-heading",h2 {"Output buses"}
                 button {disabled:scene.audio.buses.len()>=8,onclick:move |_|{
                     let id=project.peek().scenes.iter().find(|s|s.id==scene.id)
                         .filter(|s|s.audio.buses.len()<8)
                         .map(|s|(1..=9).find(|id|!s.audio.buses.iter().any(|b|b.id==*id)).unwrap());
                     if let Some(id)=id {edit_bus(client,scene.id,id,BusChange::Add);}
-                },"+ Bus"}
+                },"+ Add bus"}
             }
             div {class:"audio-bus-grid",for bus in scene.audio.buses.clone() {
                 div {key:"{scene.id}-{bus.id}",class:"audio-bus",
+                    if bus.id==1 {span {class:"mixer-default-bus","Default destination bus"}}
                     crate::live::CommittedName {label:"Bus name",max_bytes:Some(128),value:bus.name.clone(),change:move |v|{edit_bus(client,scene.id,bus.id,BusChange::Name(v))}}
+                    if visible {LiveMeters {target:MeterTarget::Bus {orientation:scene.orientation,scene_id:scene.id,bus_id:bus.id},fallback:status.as_ref().into_iter().flat_map(|s|&s.formats).flat_map(|f|&f.audio_buses).find(|b|b.scene_id==scene.id && b.bus_id==bus.id).map(|b|b.meter.clone()).unwrap_or_default()}}
                     GainFader {label:"Master gain",gain:bus.gain,change:move |v:u32|{edit_bus(client,scene.id,bus.id,BusChange::Gain(v))}}
                     div {class:"row",button {class:if bus.muted{"selected"}else{""},"aria-pressed":bus.muted.to_string(),onclick:move |_|{edit_bus(client,scene.id,bus.id,BusChange::Mute(!bus.muted))},"Mute"}
                         if bus.id!=1 {button {onclick:move |_|edit_bus(client,scene.id,bus.id,BusChange::Remove),"Remove bus"}}
                     }
-                    if visible {LiveMeters {target:MeterTarget::Bus {orientation:scene.orientation,scene_id:scene.id,bus_id:bus.id},fallback:status.as_ref().into_iter().flat_map(|s|&s.formats).flat_map(|f|&f.audio_buses).find(|b|b.scene_id==scene.id && b.bus_id==bus.id).map(|b|b.meter.clone()).unwrap_or_default()}}
                 }
             }}
-            div {class:"panel-note","Program is the default bus. Removing another bus resets its destination routes to Program. Bus meters show the applied active scene."}
+            div {class:"panel-note","Removing a bus moves its destinations to Program. Meters reflect the active server mix."}
             }
-            section {class:"panel",div {class:"panel-heading",h2 {"Source tracks"}span {class:"badge","Stereo · 48 kHz"}}
-                div {class:"panel-note","Track 0 of sources in this scene starts on Program. Additional tracks start unrouted. Sends are independent; gain does not change when other sources connect. Solo applies across this scene."}
-                for source in workspace.sources.iter().filter(|s|s.kind.has_audio_input()) {
+            section {class:"panel mixer-tracks",div {class:"panel-heading",h2 {"Source tracks"}span {class:"form-help","Stereo · 48 kHz"}}
+                for source in audio_sources.clone() {
                     {
                         let input=status.as_ref().and_then(|s|s.sources.iter().find(|i|i.id==source.id));
                         let mut tracks=BTreeMap::from([(0,None)]);
-                        for track in input.into_iter().flat_map(|i|&i.audio_tracks){tracks.insert(track.track_id,Some(track.clone()));}
+                        for track in input.into_iter().flat_map(|i|&i.audio_tracks){tracks.insert(track.track_id,Some(track));}
                         for strip in scene.audio.strips.iter().filter(|s|s.source_id==source.id){tracks.entry(strip.track_id).or_insert(None);}
                         let effective=scene.audio.effective_strips(scene.layers.iter().map(|l|l.source_id));
                         rsx! {for (track_id,track) in tracks {
                             {
                                 let key=TrackKey{source_id:source.id,track_id};
                                 let strip=effective.get(&key).cloned().unwrap_or_else(||AudioStrip::new(key,false));
+                                let receiving=track.is_some_and(|track|track.active);
                                 rsx! {div {key:"{scene.id}-{source.id}-{track_id}",class:"audio-strip",
-                                    div {class:"audio-strip-heading",h3 {"{source.name} · track {track_id}"}
-                                        span {class:"badge",if track.as_ref().is_some_and(|t|t.active){"Receiving"}else{"Waiting"}}
+                                    div {class:"audio-strip-heading",
+                                        div {h3 {"{source.name}"}
+                                            p {class:"form-help","Track {track_id}"
+                                                if let Some(track)=track.as_ref() {" · {track.codec} · {track.sample_rate} Hz · {track.channels} ch"}
+                                            }
+                                        }
+                                        span {class:if receiving {"mixer-track-status receiving"} else {"mixer-track-status"},
+                                            if receiving {"Receiving"} else {"Waiting"}
+                                        }
                                     }
-                                    if let Some(track)=track.as_ref() {p {class:"form-help","{track.codec} → {track.sample_rate} Hz / {track.channels} channels"}
-                                        if let Some(error)=track.error.as_ref() {p {class:"field-error",role:"alert","{error}"}}
+                                    if let Some(error)=track.as_ref().and_then(|track|track.error.as_ref()) {
+                                        p {class:"field-error",role:"alert","{error}"}
                                     }
-                                    if visible {LiveMeters {target:MeterTarget::Source {source_id:source.id,track_id},fallback:track.map(|track|track.meter).unwrap_or_default()}}
+                                    if visible {
+                                        div {class:"mixer-track-monitor",
+                                            LiveMeters {target:MeterTarget::Source {source_id:source.id,track_id},fallback:track.map(|track|track.meter.clone()).unwrap_or_default()}
+                                            crate::audio_monitor::MonitorButton {
+                                                target:crate::audio_monitor::Target::Source {source:source.id,track:track_id},
+                                                disabled:!receiving,
+                                            }
+                                        }
+                                    }
                                     StripControls {scene_id:scene.id,strip:strip.clone()}
-                                    div {class:"audio-sends",for bus in &scene.audio.buses {
-                                        div {class:"field",span {"Send → {bus.name}"}GainFader {label:"Send gain",gain:strip.sends.get(&bus.id).copied().unwrap_or(0),reset_unity:false,change:{let id=bus.id;move |v:u32|edit_strip(client,scene.id,key,StripChange::Send {bus:id,gain:v})}}}
-                                    }}
+                                    div {class:"mixer-routing",role:"group","aria-label":"Bus sends",
+                                        h4 {"Bus sends"}
+                                        div {class:"audio-sends",for bus in &scene.audio.buses {
+                                            div {key:"{bus.id}",class:"mixer-send",
+                                                GainFader {label:bus.name.clone(),gain:strip.sends.get(&bus.id).copied().unwrap_or(0),reset_unity:false,change:{let id=bus.id;move |v:u32|edit_strip(client,scene.id,key,StripChange::Send {bus:id,gain:v})}}
+                                            }
+                                        }}
+                                    }
                                 }}
                             }
                         }}
                     }
                 }
-                if workspace.sources.is_empty(){div {class:"empty-state",p {"Register sources in Live / Sources to configure their tracks."}}}
+                if audio_sources.count()==0 {
+                    div {class:"empty-state",p {"Add a microphone or a stream with audio in Live / Sources."}}
+                }
+            }
             }
         }else{div {class:"panel empty-state",h3 {"Create a scene first"}p {"Each scene has an independent audio mixer."}}}
     }

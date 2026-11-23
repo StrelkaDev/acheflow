@@ -17,6 +17,8 @@ use std::{
 struct Harness {
     endpoint: String,
     sync: Cell<Option<WorkspaceSync>>,
+    live: Cell<Option<crate::live_client::LiveClient>>,
+    source_row: Cell<Option<ScopeId>>,
 }
 fn app() -> Element {
     let harness = use_context::<Rc<Harness>>();
@@ -50,16 +52,37 @@ fn app() -> Element {
         error: use_signal(String::new),
     };
     use_context_provider(|| access);
-    crate::live_client::use_live_client(project);
+    harness
+        .live
+        .set(Some(crate::live_client::use_live_client(project)));
     let control = crate::control_client::use_control_client(project);
     let sync = provide(project, catalog, control);
     harness.sync.set(Some(sync));
-    rsx! {style {{include_str!("../dashboard.css")}} Notice {}}
+    rsx! {style {{include_str!("../dashboard.css")}} Notice {}
+        div {class:"fixture-sources",
+            for source in &project.read().sources {
+                SourceRow {key:"{source.id}", project, source_id:source.id}
+            }
+        }
+    }
 }
+
+#[component]
+fn SourceRow(project: Signal<Workspace>, source_id: u32) -> Element {
+    if source_id == 1 {
+        use_context::<Rc<Harness>>()
+            .source_row
+            .set(Some(dioxus_core::current_scope_id()));
+    }
+    rsx! {crate::source_settings::RemoveSource {project,source_id}}
+}
+
 fn document(endpoint: &str) -> (DioxusDocument, Rc<Harness>) {
     let harness = Rc::new(Harness {
         endpoint: endpoint.into(),
         sync: Cell::new(None),
+        live: Cell::new(None),
+        source_row: Cell::new(None),
     });
     let mut doc = DioxusDocument::new(
         VirtualDom::new(app).with_root_context(harness.clone()),
@@ -103,6 +126,84 @@ fn state(revision: u64) -> WorkspaceState {
         workspace: Some(project),
         view: None,
     }
+}
+
+#[tokio::test]
+async fn removing_a_saved_camera_reenables_remove_for_remaining_sources() {
+    use acheflow_media_api::{live::LiveStatus, visual::SourceKind};
+
+    let mut initial = state(1);
+    let workspace = initial.workspace.as_mut().unwrap();
+    workspace.sources.clear();
+    workspace.add_source();
+    workspace.add_source();
+    workspace.sources[0].kind = SourceKind::Camera {
+        device_id: "fixture-camera".into(),
+        mode: None,
+        mirrored: false,
+    };
+    let server_state = Arc::new(RwLock::new(initial));
+    let read = server_state.clone();
+    let app = axum::Router::new()
+        .route(
+            "/api/workspace",
+            axum::routing::get(move || {
+                let state = read.read().unwrap().clone();
+                async move { axum::Json(state) }
+            }),
+        )
+        .route(
+            "/api/live/status",
+            axum::routing::get(|| async {
+                axum::Json(LiveStatus {
+                    workspace_id: Some("fixture-local".into()),
+                    ..Default::default()
+                })
+            }),
+        )
+        .route(
+            "/api/live/sources",
+            axum::routing::post(
+                move |axum::Json(request): axum::Json<SourceSettingsRequest>| {
+                    let mut state = server_state.write().unwrap();
+                    assert_eq!(request.expected_revision, state.revision);
+                    let revision = state.revision + 1;
+                    let workspace = state.workspace.as_mut().unwrap();
+                    assert!(request.edit.apply(workspace, request.source_id).unwrap());
+                    workspace.edit_revision = revision;
+                    state.revision = revision;
+                    std::future::ready(axum::Json(SourceSettingsAck { revision }))
+                },
+            ),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let (mut doc, harness) = document(&endpoint);
+    let live = harness.live.get().unwrap();
+    let sync = harness.sync.get().unwrap();
+    until(&mut doc, || live.owns() && (sync.ready)()).await;
+    sync.resolve(true);
+    settle(&mut doc);
+    assert!(sync.saved_source(1).is_some());
+    doc.vdom
+        .runtime()
+        .in_scope(harness.source_row.get().unwrap(), || {
+            crate::source_settings::edit_source(sync.project, 1, SourceEdit::Remove);
+        });
+    assert!((live.scoped_pending)());
+    until(&mut doc, || live.project.peek().sources.len() == 1).await;
+    assert_eq!(live.project.peek().sources[0].id, 2);
+    until(&mut doc, || !(live.scoped_pending)()).await;
+    assert!(
+        doc.inner
+            .borrow()
+            .query_selector(".fixture-sources button:enabled")
+            .unwrap()
+            .is_some()
+    );
+    assert!(live.error.peek().is_none());
+    server.abort();
 }
 #[tokio::test]
 async fn two_real_ui_clients_follow_server_edits_and_present_conflict_resolution() {

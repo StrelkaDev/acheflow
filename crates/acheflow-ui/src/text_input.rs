@@ -122,8 +122,10 @@ impl Bridge {
         drop(doc);
         self.handle
             .doc_mut()
-            .with_text_input(target.node, |editor| {
+            .with_text_input(target.node, |mut editor| {
                 editor.editor.set_text(&value);
+                // The platform editor can request a repaint before Dioxus updates the field.
+                editor.refresh_layout();
             });
         self.form_event("input", target.element, value);
         true
@@ -432,6 +434,7 @@ mod tests {
     use blitz_dom::{Document, DocumentConfig};
     use blitz_traits::shell::Viewport;
     use dioxus_native::DioxusDocument;
+    use std::cell::RefCell;
 
     fn fields() -> Element {
         rsx! {div { id:"pane", style:"overflow:auto;width:280px;height:90px;",
@@ -441,6 +444,65 @@ mod tests {
             }
             input {id:"last",r#type:"text",value:"last",oninput:move |_|{}}
         }}
+    }
+
+    #[tokio::test]
+    async fn platform_input_is_ready_to_paint_before_the_next_dom_update() {
+        type Mounted = Rc<RefCell<Option<Bridge>>>;
+
+        fn app() -> Element {
+            let mounted = use_context::<Mounted>();
+            rsx! {div {
+                onmounted: move |event| {
+                    let handle = event.data().downcast::<NodeHandle>().unwrap().clone();
+                    mounted.replace(Some(Bridge::new(handle)));
+                },
+                input {id:"size",r#type:"text",value:"1280",oninput:move |_|{}}
+            }}
+        }
+
+        let mounted = Mounted::default();
+        let mut document = DioxusDocument::new(
+            VirtualDom::new(app).with_root_context(mounted.clone()),
+            DocumentConfig::default(),
+        );
+        document.initial_build();
+        for _ in 0..10 {
+            if !document.poll(None) {
+                break;
+            }
+        }
+        let target = {
+            let mut doc = document.inner.borrow_mut();
+            doc.resolve(0.);
+            let node = doc.query_selector("#size").unwrap().unwrap();
+            Target {
+                node,
+                element: element_id(&doc, node).unwrap(),
+            }
+        };
+        assert!(
+            mounted
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .update(target, "1920".into())
+        );
+        let doc = document.inner.borrow();
+        let node = doc.get_node(target.node).unwrap();
+        assert_eq!(
+            node.element_data()
+                .unwrap()
+                .text_input_data()
+                .unwrap()
+                .editor
+                .text(),
+            "1920"
+        );
+        assert!(
+            node.text_input_v_centering_offset(f64::from(doc.viewport().scale()))
+                .is_finite()
+        );
     }
 
     #[tokio::test]

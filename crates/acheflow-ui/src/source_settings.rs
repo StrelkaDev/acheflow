@@ -257,13 +257,6 @@ pub(crate) fn SourcePreview(
         && connected
         && (!inspector || input.as_ref().is_some_and(|status| status.frames > 0));
     let error = input.as_ref().and_then(|status| status.error.clone());
-    let primary_track = input.as_ref().and_then(|status| {
-        status
-            .audio_tracks
-            .iter()
-            .filter(|track| track.active)
-            .min_by_key(|track| track.track_id)
-    });
     let image_class = if separate {
         "studio-source-image separate-source-image"
     } else {
@@ -294,9 +287,6 @@ pub(crate) fn SourcePreview(
                             span {class:"form-help","{fps:.1} FPS"}
                         }
                     }
-                    if let Some(track)=primary_track {
-                        crate::audio_monitor::MonitorButton {target:crate::audio_monitor::Target::Source {source:source_id,track:track.track_id},source_preview:true}
-                    }
                 }
                 if let Some(error) = error.as_ref() {
                     p {class:"field-error",role:"alert","{error}"}
@@ -312,19 +302,37 @@ pub(crate) fn SourcePreview(
                 }
                 if let Some(status) = input.as_ref() {
                     for track in &status.audio_tracks {
-                        div {key:"{track.track_id}",class:"studio-source-track",
-                            span {class:"form-help","Track {track.track_id} · {track.sample_rate} Hz"}
-                            crate::audio_mixer::LiveMeters {target:MeterTarget::Source {source_id,track_id:track.track_id},fallback:track.meter.clone()}
-                        }
+                        PreviewAudioTrack {key:"{track.track_id}",source_id,track:track.clone()}
                     }
                 }
             }
         } else if image {
             crate::video_preview::VideoPreview {url:client.preview(&format!("/api/live/source/{source_id}")),class:"source-card-preview"}
-        } else if showing && !video && let Some(track)=input.as_ref().and_then(|status|status.audio_tracks.iter().find(|track|track.track_id==0)) {
-            div {class:"padded",crate::audio_mixer::LiveMeters {target:MeterTarget::Source {source_id,track_id:0},fallback:track.meter.clone()}}
+        } else if showing && !video && let Some(status)=input.as_ref() {
+            div {class:"padded",
+                for track in &status.audio_tracks {
+                    PreviewAudioTrack {key:"{track.track_id}",source_id,track:track.clone()}
+                }
+            }
         }
     }
+}
+
+#[component]
+fn PreviewAudioTrack(
+    source_id: u32,
+    track: acheflow_media_api::audio::AudioTrackStatus,
+) -> Element {
+    rsx! {div {class:"studio-source-track",
+        div {class:"source-track-heading",
+            span {class:"form-help","Track {track.track_id} · {track.sample_rate} Hz"}
+            crate::audio_monitor::MonitorButton {
+                target:crate::audio_monitor::Target::Source {source:source_id,track:track.track_id},
+                disabled:!track.active,
+            }
+        }
+        crate::audio_mixer::LiveMeters {target:MeterTarget::Source {source_id,track_id:track.track_id},fallback:track.meter}
+    }}
 }
 
 #[component]

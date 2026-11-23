@@ -156,11 +156,7 @@ fn allowed() -> bool {
 }
 
 #[component]
-pub(crate) fn MonitorButton(
-    target: Target,
-    #[props(default)] disabled: bool,
-    #[props(default)] source_preview: bool,
-) -> Element {
+pub(crate) fn MonitorButton(target: Target, #[props(default)] disabled: bool) -> Element {
     let Some(mut monitor) = try_consume_context::<Monitor>() else {
         return rsx! {};
     };
@@ -197,7 +193,7 @@ pub(crate) fn MonitorButton(
                 onclick:move |_| {
                     if active && !failed {monitor.stop();} else {monitor.start(scope,target);}
                 },
-                if failed {"Retry audio"} else if active {"Stop listening"} else if source_preview {"Listen to source"} else {"Listen"}
+                if failed {"Retry audio"} else if active {"Stop listening"} else {"Listen"}
             }
             if active && !failed {
                 crate::slider::Slider {label:"Monitor volume",unit:"%",min:0,max:100,

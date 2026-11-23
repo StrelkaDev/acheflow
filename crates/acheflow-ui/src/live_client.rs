@@ -438,7 +438,8 @@ impl LiveClient {
                 && workspace.server_url == endpoint
                 && crate::server_access::identity() == identity
         };
-        spawn(async move {
+        // The initiating control can disappear when an edit removes its source or scene.
+        dioxus_core::Runtime::current().spawn(self.scoped_pending.origin_scope(), async move {
             loop {
                 crate::scene_preview::pause(75).await;
                 if !same_workspace() {
