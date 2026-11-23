@@ -876,6 +876,37 @@ mod tests {
     use crate::project::Layer;
 
     #[test]
+    fn offline_camera_aspect_follows_the_preset_and_auto_restores_the_manual_size() {
+        use acheflow_media_api::visual::{CameraMode, SourceKind};
+
+        let mut project = Workspace::default();
+        project.add_source();
+        let id = project.sources[0].id;
+        project.sources[0].resolution = crate::project::Resolution {
+            width: 1280,
+            height: 720,
+        };
+        project.sources[0].kind = SourceKind::Camera {
+            device_id: "fixture-camera".into(),
+            mode: Some(CameraMode {
+                width: 2160,
+                height: 3840,
+                duration_value: 1,
+                duration_scale: 30,
+            }),
+            mirrored: false,
+        };
+
+        assert_eq!(source_aspect(&project, None, id), Some(9. / 16.));
+
+        let SourceKind::Camera { mode, .. } = &mut project.sources[0].kind else {
+            unreachable!();
+        };
+        *mode = None;
+        assert_eq!(source_aspect(&project, None, id), Some(16. / 9.));
+    }
+
+    #[test]
     fn layer_order_history_restores_order_without_overwriting_layer_fields() {
         let mut project = Workspace::default();
         let scene = project.add_scene(Orientation::Horizontal);

@@ -380,6 +380,27 @@ mod tests {
     }
 
     #[test]
+    fn source_preview_fits_portrait_and_landscape_camera_modes() {
+        for (frame, (width, height), expected) in [
+            (
+                Rect::new(0., 0., 1080., 1920.),
+                (1280., 200.),
+                Rect::new(583.75, 0., 696.25, 200.),
+            ),
+            (
+                Rect::new(0., 0., 1920., 1080.),
+                (320., 220.),
+                Rect::new(0., 20., 320., 200.),
+            ),
+        ] {
+            assert_eq!(
+                source_fit(frame.width(), frame.height(), width, height).transform_rect_bbox(frame),
+                expected,
+            );
+        }
+    }
+
+    #[test]
     fn native_hd_and_4k_snapshots_keep_their_pixels_and_dimensions() {
         for (width, height) in [(1920, 1080), (1080, 1920), (3840, 2160), (2160, 3840)] {
             let (image, size) = decode_snapshot(

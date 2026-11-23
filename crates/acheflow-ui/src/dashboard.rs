@@ -187,3 +187,68 @@ fn text_input_mount() -> Element {
         rsx! {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blitz_dom::{Document, DocumentConfig};
+    use blitz_traits::shell::Viewport;
+    use std::{cell::Cell, rc::Rc};
+
+    #[tokio::test]
+    async fn sidebar_footer_keeps_its_rows_when_the_server_connects() {
+        type Ready = Rc<Cell<Option<Signal<bool>>>>;
+        fn app() -> Element {
+            let ready = use_signal(|| false);
+            use_context::<Ready>().set(Some(ready));
+            let backend = use_signal(|| "Metal / Blitz + wgpu".into());
+            rsx! {
+                style {{include_str!("dashboard.css")}}
+                div {class:"app",aside {class:"sidebar",SidebarFooter {backend,following:true,ready:ready()}}}
+            }
+        }
+        let ready = Ready::default();
+        let mut doc = dioxus_native::DioxusDocument::new(
+            VirtualDom::new(app).with_root_context(ready.clone()),
+            DocumentConfig {
+                font_ctx: Some(dioxus_native::build_single_font_ctx(include_bytes!(
+                    "../assets/DejaVuSans.woff2"
+                ))),
+                ..Default::default()
+            },
+        );
+        doc.initial_build();
+        doc.inner.borrow_mut().set_viewport(Viewport {
+            window_size: (1280, 900),
+            ..Default::default()
+        });
+        let rows = |doc: &dioxus_native::DioxusDocument| {
+            let dom = doc.inner.borrow();
+            [".local-badge", ".sidebar-backend", ".app-version"].map(|selector| {
+                let id = dom.query_selector(selector).unwrap().unwrap();
+                let node = dom.get_node(id).unwrap();
+                (
+                    node.absolute_position(0., 0.).y,
+                    node.final_layout().size.height,
+                )
+            })
+        };
+        doc.inner.borrow_mut().resolve(0.);
+        let connecting = rows(&doc);
+        ready.get().unwrap().set(true);
+        doc.poll(None);
+        doc.inner.borrow_mut().resolve(0.);
+        {
+            let dom = doc.inner.borrow();
+            let id = dom.query_selector(".local-badge").unwrap().unwrap();
+            assert_eq!(dom.get_node(id).unwrap().text_content(), "Server workspace");
+        }
+        assert_eq!(rows(&doc), connecting);
+        for pair in connecting.windows(2) {
+            assert!(
+                pair[0].1 > 0. && pair[0].0 + pair[0].1 < pair[1].0,
+                "footer rows should have a positive height and gap: {connecting:?}"
+            );
+        }
+    }
+}
