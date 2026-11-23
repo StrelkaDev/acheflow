@@ -25,13 +25,18 @@ def run(command):
     )
 
 
-def inspect(file, ffmpeg, ffprobe):
+def inspect(file, ffmpeg, ffprobe, *, expected_video=None):
     streams = {"video": [], "audio": []}
     packets = run([
-        ffprobe, "-v", "error", "-show_packets", "-show_entries",
-        "packet=codec_type,pts_time", "-of", "json", file,
+        ffprobe, "-v", "error", "-show_packets", "-show_streams", "-show_entries",
+        "packet=codec_type,pts_time:stream=codec_type,codec_name", "-of", "json", file,
     ])
-    for packet in json.loads(packets.stdout)["packets"]:
+    data = json.loads(packets.stdout)
+    if expected_video is not None:
+        codecs = {stream["codec_type"]: stream["codec_name"] for stream in data["streams"]}
+        if codecs.get("video") != expected_video or codecs.get("audio") != "aac":
+            raise ValueError(f"{file.name} delivered {codecs}, expected {expected_video} and AAC")
+    for packet in data["packets"]:
         kind = packet["codec_type"]
         if kind in streams and packet.get("pts_time") not in (None, "N/A"):
             streams[kind].append(float(packet["pts_time"]))
@@ -143,22 +148,33 @@ def summarize(capture, start, end, fps, *, qualify, drift_required=False):
 
 def preview_load_report(directory, ffmpeg, ffprobe):
     report = {}
-    for fps in (30, 60):
-        run_dir = directory / str(fps)
-        metrics = json.loads((run_dir / "preview-load.json").read_text())
+    runs = sorted(directory.glob("*/preview-load.json"))
+    if not runs:
+        raise ValueError("No completed preview-load runs found")
+    for run in runs:
+        run_dir = run.parent
+        metrics = json.loads(run.read_text())
+        fps = metrics["fps"]
+        outputs = metrics.get("outputs", {})
+        rtmp_codec = outputs.get("rtmp", {}).get("codec", "h264")
+        srt_codec = outputs.get("srt", {}).get("codec", "h264")
         captures = {}
-        for name, filename in (
-            ("source", "source.flv"),
-            ("rtmp", "horizontal.flv"),
-            ("srt", "vertical.ts"),
-            ("rtmp_restarted", "horizontal-restarted.flv"),
+        for name, filename, codec in (
+            ("source", "source.flv", "h264"),
+            ("rtmp", "horizontal.flv", rtmp_codec),
+            ("srt", "vertical.ts", srt_codec),
+            ("rtmp_restarted", "horizontal-restarted.flv", rtmp_codec),
         ):
-            capture = inspect(run_dir / filename, ffmpeg, ffprobe)
+            capture = inspect(run_dir / filename, ffmpeg, ffprobe, expected_video=codec)
             streams, _ = capture
             first = max(timestamps[0] for timestamps in streams.values())
             last = min(timestamps[-1] for timestamps in streams.values())
-            captures[name] = summarize(capture, first, last, fps, qualify=False)
-        report[fps] = {"metrics": metrics, "captures": captures}
+            result = summarize(capture, first, last, fps, qualify=False)
+            if result["paired"] == 0:
+                raise ValueError(f"{run_dir.name}/{filename} contains no matched video/audio markers")
+            result["codecs"] = {"video": codec, "audio": "aac"}
+            captures[name] = result
+        report[run_dir.name] = {"metrics": metrics, "captures": captures}
     return report
 
 
@@ -167,7 +183,7 @@ def main():
     parser.add_argument("directory", type=Path)
     parser.add_argument("--ffmpeg", default=os.environ.get("ACHEFLOW_FFMPEG", "ffmpeg"))
     parser.add_argument("--ffprobe", default="ffprobe")
-    parser.add_argument("--preview-load", action="store_true", help="analyze the 30/60 FPS mixed-output preview probe")
+    parser.add_argument("--preview-load", action="store_true", help="analyze mixed-output preview probe runs")
     parser.add_argument("--markers-csv", type=Path, help="save each matched pulse with its signed offset")
     args = parser.parse_args()
     if args.preview_load:

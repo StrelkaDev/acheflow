@@ -15,6 +15,7 @@ server workspace automatically while retaining their local catalogs and drafts.
 | Browser workspace catalog, selected workspace and client preferences | localStorage key `acheflow.workspaces.v1`, scoped to the browser profile and origin | Loaded on page startup; edits auto-save. A different scheme/host/port has a separate catalog. |
 | Workspace server address, sources, stream keys and passphrases, scenes, outputs, audio, server logic `extensions`, local integration `client_extensions`, `client_capabilities` policy and `edit_revision` | Each workspace entry in the client catalog; also in workspace JSON exports | Kept independently for each workspace. Authenticated clients follow the server configuration; export/import also transfers independent local drafts. Camera and microphone IDs refer to devices on the configured server. |
 | Background animation | Catalog `preferences.background_animation` | Shared across workspaces in this client catalog, restored after reload/restart. Old catalogs default to enabled. Excluded from workspace-only exports. |
+| Audio monitor output | Catalog `preferences.monitor_output` | Shared across workspaces in this client catalog and restored after reload or restart. Defaults to the system output. Excluded from workspace-only exports and server synchronization. |
 | Server workspace configuration, capability policy and edit revision | `<config-stem>.workspace.json`, beside the selected server config | Apply and configuration commands save atomically before publishing edits. Restart restores the same identity/revision without starting inputs, outputs or integrations. Deactivation retains the saved configuration. Unix file mode is `0600`. |
 | HTTP/RTMP bind settings and TLS certificate/key **paths** | `acheflow-server.json` relative to the server working directory; `--config` or `ACHEFLOW_CONFIG` selects another file | Loaded at server startup. Saving creates missing parent directories and atomically replaces the file. Listener changes need a restart. |
 | Server provider bindings and their public settings | Workspace `server_integrations`, server workspace file and local authorized catalog replicas | Explicit Apply activates configured bindings. Restart restores them inactive; it does not transfer local accounts. |
@@ -36,7 +37,7 @@ export is required before submitting it to the current server.
 
 **Saved locally** means the client catalog write succeeded. It does not mean that
 new source/output/extension drafts have been applied to the server. Client integration fields and toggles auto-save locally in `client_extensions`.
-Full **Apply workspace** / Start send a server projection that excludes this map.
+Whole-workspace activation sends a server projection that excludes this map.
 Server logic `extensions` settings are included in Apply and their enable/disable
 commands. An enable/disable command validates the installation and supplied public
 settings, and loads the WASM guest before saving when enabling. The settings and

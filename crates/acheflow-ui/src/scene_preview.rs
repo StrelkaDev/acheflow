@@ -3,6 +3,7 @@ use crate::{
     project::{Layer, Orientation, Scene as SceneConfig, Workspace},
 };
 use acheflow_composition::gpu::{GpuScene, LayerBox, SceneFrame, SourceFrame};
+use acheflow_media_api::spatial::Camera;
 use anyrender::{PaintScene, RenderContext, Scene};
 use blitz_dom::{Widget, node::ComputedStyles};
 use dioxus_native::{CustomWidgetAttr, prelude::*};
@@ -67,8 +68,16 @@ struct Snapshot {
     error: Option<String>,
     revision: u64,
     editor: Option<crate::spatial_view::EditorView>,
+    camera_zoom: Option<u16>,
 }
 type Shared = Arc<Mutex<Snapshot>>;
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct CameraPreviewView {
+    pub camera: Camera,
+    pub zoom: u16,
+}
+
 #[component]
 pub fn ScenePreview(
     project: Signal<Workspace>,
@@ -79,6 +88,7 @@ pub fn ScenePreview(
     #[props(default)] metrics: Option<Signal<Vec<LayerBox>>>,
     #[props(default = false)] viewport_content: bool,
     #[props(default)] editor: Option<Signal<crate::spatial_view::EditorView>>,
+    #[props(default)] camera_preview: Option<CameraPreviewView>,
 ) -> Element {
     let client = use_context::<LiveClient>();
     let control = use_context::<crate::control_client::ControlClient>();
@@ -99,6 +109,7 @@ pub fn ScenePreview(
             error: None,
             revision: 0,
             editor: None,
+            camera_zoom: None,
         }))
     });
     let mut version = use_signal(|| 0u64);
@@ -114,7 +125,7 @@ pub fn ScenePreview(
         })
     });
     let config_shared = shared.clone();
-    use_effect(move || {
+    use_effect(use_reactive((&camera_preview,), move |(camera_preview,)| {
         let workspace = project.read();
         let Some(scene) = workspace.scenes.iter().find(|s| s.id == scene_id) else {
             return;
@@ -177,7 +188,11 @@ pub fn ScenePreview(
         if viewport_content {
             contents.spatial = None;
         }
+        if let (Some(spatial), Some(preview)) = (&mut contents.spatial, &camera_preview) {
+            spatial.camera = preview.camera.clone();
+        }
         state.editor = editor.map(|view| view.read().clone());
+        state.camera_zoom = camera_preview.map(|preview| preview.zoom);
         state.frame = Some(SceneFrame {
             source_documents: {
                 let snapshot = control.state.read();
@@ -219,7 +234,7 @@ pub fn ScenePreview(
         state.anchor = Instant::now();
         state.revision += 1;
         version.set(state.revision);
-    });
+    }));
     let fetch_shared = shared.clone();
     use_future(move || {
         let shared = fetch_shared.clone();
@@ -375,7 +390,7 @@ impl Widget for SceneWidget {
         height: u32,
         scale: f64,
     ) -> Scene {
-        let (frame, revision, editor) = {
+        let (frame, revision, editor, camera_zoom) = {
             let state = self.shared.lock().unwrap();
             (
                 state.frame.clone().map(|mut f| {
@@ -384,6 +399,7 @@ impl Widget for SceneWidget {
                 }),
                 state.revision,
                 state.editor.clone(),
+                state.camera_zoom,
             )
         };
         let Some(mut frame) = frame else {
@@ -492,13 +508,29 @@ impl Widget for SceneWidget {
         }
         self.painted = revision;
         let mut scaled = Scene::new();
-        scaled.append_scene(
-            scene,
-            Affine::scale_non_uniform(
-                width as f64 / frame.size.width as f64,
-                height as f64 / frame.size.height as f64,
-            ),
-        );
+        let (width, height) = (f64::from(width), f64::from(height));
+        let (frame_width, frame_height) =
+            (f64::from(frame.size.width), f64::from(frame.size.height));
+        if let Some(zoom) = camera_zoom {
+            let fit = (width / frame_width).min(height / frame_height);
+            let zoom = fit * f64::from(zoom) / 100.;
+            let offset = (
+                (width - frame_width * zoom) / 2.,
+                (height - frame_height * zoom) / 2.,
+            );
+            scaled.push_clip_layer(
+                peniko::Fill::NonZero,
+                Affine::IDENTITY,
+                &peniko::kurbo::Rect::new(0., 0., width, height),
+            );
+            scaled.append_scene(scene, Affine::translate(offset) * Affine::scale(zoom));
+            scaled.pop_layer();
+        } else {
+            scaled.append_scene(
+                scene,
+                Affine::scale_non_uniform(width / frame_width, height / frame_height),
+            );
+        }
         scaled
     }
 }

@@ -1,5 +1,6 @@
 //! Exercise actual keyboard/pointer events, including dragging outside the rail.
 use crate::slider::Slider;
+use acheflow_media_api::audio::AudioMeter;
 use blitz_dom::{Document, DocumentConfig};
 use blitz_traits::{
     events::{
@@ -13,6 +14,7 @@ use std::{cell::Cell, rc::Rc};
 struct Harness {
     value: Cell<Option<Signal<i32>>>,
     balance: Cell<Option<Signal<i32>>>,
+    meter: Cell<Option<Signal<AudioMeter>>>,
 }
 fn app() -> Element {
     let state = consume_context::<Rc<Harness>>();
@@ -20,6 +22,8 @@ fn app() -> Element {
     state.value.set(Some(value));
     let balance = use_signal(|| 0);
     state.balance.set(Some(balance));
+    let meter = use_signal(AudioMeter::default);
+    state.meter.set(Some(meter));
     const CSS: &str = ".slider-control {position:relative;width:200px;height:28px}.slider-control.vertical {width:36px;height:120px}.slider-drag-shield {position:fixed;inset:0;z-index:10000}";
     const DASHBOARD: &str = include_str!("dashboard.css");
     rsx! {style {"{DASHBOARD}"}style {"{CSS}"}
@@ -28,7 +32,7 @@ fn app() -> Element {
         Slider {label:"Balance",value:balance(),min:-100,max:100,reset:Some(0),change:move |v|{let mut balance=balance;balance.set(v);}}
         div {class:"studio-mixer",div {class:"studio-mixer-channel",div {class:"studio-fader-bank",
             Slider {label:"Layout gain",value:100,min:0,max:200,vertical:true,change:move |_|{}}
-            crate::audio_mixer::Meters {vertical:true,meter:acheflow_media_api::audio::AudioMeter::default()}
+            crate::audio_mixer::Meters {vertical:true,meter:meter()}
         }}}
     }
 }
@@ -86,6 +90,7 @@ async fn sliders_support_keyboard_shared_values_and_bounded_vertical_drag() {
     let state = Rc::new(Harness {
         value: Cell::new(None),
         balance: Cell::new(None),
+        meter: Cell::new(None),
     });
     let mut doc = DioxusDocument::new(
         VirtualDom::new(app).with_root_context(state.clone()),
@@ -102,9 +107,14 @@ async fn sliders_support_keyboard_shared_values_and_bounded_vertical_drag() {
         ..Default::default()
     });
     settle(&mut doc);
-    {
+    let bank = doc
+        .inner
+        .borrow()
+        .query_selector(".studio-fader-bank")
+        .unwrap()
+        .unwrap();
+    let bank_height = {
         let inner = doc.inner.borrow();
-        let bank = inner.query_selector(".studio-fader-bank").unwrap().unwrap();
         let rows = inner
             .query_selector(".studio-fader-bank .audio-meters")
             .unwrap()
@@ -115,7 +125,7 @@ async fn sliders_support_keyboard_shared_values_and_bounded_vertical_drag() {
             .children
             .iter()
             .map(|&id| inner.get_node(id).unwrap())
-            .filter(|n| n.element_data().is_some())
+            .filter(|n| n.attr(blitz_dom::local_name!("class")) == Some("audio-meter-row"))
             .collect::<Vec<_>>();
         assert_eq!(rows.len(), 2);
         let left = rows[0].absolute_position(0., 0.);
@@ -124,9 +134,28 @@ async fn sliders_support_keyboard_shared_values_and_bounded_vertical_drag() {
             right.x > left.x && (right.y - left.y).abs() < 1.,
             "L/R must stay beside the fader instead of wrapping: {left:?}, {right:?}"
         );
-        assert!(
-            inner.get_node(bank).unwrap().final_layout().size.height < 180.,
-            "the level/fader bank must remain compact"
+        let height = inner.get_node(bank).unwrap().final_layout().size.height;
+        assert!(height < 180., "the level/fader bank must remain compact");
+        height
+    };
+    state.meter.get().unwrap().set(AudioMeter {
+        held_peak: [1.1, 0.],
+        recently_clipped: true,
+        ..Default::default()
+    });
+    settle(&mut doc);
+    {
+        let inner = doc.inner.borrow();
+        let marker = inner
+            .query_selector(".audio-meter-peak-hold")
+            .unwrap()
+            .unwrap();
+        assert!(inner.get_node(marker).unwrap().final_layout().size.height > 0.);
+        let clip = inner.query_selector(".audio-meter-clip").unwrap().unwrap();
+        assert_eq!(inner.get_node(clip).unwrap().text_content(), "Clipping");
+        assert_eq!(
+            inner.get_node(bank).unwrap().final_layout().size.height,
+            bank_height
         );
     }
     let first = doc

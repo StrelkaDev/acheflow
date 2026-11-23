@@ -1,5 +1,6 @@
 //! Independent, timestamped stereo PCM decoders for incoming audio tracks.
 use crate::{
+    audio_meter::PeakHold,
     audio_packet::split_audio,
     ingest::{Input, flv_tag},
 };
@@ -24,7 +25,23 @@ pub struct AudioFrame {
 struct Telemetry {
     received: Option<Instant>,
     meter: AudioMeter,
+    hold: PeakHold,
     error: Option<String>,
+}
+impl Telemetry {
+    fn meter_status(&self) -> (bool, AudioMeter) {
+        let now = Instant::now();
+        let active = self
+            .received
+            .is_some_and(|received| now.duration_since(received) < Duration::from_millis(500));
+        let mut meter = if active {
+            self.meter.clone()
+        } else {
+            AudioMeter::default()
+        };
+        self.hold.read(now, &mut meter);
+        (active, meter)
+    }
 }
 pub struct AudioTrack {
     pub id: u8,
@@ -44,10 +61,12 @@ impl AudioTrack {
     }
 
     pub(crate) fn publish(&self, input: &Input, pts: i64, samples: Arc<Vec<i16>>) {
-        let meter = pcm_meter(&samples);
+        let mut meter = pcm_meter(&samples);
         {
             let mut state = self.telemetry.lock().unwrap();
-            state.received = Some(Instant::now());
+            let now = Instant::now();
+            state.hold.record(now, &mut meter);
+            state.received = Some(now);
             state.meter = meter;
         }
         input
@@ -64,22 +83,20 @@ impl AudioTrack {
         self.telemetry.lock().unwrap().received
     }
 
+    pub fn meter(&self) -> AudioMeter {
+        self.telemetry.lock().unwrap().meter_status().1
+    }
+
     pub fn status(&self) -> AudioTrackStatus {
         let state = self.telemetry.lock().unwrap();
-        let active = state
-            .received
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(500));
+        let (active, meter) = state.meter_status();
         AudioTrackStatus {
             track_id: self.id,
             codec: self.codec.clone(),
             sample_rate: AUDIO_RATE,
             channels: 2,
             active,
-            meter: if active {
-                state.meter.clone()
-            } else {
-                AudioMeter::default()
-            },
+            meter,
             error: state.error.clone(),
         }
     }
@@ -305,7 +322,11 @@ pub fn pcm_meter(samples: &[i16]) -> AudioMeter {
     let mut power = [0f64; 2];
     for frame in samples.as_chunks::<2>().0.iter() {
         for channel in 0..2 {
-            let value = f32::from(frame[channel]) / 32768.;
+            let sample = frame[channel];
+            let value = f32::from(sample) / 32768.;
+            if matches!(sample, i16::MIN | i16::MAX) {
+                meter.clipped_samples += 1;
+            }
             meter.peak[channel] = meter.peak[channel].max(value.abs());
             power[channel] += f64::from(value).powi(2);
         }

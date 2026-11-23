@@ -16,7 +16,7 @@ supported features in user guides.
   native client/server link routing.
 - Token-authenticated native-resolution RTMP ingest, scene-scoped stereo mixing,
   GPU composition, 3D viewport editing and independent broadcast destinations.
-- Shared native/browser UI, local workspace catalogs, explicit server Apply and
+- Shared native/browser UI, local workspace catalogs, scoped Studio edits and
   conflict-aware public control settings.
 - Sandboxed Rust/WASM extensions, provider-owned local account setup, generic
   panels, typed event/instruction contracts and authenticated MCP libraries.
@@ -35,30 +35,31 @@ supported features in user guides.
 | Media qualification | Measure sustained A/V timing/drift, improve recovery and qualify encoder/device combinations under real workloads |
 | UI qualification | Broaden accessibility, IME, focus, clipboard, DPI and hardware performance coverage |
 
+### Priority: qualify platform text editing
+
+- Verify AppKit with real IMEs, phone soft-keyboard behavior, and focus and
+  clipboard behavior across browser engines and display scaling. Extend native
+  text controls to the other desktop targets.
+
 ### Studio editing and preview
 
-1. **Qualify encoded output preview.** Studio can compare framing and local
-   compression for each configured destination. Verify the supported codecs
-   and hardware encoders under load, and measure how concurrent previews affect
-   broadcast frame timing and reconnects.
+1. **Qualify codecs on more drivers and real destinations.** The
+   [local codec probe](development.md#encoded-preview-codec-coverage) checks
+   CBR and VBR. The [mixed-output probe](development.md#hevc-av1-and-vp9-while-broadcasting)
+   covers simultaneous broadcast and encoded preview with HEVC, AV1 and VP9
+   on Apple Silicon and FFmpeg loopback sinks. Repeat with other GPU drivers
+   and streaming services that accept those codecs during operator qualification.
 2. **Extend 30/60 FPS qualification to production scenes.** The
    [mixed RTMP/SRT probe](development.md#mixed-output-preview-load-at-30-and-60-fps)
    covers both orientations, raw and encoded previews, and an independent
    output restart at 720p. Extend to higher resolutions and scenes with
-   effects, and measure browser-visible freshness and sustained A/V timing.
-3. **Make Studio the editing workspace.** Keep the draft scene, on-air scene,
-   mixer and output state in view. Add per-source preview, independent audio
-   monitoring and a focused inspector. Verify keyboard and phone workflows.
-4. **Reduce monitoring overhead.** Preserve peak audio values between updates
-   and stream fresh meter and load samples separately from workspace state.
-   Verify clipping visibility and reconnection without duplicating graph points.
-5. **Profile layer and neural effects.** Measure GPU work by render pass and
-   time model inference and missed frames for effects that dispatch to a
-   neural accelerator.
-6. **Replace whole-workspace Apply in production controls.** Mixer edits,
-   scene content, program switches, source cards and saved output profiles use
-   scoped updates. Extend scoped saves to format settings and destination
-   additions, removals and enablement.
+   effects during operator qualification, and measure browser-visible freshness
+   and sustained A/V timing.
+3. **Qualify the Studio inspector.** Verify editing the draft beside the
+   program, output controls and mixer with keyboard and physical phone workflows.
+4. **Profile neural effects once a runtime exists.** Measure model inference
+   and missed frames for effects that dispatch to a neural accelerator.
+   Qualify the GPU pass timings already in Studio on additional adapters.
 
 ## Shared server workspace
 
@@ -639,8 +640,8 @@ These are development directions, not completed features or delivery commitments
 ## Current product limits
 
 The server persists its active workspace configuration; live session/chat history
-and execution receipts remain in memory. Audio output is one AAC stereo track per destination,
-with no local monitoring playback. Final composition copies frames to CPU before
+and execution receipts remain in memory. Audio output is one AAC stereo track per destination.
+The client can monitor one input track or bus at a time. Final composition copies frames to CPU before
 FFmpeg. HDR/color management, glTF/GLB import, PBR,
 lights and authored animation are not implemented as complete product workflows.
 

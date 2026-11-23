@@ -15,7 +15,7 @@ pub(crate) fn MicrophoneChoices(
     mut project: Signal<Workspace>,
     inventory: Inventory,
     mut refresh: Signal<u32>,
-    on_added: EventHandler<()>,
+    on_added: EventHandler<u32>,
 ) -> Element {
     let mut open = use_signal(|| false);
     let snapshot = inventory.read();
@@ -60,8 +60,8 @@ pub(crate) fn MicrophoneChoices(
                                         source.kind=SourceKind::Microphone{device_id:device.id.clone(),mode:None};
                                         source.key.clear();
                                         source.url.clear();
+                                        on_added.call(source.id);
                                     }
-                                    on_added.call(());
                                 },
                                 "{label}" if added {span {"Already added"}}
                             }}
@@ -80,6 +80,7 @@ pub(crate) fn MicrophoneSources(
     inventory: Inventory,
     mut refresh: Signal<u32>,
     status: Option<LiveStatus>,
+    mut expanded: Signal<std::collections::HashSet<u32>>,
     #[props(default = true)] visible: bool,
 ) -> Element {
     let workspace = project.read();
@@ -95,6 +96,7 @@ pub(crate) fn MicrophoneSources(
             if let SourceKind::Microphone{device_id,mode}=&source.kind {
                 {
                     let id=source.id;
+                    let open=expanded.read().contains(&id);
                     let active=devices.iter().position(|device| device.id==*device_id);
                     let selected=active.map(|index|device_name(devices,index)).unwrap_or_else(||"Saved microphone unavailable".into());
                     let options=devices.iter().enumerate()
@@ -104,7 +106,13 @@ pub(crate) fn MicrophoneSources(
                     let track=input.and_then(|input|input.audio_tracks.iter().find(|track|track.track_id==0));
                     rsx! {section {key:"microphone-{id}",class:"panel",
                         div {class:"panel-heading",
-                            h2 {"{source.name}"}
+                            crate::server_settings::ActionButton {class:"destination-toggle",expanded:open,onclick:move |_|{
+                                let mut expanded=expanded.write();
+                                if !expanded.remove(&id) {expanded.insert(id);}
+                            },
+                                span {if open {"▾"} else {"▸"}}
+                                h2 {"{source.name}"}
+                            }
                             span {class:"badge","Microphone"}
                             span {class:"badge",
                                 if track.is_some_and(|track|track.active) {"Receiving"}
@@ -112,8 +120,10 @@ pub(crate) fn MicrophoneSources(
                                 else if input.is_some() {"Waiting for input"}
                                 else {"Inactive"}
                             }
+                            crate::source_settings::OpenSourcePreview {source_id:id}
                             crate::source_settings::RemoveSource {project,source_id:id}
                         }
+                        div {hidden:!open,
                         div {class:"form-grid",
                             crate::source_settings::SourceName {project,source_id:id,value:source.name.clone()}
                             if pending {
@@ -143,10 +153,11 @@ pub(crate) fn MicrophoneSources(
                         }
                         crate::source_settings::SourceCaptureActions {source:source.clone()}
                         if let Some(error)=input.and_then(|input|input.error.as_ref()){p {class:"field-error padded","{error}"}}
-                        if visible {
+                        if visible && open {
                             crate::source_settings::SourcePreview {source_id:id,video:false,activated:status.as_ref().is_some_and(|status|status.activated),input:input.cloned()}
                         }
                         p {class:"panel-note","Choose a scene in Live / Mixer and set this microphone’s send to Program or another bus."}
+                        }
                     }}
                 }
             }

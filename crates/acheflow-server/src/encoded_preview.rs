@@ -314,6 +314,137 @@ mod tests {
     use super::*;
     use acheflow_media_api::workspace::{BitrateMode, Orientation};
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "runs local FFmpeg encode/decode for the installed codecs and devices"]
+    async fn encoded_preview_tracks_changes_across_output_profiles() {
+        use acheflow_media_api::workspace::OutputProtocol;
+
+        let capabilities = crate::ffmpeg::discover().await;
+        let spec = VideoSpec {
+            base: Resolution {
+                width: 640,
+                height: 360,
+            },
+            fps: 60,
+            orientation: Orientation::Horizontal,
+        };
+        let mut tested = 0;
+        for protocol in OutputProtocol::ALL {
+            for codec in capabilities.output_codecs(protocol) {
+                let encoders = [false, true]
+                    .into_iter()
+                    .filter_map(|hardware| capabilities.preferred_video_encoder(&codec, hardware))
+                    .collect::<Vec<_>>();
+                for mode in [BitrateMode::Vbr, BitrateMode::Cbr] {
+                    let image = |color| {
+                        Arc::new(RgbImage::from_pixel(
+                            spec.base.width,
+                            spec.base.height,
+                            image::Rgb(color),
+                        ))
+                    };
+                    let (source, frames) = watch::channel(image([200, 12, 12]));
+                    let cancel = CancellationToken::new();
+                    let _cancel_active_previews = cancel.clone().drop_guard();
+                    let mut previews = EncodedPreviews::default();
+                    let started = Instant::now();
+                    let mut jobs = Vec::new();
+                    for (index, encoder) in encoders.iter().enumerate() {
+                        let output = Output {
+                            protocol,
+                            name: "Preview fixture".into(),
+                            url: String::new(),
+                            key: String::new(),
+                            resolution: spec.base.clone(),
+                            quality: "Custom".into(),
+                            codec: codec.clone(),
+                            encoder: Some(encoder.name.clone()),
+                            bitrate_kbps: 1500,
+                            bitrate_mode: mode,
+                            keyframe_interval_secs: 1,
+                            enabled: false,
+                            audio: Default::default(),
+                        };
+                        let view = previews
+                            .view(
+                                index,
+                                output,
+                                PreviewSource {
+                                    spec: spec.clone(),
+                                    frames: frames.clone(),
+                                    cancel: cancel.clone(),
+                                },
+                                &capabilities,
+                            )
+                            .unwrap_or_else(|error| {
+                                panic!("{} {} / {}: {error}", protocol.label(), codec, encoder.name)
+                            });
+                        jobs.push((view, encoder.name.as_str()));
+                        tested += 1;
+                    }
+                    let warmup =
+                        futures_util::future::join_all(jobs.iter().map(|(view, encoder)| async {
+                            wait_for_preview_color(view, &spec.base, 0, encoder).await;
+                            started.elapsed()
+                        }))
+                        .await;
+                    let switched = Instant::now();
+                    source.send_replace(image([12, 12, 200]));
+                    let updated =
+                        futures_util::future::join_all(jobs.iter().map(|(view, encoder)| async {
+                            wait_for_preview_color(view, &spec.base, 2, encoder).await;
+                            switched.elapsed()
+                        }))
+                        .await;
+                    for ((_, encoder), (warmup, update)) in
+                        jobs.iter().zip(warmup.into_iter().zip(updated))
+                    {
+                        eprintln!(
+                            "{} {codec} {encoder} {}: first snapshot {:.0} ms, color change {:.0} ms",
+                            protocol.label(),
+                            mode.label(),
+                            warmup.as_secs_f64() * 1000.,
+                            update.as_secs_f64() * 1000.
+                        );
+                    }
+                }
+            }
+        }
+        assert!(tested > 0, "FFmpeg provides no supported output encoder");
+    }
+
+    async fn wait_for_preview_color(
+        view: &EncodedView,
+        size: &Resolution,
+        channel: usize,
+        encoder: &str,
+    ) {
+        tokio::time::timeout(Duration::from_secs(14), async {
+            loop {
+                view.last_request.send_replace(Instant::now());
+                let response = view.response().await;
+                match response.status() {
+                    StatusCode::OK => {
+                        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+                        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                            .await
+                            .unwrap();
+                        let image = image::load_from_memory(&body).unwrap().to_rgb8();
+                        assert_eq!(image.dimensions(), (size.width, size.height));
+                        if image.get_pixel(size.width / 2, size.height / 2)[channel] > 150 {
+                            return;
+                        }
+                    }
+                    StatusCode::ACCEPTED => {}
+                    status => panic!("{encoder} returned {status}"),
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{encoder} returned no matching color on channel {channel}"));
+    }
+
     #[tokio::test]
     #[ignore = "requires FFmpeg with libx264"]
     async fn local_profile_preview_uses_the_configured_bitrate_and_expires_when_idle() {

@@ -18,6 +18,7 @@ WASM/WebGPU canvas. It is not a second dashboard or a WebView.
 | Generic extension panels and local auth | `extension_panel.rs`, `client_authorization.rs` |
 | Reusable snapshot textures | `video_preview.rs` |
 | Optional background widget | `sparks.rs`, `sparks.wgsl` |
+| Text input geometry and events | `text_input.rs`, `native_text_input.rs`, `mobile_input.rs`, `mobile_input.js` |
 | Shared layout/theme | `dashboard.css` |
 
 The shared model is in `acheflow-media-api`; `project.rs` re-exports it. Native
@@ -52,8 +53,19 @@ selection/reorder. The scene editor camera and guides never enter broadcast outp
 
 Finite choices use shared button groups where native HTML select behavior is
 insufficient. Buttons, disclosures, sliders and local account requirements have
-explicit keyboard handling alongside pointer handling. Credential inputs are
-masked on both targets, including the native text-rendering path.
+explicit keyboard handling alongside pointer handling.
+
+When a text field is active, macOS places an AppKit text control over its
+canvas rectangle. The browser uses a real HTML input or textarea at the same
+position, including for desktop pointers. Open the platform context menu in
+the active editor to cut, copy or paste. Password fields use platform masking.
+Tab and Shift+Tab transfer focus within the workspace and reveal the next
+control in its scroll pane. Enter finishes a single-line field after IME
+composition, and Escape restores the value present when editing began.
+Code fields use a plain monospace editor while active and keep their
+syntax-highlighted preview when inactive. The browser keeps the editor within
+the visible area during zoom or when the on-screen keyboard covers the field.
+Other desktop targets use Blitz text input.
 
 The actual dependency revisions are pinned in Cargo manifests/lockfiles. The stack
 contains prerelease APIs; broader accessibility, IME, paste/focus, DPI and hardware

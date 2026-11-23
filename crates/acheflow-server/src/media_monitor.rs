@@ -1,4 +1,4 @@
-use acheflow_media_api::live::{RenderLoad, ServerLoadSample};
+use acheflow_media_api::live::{RenderLoad, SERVER_LOAD_HISTORY, ServerLoadSample};
 
 #[path = "gpu_monitor.rs"]
 mod gpu_monitor;
@@ -9,7 +9,6 @@ use std::{
 };
 
 const LOAD_INTERVAL: Duration = Duration::from_millis(250);
-const MAX_LOAD_SAMPLES: usize = 240;
 
 #[derive(Default)]
 pub struct ServerMonitor {
@@ -18,7 +17,7 @@ pub struct ServerMonitor {
 }
 
 impl ServerMonitor {
-    pub fn samples(&self) -> Vec<ServerLoadSample> {
+    pub fn samples_since(&self, after: Option<u64>) -> Vec<ServerLoadSample> {
         self.started.get_or_init(|| {
             let history = Arc::downgrade(&self.history);
             let gpu = gpu_monitor::start(history.clone());
@@ -69,8 +68,14 @@ impl ServerMonitor {
                             .filter(|(at, _)| sample.time_ms.saturating_sub(*at) <= 2200)
                             .map(|(_, percent)| percent);
                         let mut history = history.lock().unwrap();
+                        if history
+                            .back()
+                            .is_some_and(|last| last.time_ms >= sample.time_ms)
+                        {
+                            history.clear();
+                        }
                         history.push_back(sample);
-                        if history.len() > MAX_LOAD_SAMPLES {
+                        if history.len() > SERVER_LOAD_HISTORY {
                             history.pop_front();
                         }
                     }
@@ -79,20 +84,51 @@ impl ServerMonitor {
                 }
             });
         });
-        self.history.lock().unwrap().iter().cloned().collect()
+        let history = self.history.lock().unwrap();
+        let after = after.filter(|&cursor| {
+            history
+                .back()
+                .is_some_and(|sample| sample.time_ms >= cursor)
+        });
+        history
+            .iter()
+            .filter(|sample| after.is_none_or(|cursor| sample.time_ms > cursor))
+            .cloned()
+            .collect()
     }
 }
 
 #[derive(Default)]
 pub struct RenderMonitor {
     frames: VecDeque<(Instant, Duration, bool)>,
+    cached: Option<(Instant, RenderLoad)>,
+    gpu_profile: Option<acheflow_media_api::live::GpuFrameProfile>,
 }
 
 impl RenderMonitor {
+    pub fn record_gpu_profile(
+        &mut self,
+        profile: Option<acheflow_media_api::live::GpuFrameProfile>,
+    ) {
+        self.gpu_profile = profile;
+        self.cached = None;
+    }
+
     pub fn record(&mut self, now: Instant, elapsed: Duration, presented: bool) {
         self.frames.push_back((now, elapsed, presented));
         self.frames
             .retain(|(at, _, _)| now.duration_since(*at) <= Duration::from_secs(2));
+    }
+
+    pub fn snapshot(&mut self, now: Instant, fps: u32) -> (Instant, RenderLoad) {
+        if let Some((at, load)) = self.cached.as_ref()
+            && now.duration_since(*at) < LOAD_INTERVAL
+        {
+            return (*at, load.clone());
+        }
+        let load = self.status(now, fps);
+        self.cached = Some((now, load.clone()));
+        (now, load)
     }
 
     pub fn status(&self, now: Instant, fps: u32) -> RenderLoad {
@@ -123,6 +159,7 @@ impl RenderMonitor {
             observed_fps: completed as f64 / now.duration_since(oldest).max(period).as_secs_f64(),
             p95_ms: p95.as_secs_f64() * 1000.,
             deadline_miss_percent: 100. * missed as f64 / durations.len() as f64,
+            gpu_profile: self.gpu_profile.clone(),
         }
     }
 }

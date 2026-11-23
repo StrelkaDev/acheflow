@@ -91,7 +91,7 @@ pub fn FfmpegStatus(capabilities: Capabilities, mut refresh: Signal<u32>) -> Ele
                     p {class:"form-help","Software / Hardware types are reported by FFmpeg. Hardware availability is checked when encoding starts."}
                     if inventory() {div {class:"encoder-inventory",role:"table","aria-label":"FFmpeg encoders",
                         for encoder in caps.encoders.iter() {div {class:"encoder-inventory-row",role:"row",
-                            span {role:"cell","{encoder.name}"}span {role:"cell","{encoder.codec}"}span {role:"cell",if encoder.media_type!=MediaType::Video {"—"}else if encoder.hardware {"Hardware"}else{"Software"}}span {role:"cell","{encoder.description}"}
+                            span {role:"cell","{encoder.name}"}span {role:"cell","{encoder.codec}"}span {role:"cell",if encoder.media_type!=MediaType::Video {"—"}else if encoder.hardware {"Hardware"}else{"Software"}}span {role:"cell","{encoder.description}" if encoder.accepts_yuv420p==Some(false) {" · unavailable for Studio output"}}
                         }}
                     }}
                 }else {p {role:"alert",class:"field-error",{{caps.error.as_deref().unwrap_or("FFmpeg is unavailable on the server")}}}}

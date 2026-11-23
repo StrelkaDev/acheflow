@@ -30,6 +30,10 @@ available. Installations use the unified `acheflow` binary. For macOS camera
 and microphone verification, [build and launch the app bundle](desktop-installation.md#build-a-distribution-maintainers)
 so macOS can prompt for device permissions.
 
+The standalone desktop client uses Rodio/CPAL for local audio monitoring.
+On Debian-based Linux build hosts, install the ALSA development package
+(`libasound2-dev`) and `pkg-config` before building the desktop client.
+
 ## Standard checks
 
 On a fresh checkout and after guest/SDK changes, build guests before host builds
@@ -172,6 +176,61 @@ delivered 8.1–9.6 images/s including encoder warm-up. The RTMP restart took
 0.71–0.72 s while the SRT output continued. Across the original RTMP and
 continuous SRT captures, p95 absolute A/V offset ranged from 12.5 to 80 ms.
 These short measurements use a simple synthetic scene and loopback transport.
+
+### HEVC, AV1 and VP9 while broadcasting
+
+The advanced mixed-output probe uses the same synthetic A/V input and two
+720p renderers at 60 FPS with VBR. It pairs horizontal HEVC, AV1 and VP9
+over Enhanced RTMP in turn with vertical HEVC over SRT. For each pair it
+measures both streams alone and with two encoded-preview viewers per format.
+It also reconnects the source and restarts the RTMP output while checking
+that SRT continues and encoded preview requests on both formats still
+succeed. HEVC uses `libx265` by default. Set
+`ACHEFLOW_PREVIEW_PROBE_HEVC_ENCODER` to `hevc_videotoolbox` on a compatible Mac
+to exercise hardware encoding.
+
+```sh
+cargo test -p acheflow-server --release --lib --locked mixed_advanced_codecs_with_encoded_previews -- --ignored --nocapture
+python3 crates/acheflow-server/tests/measure_av_timing.py --preview-load "<capture-directory>" \
+  > "<capture-directory>/report.json"
+```
+
+The analyzer verifies the expected video codec and AAC in each receiver
+capture, including the restarted RTMP output. It also decodes the captures
+and checks for matching flash and tone markers. These are FFmpeg loopback
+receivers. Streaming service compatibility depends on the receiving service
+and its supported profiles.
+
+On Apple M5 Max with FFmpeg 9.0.2 and VideoToolbox HEVC, all three pairs
+held 60 render FPS with zero reported output frame repeats in the sampled
+windows. Render p95 was 1.38–2.11 ms and encoded preview yielded 8.75–9.50
+snapshots/s per viewer during warm-up and playback. RTMP restarted in
+0.61–0.72 s. During each restart the SRT encoder reported 30–31 additional
+frames, and each preview viewer received 79–80 snapshots over its
+eight-second window with no errors. The decoded captures had an absolute
+A/V offset p95 of 5.69–53.33 ms across the RTMP/SRT outputs. These are short
+synthetic observations on a single host.
+
+### Encoded preview codec coverage
+
+Run the loopback-free FFmpeg probe to check the preferred installed software
+and hardware encoders for each eligible RTMP/FLV and SRT/MPEG-TS profile.
+
+```sh
+cargo test -p acheflow-server --lib --locked encoded_preview_tracks_changes_across_output_profiles -- --ignored --nocapture
+```
+
+The probe uses 640×360 at 60 FPS and runs both CBR and VBR. It checks that
+each profile produces the expected PNG size and follows a source color change.
+It reports first-snapshot and color-change times. The test covers the local
+encode/decode path before network transmission.
+
+On Apple Silicon with FFmpeg 9.0.2, all 20 tested combinations produced
+snapshots and picked up the color change. RTMP/FLV covered H.264, HEVC, AV1
+and VP9. SRT/MPEG-TS covered H.264 and HEVC. H.264 and HEVC each ran with
+software and VideoToolbox encoders. Color changes appeared after 79–512 ms
+in this setup. Browser delivery and external receiver compatibility are
+outside the probe.
 
 ### Output-track profiling
 

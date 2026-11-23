@@ -67,11 +67,15 @@ pub fn destination_pcm(bus: &MixedBus, route: &OutputAudio) -> (Vec<u8>, AudioMe
     let meter = float_meter(&samples);
     let bytes = samples
         .into_iter()
-        .flat_map(|s| {
-            ((s * 32768.).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16).to_le_bytes()
-        })
+        .flat_map(|s| pcm_sample(s).to_le_bytes())
         .collect();
     (bytes, meter)
+}
+
+pub(crate) fn pcm_sample(sample: f32) -> i16 {
+    (sample * 32768.)
+        .round()
+        .clamp(i16::MIN as f32, i16::MAX as f32) as i16
 }
 
 fn float_meter(samples: &[f32]) -> AudioMeter {
@@ -316,11 +320,13 @@ pub async fn run(
     orientation: Orientation,
     destinations: Vec<Destination>,
     status: Arc<Mutex<Vec<AudioBusStatus>>>,
+    monitors: Arc<crate::audio_monitor::BusMonitors>,
     sync: Arc<FormatSync>,
     cancel: tokio_util::sync::CancellationToken,
 ) {
+    use crate::audio_meter::PeakHold;
     use acheflow_media_api::audio::{AUDIO_RATE, TrackSyncStatus};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     let started = tokio::time::Instant::now();
     let mut ticker = tokio::time::interval_at(started, Duration::from_millis(20));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -330,6 +336,8 @@ pub async fn run(
     let mut generations = BTreeMap::new();
     let mut subscriptions = BTreeMap::<TrackKey, Subscription>::new();
     let mut next_sequence = 0;
+    let mut bus_peaks = BTreeMap::<(u32, u32), PeakHold>::new();
+    let mut destination_peaks = BTreeMap::<usize, ((Option<u32>, Option<u32>), PeakHold)>::new();
     loop {
         tokio::select! {_=cancel.cancelled()=>break,_=ticker.tick()=>{}}
         let sequence = (started.elapsed().as_millis() / 20) as u64;
@@ -473,22 +481,40 @@ pub async fn run(
         let buses = scene
             .map(|s| render_buses(&s.audio, s.layers.iter().map(|l| l.source_id), &pcm))
             .unwrap_or_default();
+        monitors.publish(scene.map(|scene| scene.id), &buses);
+        let meter_time = Instant::now();
+        bus_peaks.retain(|&(scene_id, bus_id), _| {
+            scene.is_some_and(|s| s.id == scene_id && buses.contains_key(&bus_id))
+        });
         *status.lock().unwrap() = scene
             .map(|s| {
                 s.audio
                     .buses
                     .iter()
-                    .map(|b| AudioBusStatus {
-                        scene_id: s.id,
-                        bus_id: b.id,
-                        name: b.name.clone(),
-                        meter: buses[&b.id].meter.clone(),
+                    .map(|b| {
+                        let mut meter = buses[&b.id].meter.clone();
+                        bus_peaks
+                            .entry((s.id, b.id))
+                            .or_default()
+                            .record(meter_time, &mut meter);
+                        AudioBusStatus {
+                            scene_id: s.id,
+                            bus_id: b.id,
+                            name: b.name.clone(),
+                            meter,
+                        }
                     })
                     .collect()
             })
             .unwrap_or_default();
         for dest in &destinations {
             if dest.sender.receiver_count() == 0 {
+                if destination_peaks.remove(&dest.index).is_some() {
+                    let mut out = dest.status.lock().unwrap();
+                    out.audio_scene = None;
+                    out.audio_bus = None;
+                    out.audio_meter = AudioMeter::default();
+                }
                 continue;
             }
             let route = workspace
@@ -496,14 +522,20 @@ pub async fn run(
                 .and_then(|w| w.stream(orientation).outputs.get(dest.index))
                 .map(|o| &o.audio);
             let bus_id = scene.zip(route).map(|(s, r)| r.bus(s.id));
-            let (bytes, meter) = bus_id
+            let (bytes, mut meter) = bus_id
                 .and_then(|id| buses.get(&id))
                 .zip(route)
                 .map(|(bus, r)| destination_pcm(bus, r))
                 .unwrap_or_else(|| (vec![0; AUDIO_SAMPLES * 2], AudioMeter::default()));
             {
+                let route_key = (scene.map(|s| s.id), bus_id);
+                let entry = destination_peaks.entry(dest.index).or_default();
+                if entry.0 != route_key {
+                    *entry = (route_key, PeakHold::default());
+                }
+                entry.1.record(meter_time, &mut meter);
                 let mut out = dest.status.lock().unwrap();
-                out.audio_scene = scene.map(|s| s.id);
+                out.audio_scene = route_key.0;
                 out.audio_bus = bus_id;
                 out.audio_meter = meter;
             }

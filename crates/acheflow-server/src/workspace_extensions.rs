@@ -1,7 +1,7 @@
 //! Apply workspace preferences to the extension lifecycle at the live API boundary.
 use crate::{control::ControlHost, extension_host, live};
 use acheflow_media_api::{
-    live::{ControlRequest, StartRequest},
+    live::{ControlRequest, StartRequest, StartSavedRequest},
     workspace::Workspace,
 };
 use axum::{
@@ -15,6 +15,7 @@ pub fn routes(host: Arc<ControlHost>) -> Router {
     Router::new()
         .route("/api/live/config", put(configure).delete(deactivate))
         .route("/api/live/start", post(start))
+        .route("/api/live/format/start", post(start_saved))
         .with_state(host)
 }
 
@@ -176,6 +177,27 @@ pub async fn start(
     reconcile(&host).await;
     result
 }
+async fn start_saved(
+    State(host): State<Arc<ControlHost>>,
+    request: Json<StartSavedRequest>,
+) -> live::ApiResult {
+    let _command = host.command_lock.lock().await;
+    let was_active = host
+        .runtime
+        .activated
+        .load(std::sync::atomic::Ordering::Acquire);
+    let result = live::start_saved(State(host.runtime.clone()), request).await;
+    if !was_active
+        && host
+            .runtime
+            .activated
+            .load(std::sync::atomic::Ordering::Acquire)
+    {
+        reconcile(&host).await;
+    }
+    result
+}
+
 pub async fn deactivate(
     State(host): State<Arc<ControlHost>>,
     request: Json<ControlRequest>,

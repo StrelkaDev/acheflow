@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "acheflow"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acheflow-client",
  "acheflow-extension-api",
@@ -47,11 +47,11 @@ dependencies = [
 
 [[package]]
 name = "acheflow-camera"
-version = "0.1.3"
+version = "0.1.4"
 
 [[package]]
 name = "acheflow-client"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acheflow-control",
  "acheflow-extension-api",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "acheflow-composition"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acheflow-media-api",
  "anyrender",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "acheflow-control"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acheflow-extension-api",
  "base64 0.22.1",
@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "acheflow-extension-api"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "schemars",
  "serde",
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "acheflow-launcher"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acheflow-extension-api",
  "rustix",
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "acheflow-media-api"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acheflow-extension-api",
  "cssparser",
@@ -153,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "acheflow-server"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acheflow-camera",
  "acheflow-client",
@@ -186,7 +186,7 @@ dependencies = [
 
 [[package]]
 name = "acheflow-ui"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acheflow-client",
  "acheflow-composition",
@@ -210,9 +210,13 @@ dependencies = [
  "image",
  "js-sys",
  "naga 30.0.1",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "peniko",
  "reqwest",
  "rfd",
+ "rodio",
  "serde",
  "serde_json",
  "tokio",
@@ -255,6 +259,28 @@ name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+
+[[package]]
+name = "alsa"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "812947049edcd670a82cd5c73c3661d2e58468577ba8489de58e1a73c04cbd5d"
+dependencies = [
+ "alsa-sys",
+ "bitflags",
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
+name = "alsa-sys"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad7569085a265dd3f607ebecce7458eaab2132a84393534c95b18dcbc3f31e04"
+dependencies = [
+ "libc",
+ "pkg-config",
+]
 
 [[package]]
 name = "android-activity"
@@ -1151,6 +1177,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "coreaudio-rs"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d5d7dca3ebcf65a035582c9ad4385371a9d9ee6537474d2a278f4e1e475bb58"
+dependencies = [
+ "bitflags",
+ "libc",
+ "objc2-audio-toolbox",
+ "objc2-core-audio",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
+]
+
+[[package]]
+name = "cpal"
+version = "0.17.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8942da362c0f0d895d7cac616263f2f9424edc5687364dfd1d25ef7eba506d7"
+dependencies = [
+ "alsa",
+ "coreaudio-rs",
+ "dasp_sample",
+ "jni 0.21.1",
+ "js-sys",
+ "libc",
+ "mach2",
+ "ndk",
+ "ndk-context",
+ "num-derive",
+ "num-traits",
+ "objc2",
+ "objc2-audio-toolbox",
+ "objc2-avf-audio",
+ "objc2-core-audio",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
+ "objc2-foundation",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "windows",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1359,6 +1429,12 @@ dependencies = [
  "quote",
  "syn 3.0.9",
 ]
+
+[[package]]
+name = "dasp_sample"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 
 [[package]]
 name = "data-encoding"
@@ -3169,6 +3245,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b3bd0dd2cd90571056fdb71f6275fada10131182f84899f4b2a916e565d81d86"
 
 [[package]]
+name = "mach2"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a1b95cd5421ec55b445b5ae102f5ea0e768de1f82bd3001e11f426c269c3aea"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "macro-string"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3475,6 +3560,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "num-bigint"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
+dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
 name = "num-derive"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3491,6 +3586,17 @@ version = "0.1.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b"
 dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "num-rational"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
+dependencies = [
+ "num-bigint",
+ "num-integer",
  "num-traits",
 ]
 
@@ -3560,6 +3666,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-audio-toolbox"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6948501a91121d6399b79abaa33a8aa4ea7857fe019f341b8c23ad6e81b79b08"
+dependencies = [
+ "bitflags",
+ "libc",
+ "objc2",
+ "objc2-core-audio",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
+ "objc2-foundation",
+]
+
+[[package]]
+name = "objc2-avf-audio"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13a380031deed8e99db00065c45937da434ca987c034e13b87e4441f9e4090be"
+dependencies = [
+ "objc2",
+ "objc2-foundation",
+]
+
+[[package]]
+name = "objc2-core-audio"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1eebcea8b0dbff5f7c8504f3107c68fc061a3eb44932051c8cf8a68d969c3b2"
+dependencies = [
+ "dispatch2",
+ "objc2",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
+ "objc2-foundation",
+]
+
+[[package]]
+name = "objc2-core-audio-types"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a89f2ec274a0cf4a32642b2991e8b351a404d290da87bb6a9a9d8632490bd1c"
+dependencies = [
+ "bitflags",
+ "objc2",
+]
+
+[[package]]
 name = "objc2-core-foundation"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3568,6 +3722,7 @@ dependencies = [
  "bitflags",
  "block2",
  "dispatch2",
+ "libc",
  "objc2",
 ]
 
@@ -3619,6 +3774,7 @@ checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
  "bitflags",
  "block2",
+ "libc",
  "objc2",
  "objc2-core-foundation",
 ]
@@ -4544,6 +4700,18 @@ dependencies = [
  "rml_amf0",
  "sha2",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "rodio"
+version = "0.22.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0a536bb79db59098ef71a4dd4246c02eb87b316deceb1b68e0cde7167ec01eb"
+dependencies = [
+ "cpal",
+ "dasp_sample",
+ "num-rational",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

@@ -54,6 +54,9 @@ pub struct Encoder {
     /// Hardware-backed video encoder (including hybrid), as reported by FFmpeg help.
     #[serde(default)]
     pub hardware: bool,
+    /// Whether FFmpeg lists the software-frame format used by Studio outputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepts_yuv420p: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -113,7 +116,10 @@ impl MediaCapabilities {
 
     pub fn video_encoders<'a>(&'a self, codec: &'a str) -> impl Iterator<Item = &'a Encoder> {
         self.encoders.iter().filter(move |e| {
-            e.media_type == MediaType::Video && e.codec == codec && !e.experimental
+            e.media_type == MediaType::Video
+                && e.codec == codec
+                && !e.experimental
+                && e.accepts_yuv420p != Some(false)
         })
     }
 
@@ -147,6 +153,33 @@ impl MediaCapabilities {
 mod tests {
     use super::*;
     #[test]
+    fn hardware_frames_only_encoder_is_listed_in_inventory_but_not_selectable() {
+        let mut caps = MediaCapabilities {
+            available: true,
+            rtmp_output: true,
+            flv_muxer: true,
+            enhanced_rtmp: true,
+            ..Default::default()
+        };
+        caps.encoders.push(Encoder {
+            name: "av1_vulkan".into(),
+            codec: "av1".into(),
+            media_type: MediaType::Video,
+            description: String::new(),
+            experimental: false,
+            hardware: true,
+            accepts_yuv420p: Some(false),
+        });
+        assert!(caps.rtmp_codecs().is_empty());
+        assert!(
+            caps.resolve_video_encoder("av1", Some("av1_vulkan"))
+                .is_err()
+        );
+        assert!(caps.preferred_video_encoder("av1", true).is_none());
+        assert_eq!(caps.encoders.len(), 1);
+    }
+
+    #[test]
     fn only_detected_video_encoders_and_transport_compatible_codecs_are_offered() {
         let mut caps = MediaCapabilities {
             available: true,
@@ -168,6 +201,7 @@ mod tests {
                 description: String::new(),
                 experimental: false,
                 hardware: false,
+                accepts_yuv420p: None,
             });
         }
         assert_eq!(caps.rtmp_codecs(), ["h264", "av1"]);
@@ -188,6 +222,7 @@ mod tests {
                 description: String::new(),
                 experimental: false,
                 hardware,
+                accepts_yuv420p: None,
             });
         }
         assert_eq!(

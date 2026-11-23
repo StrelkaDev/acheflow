@@ -1,5 +1,7 @@
 //! Windowless native GPU rendering and bounded readback for FFmpeg's RGB pipe.
 use crate::gpu::{GpuScene, SceneFrame};
+use crate::gpu_profile::GpuProfile;
+use acheflow_media_api::live::GpuFrameProfile;
 use acheflow_media_api::workspace::Resolution;
 use anyrender::ResourceId;
 use anyrender_vello_hybrid::{ImageManager, VelloHybridScenePainter};
@@ -22,13 +24,14 @@ pub struct Headless {
     bindings: FxHashMap<ResourceId, wgpu::TextureView>,
     images: FxHashMap<u64, vello_common::paint::ImageId>,
     spatial: Option<crate::spatial::SpatialRenderer>,
+    profile: Option<GpuProfile>,
 }
 impl Headless {
     pub fn new(size: Resolution) -> Result<Self, String> {
         let handle = pollster::block_on(DeviceHandle::new_from_compatible_surface(
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle()),
             None,
-            None,
+            Some(GpuProfile::FEATURES),
             None,
         ))
         .map_err(|e| format!("GPU compositor initialization: {e}"))?;
@@ -61,6 +64,7 @@ impl Headless {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
+        let profile = GpuProfile::new(&handle.device);
         Ok(Self {
             core: GpuScene::new(handle.device.clone(), handle.queue.clone()),
             handle,
@@ -73,14 +77,27 @@ impl Headless {
             bindings: FxHashMap::default(),
             images: FxHashMap::default(),
             spatial: None,
+            profile,
         })
     }
     pub fn backend(&self) -> String {
         format!("wgpu · {}", self.handle.adapter.get_info().name)
     }
     pub fn render(&mut self, frame: &SceneFrame) -> Result<RgbImage, String> {
+        self.render_profiled(frame, false).map(|(image, _)| image)
+    }
+
+    pub fn render_profiled(
+        &mut self,
+        frame: &SceneFrame,
+        sample_gpu: bool,
+    ) -> Result<(RgbImage, Option<GpuFrameProfile>), String> {
         if frame.size != self.size {
             return Err("GPU canvas size changed; restart the format".into());
+        }
+        let mut profile = self.profile.as_mut().filter(|_| sample_gpu);
+        if let Some(profile) = &mut profile {
+            profile.reset();
         }
         let composed = if frame.scene.spatial.is_some() {
             if self.spatial.is_none() {
@@ -89,7 +106,10 @@ impl Headless {
                     self.size.clone(),
                 ));
             }
-            self.spatial.as_mut().unwrap().render(frame)?
+            self.spatial
+                .as_mut()
+                .unwrap()
+                .render_profiled(frame, profile.as_deref_mut())?
         } else {
             self.scene.reset();
             let mut encoder =
@@ -113,13 +133,17 @@ impl Headless {
                     &mut self.bindings,
                     &self.handle,
                 );
-                self.core.prepare(&mut painter, frame)?;
+                self.core
+                    .prepare_profiled(&mut painter, frame, profile.as_deref_mut(), None)?;
                 self.core.draw(&mut painter, &self.size);
             }
             let mut bindings = TextureBindings::new();
             for (id, view) in &self.bindings {
                 bindings.insert(vello_common::TextureId(id.into_ffi()), view.clone());
             }
+            let end = profile
+                .as_mut()
+                .and_then(|profile| profile.begin(&mut encoder, "Scene composition", None, None));
             self.renderer
                 .render(
                     &self.scene,
@@ -137,6 +161,9 @@ impl Headless {
                     TargetInit::Clear(ClearSettings::default()),
                 )
                 .map_err(|e| format!("GPU composition: {e}"))?;
+            if let Some(profile) = &profile {
+                profile.end(&mut encoder, end);
+            }
             self.handle.queue.submit([encoder.finish()]);
             self.texture.clone()
         };
@@ -147,6 +174,9 @@ impl Headless {
                     label: Some("Final frame readback"),
                 });
         let stride = (self.size.width * 4).next_multiple_of(256);
+        let end = profile
+            .as_mut()
+            .and_then(|profile| profile.begin(&mut encoder, "Frame readback copy", None, None));
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &composed,
@@ -168,7 +198,12 @@ impl Headless {
                 depth_or_array_layers: 1,
             },
         );
+        if let Some(profile) = &profile {
+            profile.end(&mut encoder, end);
+            profile.resolve(&mut encoder);
+        }
         self.handle.queue.submit([encoder.finish()]);
+        let timing_map = profile.as_ref().map(|profile| profile.map());
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         self.buffer
             .slice(..)
@@ -179,6 +214,13 @@ impl Headless {
             .device
             .poll(wgpu::PollType::wait_indefinitely())
             .map_err(|e| format!("GPU readback: {e}"))?;
+        let timings = profile.zip(timing_map).and_then(|(profile, map)| {
+            profile.finish(
+                frame.scene.id,
+                self.handle.queue.get_timestamp_period(),
+                matches!(map.recv(), Ok(Ok(()))),
+            )
+        });
         rx.recv()
             .map_err(|e| e.to_string())?
             .map_err(|e| format!("GPU frame map: {e}"))?;
@@ -190,7 +232,7 @@ impl Headless {
         let image = rgb_from_readback(&data, self.size.width, self.size.height, stride as usize);
         drop(data);
         self.buffer.unmap();
-        Ok(image)
+        Ok((image, timings))
     }
 }
 
@@ -268,7 +310,45 @@ mod tests {
             time: 0.,
         };
         let mut gpu = Headless::new(size).unwrap();
-        let pixels = gpu.render(&frame).unwrap();
+        let (pixels, profiling) = gpu.render_profiled(&frame, true).unwrap();
+        if gpu.profile.is_some() {
+            let profiling = profiling.expect("read GPU timestamps on a supported adapter");
+            assert_eq!(profiling.scene_id, scene);
+            assert!(!profiling.truncated);
+            for stage in ["Crop", "Chroma key", "Premultiply alpha"] {
+                let timing = profiling
+                    .passes
+                    .iter()
+                    .find(|pass| {
+                        pass.stage.eq_ignore_ascii_case(stage)
+                            && pass.layer_id == Some(frame.scene.layers[0].id)
+                    })
+                    .expect("the layer ran the expected GPU pass");
+                assert_eq!(timing.source_id, Some(1));
+                assert!(timing.elapsed_ms.is_finite() && timing.elapsed_ms >= 0.);
+            }
+            assert!(
+                profiling
+                    .passes
+                    .iter()
+                    .any(|pass| pass.stage == "Scene composition")
+            );
+            assert!(
+                profiling
+                    .passes
+                    .iter()
+                    .any(|pass| pass.stage == "Frame readback copy")
+            );
+            assert!(profiling.passes.iter().any(|pass| pass.elapsed_ms > 0.));
+            eprintln!(
+                "Timed {} GPU passes on {}",
+                profiling.passes.len(),
+                gpu.backend()
+            );
+        } else {
+            eprintln!("GPU timestamps unavailable on {}", gpu.backend());
+            assert!(profiling.is_none());
+        }
         assert_eq!(pixels.get_pixel(12, 16).0, [0, 0, 0]);
         assert_eq!(pixels.get_pixel(48, 16).0, [255, 0, 0]);
         frame.scene.layers[0].effects[0]
@@ -320,7 +400,24 @@ mod tests {
         let mut renderer = super::Headless::new(size.clone()).unwrap();
         let flat = renderer.render(&frame).unwrap();
         frame.scene.spatial = Some(SpatialScene::from_canvas(&size));
-        let spatial = renderer.render(&frame).unwrap();
+        let (spatial, timings) = renderer.render_profiled(&frame, true).unwrap();
+        if renderer.profile.is_some() {
+            let timings = timings.expect("read spatial GPU timestamps");
+            assert!(
+                timings.passes.iter().any(|pass| pass.stage == "3D camera"
+                    && pass.viewport_id.is_none()
+                    && pass.elapsed_ms > 0.),
+                "spatial GPU timings: {:?}",
+                timings.passes
+            );
+            assert!(timings.passes.iter().any(|pass| pass.stage == "Viewport composition" && pass.viewport_id == Some(1)));
+            assert!(
+                timings
+                    .passes
+                    .iter()
+                    .any(|pass| pass.stage == "Crop" && pass.viewport_id == Some(1))
+            );
+        }
         assert!(
             flat.as_raw()
                 .iter()

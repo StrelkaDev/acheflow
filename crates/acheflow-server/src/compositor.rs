@@ -36,6 +36,7 @@ pub struct RunningFormat {
     encoder_frame: watch::Receiver<crate::output::RenderedVideo>,
     pub(crate) spec: crate::output::VideoSpec,
     audio_buses: Arc<Mutex<Vec<acheflow_media_api::audio::AudioBusStatus>>>,
+    pub(crate) bus_monitors: Arc<crate::audio_monitor::BusMonitors>,
     sync: Arc<FormatSync>,
     render: Arc<Mutex<RenderMonitor>>,
     tasks: Vec<JoinHandle<()>>,
@@ -212,6 +213,47 @@ impl RunningFormat {
         .await
     }
 
+    pub(crate) fn meters(&self, meters: &mut Vec<acheflow_media_api::live::MeterReading>) {
+        use acheflow_media_api::live::{MeterReading, MeterTarget};
+        meters.extend(
+            self.audio_buses
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|bus| MeterReading {
+                    target: MeterTarget::Bus {
+                        orientation: self.orientation,
+                        scene_id: bus.scene_id,
+                        bus_id: bus.bus_id,
+                    },
+                    meter: bus.meter.clone(),
+                }),
+        );
+        meters.extend(self.output_workers.iter().filter_map(|worker| {
+            let status = worker.status.lock().unwrap();
+            status.audio_bus.map(|_| MeterReading {
+                target: MeterTarget::Output {
+                    orientation: self.orientation,
+                    index: worker.index,
+                },
+                meter: status.audio_meter.clone(),
+            })
+        }));
+    }
+
+    pub(crate) fn render_telemetry(&self) -> acheflow_media_api::live::RenderTelemetry {
+        let (at, load) = self
+            .render
+            .lock()
+            .unwrap()
+            .snapshot(Instant::now(), self.spec.fps);
+        acheflow_media_api::live::RenderTelemetry {
+            orientation: self.orientation,
+            time_seconds: at.duration_since(self.started).as_secs_f64(),
+            load,
+        }
+    }
+
     pub fn status(&self, scene: Option<&Scene>, configured: &[Output]) -> FormatStatus {
         FormatStatus {
             applied_scene: scene.map(|scene| acheflow_media_api::live::AppliedScene {
@@ -325,6 +367,8 @@ pub async fn start(
         let _ = ready_tx.send(Ok(renderer.backend()));
         let period = Duration::from_secs_f64(1. / fps as f64);
         let mut deadline = Instant::now();
+        let mut next_profile = deadline;
+        let mut last_profile_scene = None;
         let mut history = VideoHistory::default();
         while !video_cancel.is_cancelled() {
             let render_start = Instant::now();
@@ -345,15 +389,25 @@ pub async fn start(
                         visual_epoch_ms.saturating_add((frame.time * 1000.) as u64),
                     );
                 }
-                let result = renderer.render(&frame);
+                let sample_profile =
+                    render_start >= next_profile || last_profile_scene != Some(frame.scene.id);
+                let result = renderer.render_profiled(&frame, sample_profile);
                 let shown = Instant::now();
-                video_render.lock().unwrap().record(
-                    shown,
-                    shown.duration_since(render_start),
-                    result.is_ok(),
-                );
+                let mut monitor = video_render.lock().unwrap();
+                monitor.record(shown, shown.duration_since(render_start), result.is_ok());
+                if sample_profile {
+                    monitor.record_gpu_profile(
+                        result
+                            .as_ref()
+                            .ok()
+                            .and_then(|(_, timings)| timings.clone()),
+                    );
+                    next_profile = shown + Duration::from_secs(1);
+                    last_profile_scene = Some(frame.scene.id);
+                }
+                drop(monitor);
                 match result {
-                    Ok(image) => {
+                    Ok((image, _)) => {
                         let image = Arc::new(image);
                         #[cfg(test)]
                         crate::av_timing_tests::trace_image(
@@ -417,6 +471,7 @@ pub async fn start(
             orientation,
         },
         audio_buses: audio_buses.clone(),
+        bus_monitors: Default::default(),
         sync: sync.clone(),
         render,
         tasks: vec![video],
@@ -487,6 +542,7 @@ pub async fn start(
         orientation,
         destinations,
         audio_buses,
+        running.bus_monitors.clone(),
         sync,
         running.cancel.clone(),
     )));

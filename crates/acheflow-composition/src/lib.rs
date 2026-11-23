@@ -1,5 +1,6 @@
 mod filters;
 pub mod gpu;
+mod gpu_profile;
 #[cfg(all(feature = "headless", not(target_arch = "wasm32")))]
 pub mod headless;
 pub mod spatial;

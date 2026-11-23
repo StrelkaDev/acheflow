@@ -10,6 +10,12 @@ use std::collections::HashMap;
 const WINDOW: Duration = Duration::from_secs(8);
 const SNAPSHOT_PERIOD: Duration = Duration::from_millis(100);
 
+#[derive(Clone, Copy)]
+struct ProbeProfile<'a> {
+    codec: &'a str,
+    encoder: &'a str,
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "measures headless GPU render and FFmpeg RTMP/SRT using loopback sockets"]
 async fn mixed_output_preview_load_at_30_and_60_fps() {
@@ -21,6 +27,10 @@ async fn mixed_output_preview_load_at_30_and_60_fps() {
     let encoder =
         std::env::var("ACHEFLOW_PREVIEW_PROBE_ENCODER").unwrap_or_else(|_| "libx264".into());
     caps.resolve_video_encoder("h264", Some(&encoder)).unwrap();
+    let profile = ProbeProfile {
+        codec: "h264",
+        encoder: &encoder,
+    };
     let root = capture_directory();
     eprintln!("Preview load captures: {}", root.display());
     for fps in [30, 60] {
@@ -28,23 +38,72 @@ async fn mixed_output_preview_load_at_30_and_60_fps() {
         std::fs::create_dir(&dir).unwrap();
         tokio::time::timeout(
             Duration::from_secs(110),
-            probe(&dir, fps, &encoder, caps.clone()),
+            probe(&dir, fps, [profile; 2], &caps, true),
         )
         .await
         .unwrap_or_else(|_| panic!("{fps} FPS probe timed out"));
     }
 }
 
-async fn probe(dir: &Path, fps: u32, encoder: &str, caps: acheflow_media_api::MediaCapabilities) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires Enhanced RTMP, SRT and FFmpeg HEVC, AV1 and VP9 encoders"]
+async fn mixed_advanced_codecs_with_encoded_previews() {
+    let caps = crate::ffmpeg::discover().await;
+    assert!(
+        caps.enhanced_rtmp && caps.srt_output,
+        "Use FFmpeg with Enhanced RTMP and SRT"
+    );
+    let hevc =
+        std::env::var("ACHEFLOW_PREVIEW_PROBE_HEVC_ENCODER").unwrap_or_else(|_| "libx265".into());
+    caps.resolve_video_encoder("hevc", Some(&hevc)).unwrap();
+    let hevc = ProbeProfile {
+        codec: "hevc",
+        encoder: &hevc,
+    };
+    let mut horizontal = vec![hevc];
+    for codec in ["av1", "vp9"] {
+        let encoder = caps
+            .preferred_video_encoder(codec, false)
+            .unwrap_or_else(|| panic!("No software encoder for {codec}"));
+        horizontal.push(ProbeProfile {
+            codec,
+            encoder: &encoder.name,
+        });
+    }
+
+    let root = capture_directory();
+    eprintln!("Advanced codec captures: {}", root.display());
+    for profile in horizontal {
+        let dir = root.join(format!("{}-hevc", profile.codec));
+        std::fs::create_dir(&dir).unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(100),
+            probe(&dir, 60, [profile, hevc], &caps, false),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{} RTMP / HEVC SRT preview probe timed out", profile.codec));
+    }
+}
+
+async fn probe(
+    dir: &Path,
+    fps: u32,
+    profiles: [ProbeProfile<'_>; 2],
+    caps: &acheflow_media_api::MediaCapabilities,
+    include_raw_snapshots: bool,
+) {
     let mut workspace = Workspace::default();
     workspace.add_source();
     let udp = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let srt_address = udp.local_addr().unwrap();
     drop(udp);
-    for (orientation, width, height) in [
+    for ((orientation, width, height), profile) in [
         (Orientation::Horizontal, 1280, 720),
         (Orientation::Vertical, 720, 1280),
-    ] {
+    ]
+    .into_iter()
+    .zip(profiles)
+    {
         let resolution = Resolution { width, height };
         let scene = workspace.add_scene(orientation);
         workspace.resize_base(orientation, resolution.clone());
@@ -63,11 +122,12 @@ async fn probe(dir: &Path, fps: u32, encoder: &str, caps: acheflow_media_api::Me
                 destination
             }
         };
-        destination.encoder = Some(encoder.into());
+        destination.encoder = Some(profile.encoder.into());
+        destination.codec = profile.codec.into();
         stream.outputs.push(destination);
     }
     let (runtime, listener, ingest) =
-        pipeline_tests::server(workspace, Arc::new(tokio::sync::Mutex::new(caps))).await;
+        pipeline_tests::server(workspace, Arc::new(tokio::sync::Mutex::new(caps.clone()))).await;
     let _shutdown = runtime.shutdown.clone().drop_guard();
     let workspace = runtime.saved_state().1.unwrap();
     let rtmp = &workspace.horizontal.outputs[0];
@@ -107,7 +167,9 @@ async fn probe(dir: &Path, fps: u32, encoder: &str, caps: acheflow_media_api::Me
     let ready = Instant::now();
     let mut measurements = Vec::new();
     measurements.push(measure(&runtime, fps, "outputs", &[]).await);
-    measurements.push(measure(&runtime, fps, "snapshots", &["jpeg", "png"]).await);
+    if include_raw_snapshots {
+        measurements.push(measure(&runtime, fps, "snapshots", &["jpeg", "png"]).await);
+    }
     measurements.push(measure(&runtime, fps, "encoded", &["encoded"]).await);
 
     let before_reconnect = Instant::now();
@@ -128,28 +190,52 @@ async fn probe(dir: &Path, fps: u32, encoder: &str, caps: acheflow_media_api::Me
     let before_srt = format_status(&status, Orientation::Vertical).outputs[0].frames;
 
     let before_restart = Instant::now();
-    let restart = live::restart_output(
-        State(runtime.clone()),
-        Json(RestartOutputRequest {
-            workspace_id: workspace.id.clone(),
-            orientation: Orientation::Horizontal,
-            index: 0,
-        }),
-    );
-    let (restarted, ()) = tokio::join!(restart, finish_capture(rtmp_reader, &rtmp_file));
-    let _ = restarted.unwrap();
-    let restarted_file = dir.join("horizontal-restarted.flv");
-    let restarted_capture = capture(&rtmp_url, &restarted_file);
-    streaming(&runtime, Orientation::Horizontal).await;
-    let resumed = Instant::now();
-    let status = runtime.status().await;
-    let other = &format_status(&status, Orientation::Vertical).outputs[0];
-    assert_eq!(other.state, OutputState::Streaming);
-    assert!(
-        other.frames > before_srt && other.reconnects == 0,
-        "{other:?}"
-    );
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    let recover = async {
+        let restart = live::restart_output(
+            State(runtime.clone()),
+            Json(RestartOutputRequest {
+                workspace_id: workspace.id.clone(),
+                orientation: Orientation::Horizontal,
+                index: 0,
+            }),
+        );
+        let (restarted, ()) = tokio::join!(restart, finish_capture(rtmp_reader, &rtmp_file));
+        let _ = restarted.unwrap();
+        let restarted_file = dir.join("horizontal-restarted.flv");
+        let restarted_capture = capture(&rtmp_url, &restarted_file);
+        streaming(&runtime, Orientation::Horizontal).await;
+        let resumed = Instant::now();
+        let status = runtime.status().await;
+        let other = &format_status(&status, Orientation::Vertical).outputs[0];
+        assert_eq!(other.state, OutputState::Streaming);
+        assert!(
+            other.frames > before_srt && other.reconnects == 0,
+            "{other:?}"
+        );
+        (
+            restarted_file,
+            restarted_capture,
+            resumed,
+            other.frames - before_srt,
+        )
+    };
+    let preview_during_restart = async {
+        if include_raw_snapshots {
+            return None;
+        }
+        let deadline = before_restart + WINDOW;
+        Some(
+            futures_util::future::join_all(
+                Orientation::ALL
+                    .into_iter()
+                    .map(|orientation| snapshots(&runtime, orientation, "encoded", 1, deadline)),
+            )
+            .await,
+        )
+    };
+    let ((restarted_file, restarted_capture, resumed, srt_frames_during_restart), restart_viewers) =
+        tokio::join!(recover, preview_during_restart);
+    tokio::time::sleep_until(resumed + Duration::from_secs(5)).await;
 
     let _ = publisher.kill().await;
     runtime.close().await;
@@ -160,11 +246,16 @@ async fn probe(dir: &Path, fps: u32, encoder: &str, caps: acheflow_media_api::Me
     std::fs::write(
         dir.join("preview-load.json"),
         serde_json::to_vec_pretty(&json!({
-            "fps": fps, "encoder": encoder, "phases": measurements,
+            "fps": fps, "encoder": profiles[0].encoder, "phases": measurements,
+            "outputs": {
+                "rtmp": {"codec": profiles[0].codec, "encoder": profiles[0].encoder},
+                "srt": {"codec": profiles[1].codec, "encoder": profiles[1].encoder}
+            },
             "source_loss_ms": (lost - before_reconnect).as_secs_f64() * 1000.,
             "source_rejoin_ms": (rejoined - lost).as_secs_f64() * 1000.,
             "rtmp_restart_ms": (resumed - before_restart).as_secs_f64() * 1000.,
-            "srt_frames_during_restart": other.frames - before_srt,
+            "srt_frames_during_restart": srt_frames_during_restart,
+            "preview_viewers_during_restart": restart_viewers,
             "seconds_before_restart": (before_restart - ready).as_secs_f64()
         }))
         .unwrap(),
@@ -269,6 +360,12 @@ async fn snapshots(
     assert!(
         count > 0,
         "{} {mode} received no snapshots ({failed} errors)",
+        orientation.label()
+    );
+    assert_eq!(
+        failed,
+        0,
+        "{} {mode} viewer {viewer} returned errors",
         orientation.label()
     );
     json!({

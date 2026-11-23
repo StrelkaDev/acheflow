@@ -28,9 +28,26 @@ pub(crate) struct Access {
     host: Arc<crate::control::ControlHost>,
     origins: BTreeSet<String>,
     account_checks: tokio::sync::Semaphore,
+    monitor_slots: Arc<tokio::sync::Semaphore>,
     package_checks: Arc<tokio::sync::Semaphore>,
     pub(crate) package_store: Arc<acheflow_client::package::Store>,
 }
+#[derive(Clone)]
+pub(crate) struct MonitorGrant {
+    access: Arc<Access>,
+    token: String,
+    _slot: Arc<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl MonitorGrant {
+    pub(crate) fn allowed(&self) -> bool {
+        self.access
+            .registry
+            .authenticate(&self.token, now())
+            .is_some_and(|session| Principal(session).all(&[P::StudioView, P::MediaManage]))
+    }
+}
+
 impl Access {
     pub fn server_id(&self) -> String {
         self.registry.server_id()
@@ -64,6 +81,7 @@ impl Access {
             host,
             origins,
             account_checks: tokio::sync::Semaphore::new(2),
+            monitor_slots: Arc::new(tokio::sync::Semaphore::new(8)),
         }))
     }
     pub fn routes(self: &Arc<Self>) -> Router {
@@ -305,9 +323,10 @@ async fn authorize(
             principal.allows(P::ChatSend)
         }
         (&Method::GET, "/api/workspace") => true,
-        (&Method::POST, "/api/workspace/import" | "/api/live/output/profile") => {
-            principal.workspace_management()
-        }
+        (
+            &Method::POST,
+            "/api/workspace/import" | "/api/live/output/profile" | "/api/live/format/settings",
+        ) => principal.workspace_management(),
         (
             &Method::POST,
             "/api/live/mixer" | "/api/live/take" | "/api/live/sources" | "/api/live/scenes",
@@ -323,7 +342,7 @@ async fn authorize(
         }
         (&Method::GET, "/api/server/settings" | "/api/server/logs")
         | (&Method::PUT, "/api/server/settings") => principal.allows(P::AccessManage),
-        (&Method::GET, "/api/media/capabilities" | "/api/live/status") => {
+        (&Method::GET, "/api/media/capabilities" | "/api/live/status" | "/api/live/telemetry") => {
             principal.any(&[P::StudioView, P::ScenesManage, P::MediaManage])
         }
         (&Method::GET, "/api/media/cameras" | "/api/media/microphones") => {
@@ -333,10 +352,14 @@ async fn authorize(
             &Method::POST,
             "/api/media/capabilities"
             | "/api/live/stop"
+            | "/api/live/format/stop"
             | "/api/live/source-preview"
             | "/api/live/output/restart"
             | "/api/live/outputs",
         ) => principal.allows(P::MediaManage),
+        (&Method::GET, path) if path.starts_with("/api/live/monitor/") => {
+            principal.all(&[P::StudioView, P::MediaManage])
+        }
         (&Method::GET, path)
             if path.starts_with("/api/live/preview/") || path.starts_with("/api/live/source/") =>
         {
@@ -352,15 +375,14 @@ async fn authorize(
             P::ExtensionsConfigure,
             P::ExtensionsRun,
         ]),
-        (&Method::PUT, "/api/live/config") | (&Method::POST, "/api/live/start") => {
-            principal.all(&[
-                P::WorkspaceManage,
-                P::ScenesManage,
-                P::MediaManage,
-                P::ExtensionsConfigure,
-                P::ExtensionsRun,
-            ])
-        }
+        (&Method::PUT, "/api/live/config")
+        | (&Method::POST, "/api/live/start" | "/api/live/format/start") => principal.all(&[
+            P::WorkspaceManage,
+            P::ScenesManage,
+            P::MediaManage,
+            P::ExtensionsConfigure,
+            P::ExtensionsRun,
+        ]),
         (&Method::DELETE, "/api/live/config") => {
             principal.all(&[P::WorkspaceManage, P::MediaManage, P::ExtensionsRun])
         }
@@ -376,6 +398,18 @@ async fn authorize(
     if !allowed {
         return Err(denied());
     }
+    if path.starts_with("/api/live/monitor/") {
+        let slot = access
+            .monitor_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Error(429, "Audio monitoring slots are busy."))?;
+        request.extensions_mut().insert(MonitorGrant {
+            access: access.clone(),
+            token,
+            _slot: Arc::new(slot),
+        });
+    }
     request.extensions_mut().insert(principal.clone());
     let mut response = next.run(request).await;
     if response.status().is_success()
@@ -386,6 +420,8 @@ async fn authorize(
                 | "/api/live/status"
                 | "/api/live/config"
                 | "/api/live/start"
+                | "/api/live/format/start"
+                | "/api/live/format/stop"
                 | "/api/live/stop"
                 | "/api/live/output/restart"
                 | "/api/live/outputs"

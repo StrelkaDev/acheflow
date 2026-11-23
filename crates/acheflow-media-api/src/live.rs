@@ -45,6 +45,39 @@ pub struct StartRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputTarget>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartSavedRequest {
+    pub workspace_id: String,
+    pub expected_revision: u64,
+    pub scenes: [Option<u32>; 2],
+    pub preview_only: bool,
+    pub output: Option<OutputTarget>,
+}
+
+impl StartSavedRequest {
+    pub fn programs(&self) -> impl Iterator<Item = (Orientation, u32)> + '_ {
+        Orientation::ALL
+            .into_iter()
+            .zip(self.scenes)
+            .filter_map(|(orientation, scene)| scene.map(|scene| (orientation, scene)))
+    }
+
+    pub fn apply(&self, workspace: &mut Workspace) -> Result<(), String> {
+        for (orientation, scene_id) in self.programs() {
+            set_program_scene(workspace, orientation, scene_id)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StopFormatRequest {
+    pub workspace_id: String,
+    pub orientation: Orientation,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputTarget {
@@ -165,6 +198,108 @@ impl OutputProfileRequest {
             .get_mut(self.target.index)
             .ok_or("This output is not saved on the server")?;
         self.profile.apply(output);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormatSettingsRequest {
+    pub workspace_id: String,
+    pub expected_revision: u64,
+    pub orientation: Orientation,
+    pub edit: FormatSettingsEdit,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FormatSettingsEdit {
+    Canvas {
+        base: Resolution,
+        fps: u32,
+    },
+    AddOutput {
+        index: usize,
+        profile: OutputProfile,
+        enabled: bool,
+    },
+    RemoveOutput {
+        index: usize,
+    },
+    SetOutputEnabled {
+        index: usize,
+        enabled: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct FormatSettingsAck {
+    pub revision: u64,
+}
+
+impl FormatSettingsRequest {
+    pub fn apply(&self, workspace: &mut Workspace) -> Result<(), String> {
+        let outputs = &mut workspace.stream_mut(self.orientation).outputs;
+        match &self.edit {
+            FormatSettingsEdit::Canvas { base, fps } => {
+                if !crate::workspace::valid_stream_size(base) || !(1..=120).contains(fps) {
+                    return Err("Invalid base resolution or FPS".into());
+                }
+                if workspace.stream(self.orientation).base != *base {
+                    workspace.resize_base(self.orientation, base.clone());
+                }
+                workspace.stream_mut(self.orientation).fps = *fps;
+            }
+            FormatSettingsEdit::AddOutput {
+                index,
+                profile,
+                enabled,
+            } => {
+                if *index != outputs.len() {
+                    return Err("conflict: Destination order changed".into());
+                }
+                let OutputProfile {
+                    protocol,
+                    name,
+                    url,
+                    key,
+                    resolution,
+                    quality,
+                    codec,
+                    encoder,
+                    bitrate_kbps,
+                    bitrate_mode,
+                    keyframe_interval_secs,
+                } = profile.clone();
+                outputs.push(Output {
+                    protocol,
+                    name,
+                    url,
+                    key,
+                    resolution,
+                    quality,
+                    codec,
+                    encoder,
+                    bitrate_kbps,
+                    bitrate_mode,
+                    keyframe_interval_secs,
+                    enabled: *enabled,
+                    audio: Default::default(),
+                });
+            }
+            FormatSettingsEdit::RemoveOutput { index } => {
+                if *index >= outputs.len() {
+                    return Err("This output is not saved on the server".into());
+                }
+                outputs.remove(*index);
+            }
+            FormatSettingsEdit::SetOutputEnabled { index, enabled } => {
+                outputs
+                    .get_mut(*index)
+                    .ok_or("This output is not saved on the server")?
+                    .enabled = *enabled;
+            }
+        }
         Ok(())
     }
 }
@@ -375,16 +510,24 @@ impl SourceEdit {
 
 impl TakeSceneRequest {
     pub fn apply(&self, workspace: &mut Workspace) -> Result<(), String> {
-        if !workspace
-            .scenes
-            .iter()
-            .any(|scene| scene.id == self.scene_id && scene.orientation == self.orientation)
-        {
-            return Err("This scene is not saved for the selected format".into());
-        }
-        workspace.set_active(self.orientation, Some(self.scene_id));
-        Ok(())
+        set_program_scene(workspace, self.orientation, self.scene_id)
     }
+}
+
+fn set_program_scene(
+    workspace: &mut Workspace,
+    orientation: Orientation,
+    scene_id: u32,
+) -> Result<(), String> {
+    if !workspace
+        .scenes
+        .iter()
+        .any(|scene| scene.id == scene_id && scene.orientation == orientation)
+    {
+        return Err("This scene is not saved for the selected format".into());
+    }
+    workspace.set_active(orientation, Some(scene_id));
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -410,6 +553,50 @@ pub struct LiveStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub server_load: Vec<ServerLoadSample>,
 }
+pub const SERVER_LOAD_HISTORY: usize = 240;
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MediaTelemetry {
+    pub workspace_id: Option<String>,
+    pub edit_revision: u64,
+    pub meters: Vec<MeterReading>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub render: Vec<RenderTelemetry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub server_load: Vec<ServerLoadSample>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RenderTelemetry {
+    pub orientation: Orientation,
+    pub time_seconds: f64,
+    pub load: RenderLoad,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MeterReading {
+    pub target: MeterTarget,
+    pub meter: crate::audio::AudioMeter,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MeterTarget {
+    Source {
+        source_id: u32,
+        track_id: u8,
+    },
+    Bus {
+        orientation: Orientation,
+        scene_id: u32,
+        bus_id: u32,
+    },
+    Output {
+        orientation: Orientation,
+        index: usize,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ServerLoadSample {
     pub time_ms: u64,
@@ -447,6 +634,24 @@ pub struct RenderLoad {
     pub observed_fps: f64,
     pub p95_ms: f64,
     pub deadline_miss_percent: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_profile: Option<GpuFrameProfile>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GpuFrameProfile {
+    pub scene_id: u32,
+    pub passes: Vec<GpuPassTiming>,
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GpuPassTiming {
+    pub stage: String,
+    pub viewport_id: Option<u64>,
+    pub layer_id: Option<u64>,
+    pub source_id: Option<u32>,
+    pub elapsed_ms: f64,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SourceStatus {

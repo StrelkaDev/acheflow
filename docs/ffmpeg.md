@@ -46,8 +46,11 @@ description, experimental and hardware flags), `srt_input`, `srt_output`, `rtmp_
 The complete inventory includes video, audio and subtitle encoders. The current
 output UI offers non-experimental encoders for H.264 and, conservatively on
 FFmpeg 7+, HEVC/AV1/VP9, provided the RTMP output protocol and FLV muxer exist.
-Other codecs remain visible in the inventory but are not offered as this
-application's RTMP video profiles. AAC remains the audio profile.
+The output picker uses encoders that accept the YUV420p frames supplied by
+Studio. FFmpeg entries that accept only hardware frames, such as Vulkan-only
+encoders, remain visible in the inventory. AAC remains the audio profile.
+For `libsvtav1`, Studio uses low-delay CBR or capped CRF for the VBR setting,
+using the configured bitrate as the limit in VBR.
 
 <a id="srt-input"></a>
 

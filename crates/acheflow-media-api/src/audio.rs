@@ -430,6 +430,10 @@ pub struct AudioMeter {
     pub peak: [f32; 2],
     pub rms: [f32; 2],
     pub clipped_samples: u64,
+    #[serde(default)]
+    pub held_peak: [f32; 2],
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recently_clipped: bool,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AudioTrackStatus {

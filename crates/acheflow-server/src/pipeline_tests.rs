@@ -106,6 +106,158 @@ pub(super) async fn until(mut predicate: impl FnMut() -> bool) {
     .expect("media condition timed out");
 }
 
+#[tokio::test]
+async fn format_settings_and_lifecycle_preserve_the_other_format() {
+    use acheflow_media_api::live::{
+        FormatSettingsEdit, FormatSettingsRequest, OutputProfile, StartSavedRequest,
+        StopFormatRequest,
+    };
+    use axum::http::StatusCode;
+
+    let runtime = Runtime::new(
+        Arc::new(tokio::sync::Mutex::new(Default::default())),
+        "127.0.0.1:1935".into(),
+    );
+    let _shutdown = runtime.shutdown.clone().drop_guard();
+    let mut workspace = Workspace::default();
+    let [horizontal, vertical] = Orientation::ALL;
+    let horizontal_scene = workspace.add_scene(horizontal);
+    let vertical_scene = workspace.add_scene(vertical);
+    workspace.resize_base(
+        horizontal,
+        Resolution {
+            width: 160,
+            height: 90,
+        },
+    );
+    workspace.resize_base(
+        vertical,
+        Resolution {
+            width: 90,
+            height: 160,
+        },
+    );
+    let output = Output {
+        protocol: Default::default(),
+        name: "Local destination".into(),
+        url: "rtmp://127.0.0.1/live".into(),
+        key: "destination".into(),
+        resolution: workspace.vertical.base.clone(),
+        quality: "Standard".into(),
+        codec: "h264".into(),
+        encoder: None,
+        bitrate_kbps: 1500,
+        bitrate_mode: Default::default(),
+        keyframe_interval_secs: 2,
+        enabled: false,
+        audio: acheflow_media_api::audio::OutputAudio {
+            gain: 70,
+            ..Default::default()
+        },
+    };
+    workspace.vertical.outputs.push(output.clone());
+    let workspace_id = workspace.id.clone();
+    runtime.install(workspace, false).await.unwrap();
+
+    let start = |scenes| {
+        live::start_saved(
+            State(runtime.clone()),
+            Json(StartSavedRequest {
+                workspace_id: workspace_id.clone(),
+                expected_revision: runtime.saved_state().0,
+                scenes,
+                preview_only: true,
+                output: None,
+            }),
+        )
+    };
+    let _ = start([Some(horizontal_scene), None]).await.unwrap();
+    let _ = start([None, Some(vertical_scene)]).await.unwrap();
+    let horizontal_frames = runtime.formats.lock().await[0].frames.clone();
+    let revision = runtime.saved_state().0;
+    let save = |revision, edit| {
+        live::save_format_settings(
+            State(runtime.clone()),
+            Json(FormatSettingsRequest {
+                workspace_id: workspace_id.clone(),
+                expected_revision: revision,
+                orientation: vertical,
+                edit,
+            }),
+        )
+    };
+    let canvas = FormatSettingsEdit::Canvas {
+        base: Resolution {
+            width: 120,
+            height: 216,
+        },
+        fps: 60,
+    };
+    assert_eq!(
+        save(revision, canvas.clone()).await.unwrap_err().0,
+        StatusCode::CONFLICT
+    );
+    let Json(status) = live::stop_format(
+        State(runtime.clone()),
+        Json(StopFormatRequest {
+            workspace_id: workspace_id.clone(),
+            orientation: vertical,
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status.formats.len(), 1);
+    assert_eq!(status.formats[0].orientation, horizontal);
+    let saved = save(revision, canvas.clone()).await.unwrap().0;
+    assert_eq!(
+        save(revision, canvas).await.unwrap_err().0,
+        StatusCode::CONFLICT
+    );
+    let saved = save(
+        saved.revision,
+        FormatSettingsEdit::SetOutputEnabled {
+            index: 0,
+            enabled: true,
+        },
+    )
+    .await
+    .unwrap()
+    .0;
+    let saved = save(
+        saved.revision,
+        FormatSettingsEdit::AddOutput {
+            index: 1,
+            profile: OutputProfile::of(&output),
+            enabled: false,
+        },
+    )
+    .await
+    .unwrap()
+    .0;
+    let after_add = runtime.saved_state().1.unwrap();
+    assert!(after_add.vertical.outputs[0].enabled);
+    assert_eq!(after_add.vertical.outputs[0].audio, output.audio);
+    assert_eq!(after_add.vertical.outputs[1].audio, Default::default());
+    let _ = save(
+        saved.revision,
+        FormatSettingsEdit::RemoveOutput { index: 1 },
+    )
+    .await
+    .unwrap();
+
+    let frames = horizontal_frames.load(Ordering::Relaxed);
+    let Json(status) = start([None, Some(vertical_scene)]).await.unwrap();
+    assert_eq!(status.formats.len(), 2);
+    assert_eq!(status.formats[1].render_load.target_fps, 60);
+    assert!(Arc::ptr_eq(
+        &runtime.formats.lock().await[0].frames,
+        &horizontal_frames
+    ));
+    until(|| horizontal_frames.load(Ordering::Relaxed) > frames).await;
+    assert_eq!(runtime.saved_state().1.unwrap().vertical.outputs.len(), 1);
+    runtime.close().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires FFmpeg with libx264 and loopback TCP"]
 async fn real_rtmp_source_preview_activates_only_one_source_and_expires() {
@@ -136,7 +288,16 @@ async fn real_rtmp_source_preview_activates_only_one_source_and_expires() {
     let _ = renew().await.unwrap();
     let input = runtime.inputs.lock().unwrap()[&1].clone();
     let mut publisher = publisher(&url, &key, "red", 440);
-    until(|| input.status().width == Some(160)).await;
+    // RTMP metadata advertises the dimensions before the first decoded frame.
+    until(|| {
+        input
+            .frame
+            .read()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|frame| frame.image.width() == 160)
+    })
+    .await;
     let _ = renew().await.unwrap();
     assert!(Arc::ptr_eq(&input, &runtime.inputs.lock().unwrap()[&1]));
     let preview = live::source_preview(

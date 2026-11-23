@@ -16,7 +16,7 @@ acheflow-composition = { path = "../acheflow-composition" }
 # Pin the UI engine to the exact upstream API validated for native and WASM.
 acheflow-extension-api = { path = "../acheflow-extension-api" }
 acheflow-media-api = { path = "../acheflow-media-api" }
-reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "stream"] }
 dioxus-native = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false, features = ["prelude", "vello-hybrid", "woff", "net", "scrollbars", "svg"] }
 blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false }
 blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false, features = ["custom-widget"] }
@@ -37,11 +37,15 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acheflow-launcher = { path = "../acheflow-launcher" }
 winit = "=0.31.0-beta.4"
+rodio = { version = "=0.22.2", default-features = false, features = ["playback"] }
 tokio.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 blitz-shell = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false }
 blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSColor", "NSControl", "NSFont", "NSMenu", "NSMenuItem", "NSEvent", "NSResponder", "NSScrollView", "NSSecureTextField", "NSText", "NSTextField", "NSTextInputClient", "NSTextView", "NSView", "NSWindow", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSNotification", "NSObject", "NSRange", "NSString"] }
 webbrowser = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

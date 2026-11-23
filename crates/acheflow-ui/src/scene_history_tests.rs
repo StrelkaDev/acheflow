@@ -2,8 +2,8 @@ use super::*;
 use blitz_dom::{Document, DocumentConfig};
 use blitz_traits::{
     events::{
-        BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, PointerCoords,
-        UiEvent,
+        BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, KeyState, MouseEventButton,
+        MouseEventButtons, PointerCoords, UiEvent,
     },
     shell::Viewport,
 };
@@ -23,6 +23,32 @@ fn app() -> Element {
     crate::live_client::use_live_client(project);
     crate::control_client::use_control_client(project);
     rsx! { style {{include_str!("dashboard.css")}} Scenes {project,visible:false} }
+}
+
+fn studio_app() -> Element {
+    let captured = use_context::<Rc<Cell<Option<Signal<Workspace>>>>>();
+    let project = use_signal(|| {
+        let mut workspace = Workspace::default();
+        workspace.horizontal.base = Resolution {
+            width: 640,
+            height: 360,
+        };
+        workspace.add_source();
+        let id = workspace.add_scene(Orientation::Horizontal);
+        workspace.set_active(Orientation::Horizontal, Some(id));
+        workspace.migrate_spatial();
+        workspace
+    });
+    captured.set(Some(project));
+    crate::live_client::use_live_client(project);
+    crate::control_client::use_control_client(project);
+    let histories = use_scene_histories(project);
+    use_context_provider(|| histories);
+    let mut in_studio = use_signal(|| true);
+    rsx! {style {{include_str!("dashboard.css")}}
+        button {id:"switch-editor",onclick:move |_|in_studio.set(!in_studio()),"Switch editor"}
+        if in_studio() {Studio {project,visible:false}} else {Scenes {project,visible:false}}
+    }
 }
 
 fn settle(doc: &mut DioxusDocument) {
@@ -66,6 +92,30 @@ fn activate(doc: &mut DioxusDocument, selector: &str) {
     doc.handle_ui_event(UiEvent::PointerMove(event(false)));
     doc.handle_ui_event(UiEvent::PointerDown(event(true)));
     doc.handle_ui_event(UiEvent::PointerUp(event(false)));
+    settle(doc);
+}
+
+fn press(doc: &mut DioxusDocument, selector: &str, key: Key, code: Code, modifiers: Modifiers) {
+    let id = doc
+        .inner
+        .borrow()
+        .query_selector(selector)
+        .unwrap()
+        .unwrap();
+    doc.inner.borrow_mut().set_focus_to(id);
+    let mut event = BlitzKeyEvent {
+        key,
+        code,
+        modifiers,
+        location: Location::Standard,
+        is_auto_repeating: false,
+        is_composing: false,
+        state: KeyState::Pressed,
+        text: None,
+    };
+    doc.handle_ui_event(UiEvent::KeyDown(event.clone()));
+    event.state = KeyState::Released;
+    doc.handle_ui_event(UiEvent::KeyUp(event));
     settle(doc);
 }
 
@@ -125,4 +175,72 @@ async fn chat_undo_and_redo_stay_with_their_scene_after_switching() {
     assert_eq!(current.sources, added_to_second.sources[1..]);
     assert_eq!(current.scenes[0], original.scenes[0]);
     assert_eq!(current.scenes[1], added_to_second.scenes[1]);
+}
+
+#[tokio::test]
+async fn studio_draft_layer_can_be_undone_in_scenes() {
+    let captured = Rc::new(Cell::<Option<Signal<Workspace>>>::new(None));
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(studio_app).with_root_context(captured.clone()),
+        DocumentConfig {
+            font_ctx: Some(dioxus_native::build_single_font_ctx(include_bytes!(
+                "../assets/DejaVuSans.woff2"
+            ))),
+            ..Default::default()
+        },
+    );
+    doc.initial_build();
+    doc.inner.borrow_mut().set_viewport(Viewport {
+        window_size: (900, 1600),
+        ..Default::default()
+    });
+    settle(&mut doc);
+
+    let project = captured.get().unwrap();
+    press(
+        &mut doc,
+        ".studio-edit-draft",
+        Key::Named(NamedKey::Enter),
+        Code::Enter,
+        Modifiers::empty(),
+    );
+    press(
+        &mut doc,
+        ".studio-draft-inspector .padded.row button",
+        Key::Named(NamedKey::Enter),
+        Code::Enter,
+        Modifiers::empty(),
+    );
+    assert_eq!(project.peek().scenes[0].layers.len(), 1);
+    assert!(
+        doc.inner
+            .borrow()
+            .query_selector(".studio-draft-inspector .layer-select[aria-pressed=true]")
+            .unwrap()
+            .is_some()
+    );
+
+    press(
+        &mut doc,
+        ".studio-draft-preview .scene-canvas",
+        Key::Character("z".into()),
+        Code::KeyZ,
+        Modifiers::CONTROL,
+    );
+    assert!(project.peek().scenes[0].layers.is_empty());
+    press(
+        &mut doc,
+        ".studio-draft-preview .scene-canvas",
+        Key::Character("z".into()),
+        Code::KeyZ,
+        Modifiers::CONTROL | Modifiers::SHIFT,
+    );
+    assert_eq!(project.peek().scenes[0].layers.len(), 1);
+
+    activate(&mut doc, "#switch-editor");
+    activate(
+        &mut doc,
+        "[aria-label='Scene history'] button:first-of-type",
+    );
+    assert!(project.peek().scenes[0].layers.is_empty());
 }

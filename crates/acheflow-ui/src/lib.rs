@@ -1,4 +1,5 @@
 mod audio_mixer;
+mod audio_monitor;
 mod client_authorization;
 mod code_editor;
 mod control_client;
@@ -24,6 +25,8 @@ mod native_activation;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_credentials;
 #[cfg(target_os = "macos")]
+mod native_text_input;
+#[cfg(target_os = "macos")]
 pub mod native_window;
 mod project;
 mod scene_canvas;
@@ -44,6 +47,8 @@ mod spatial_viewport;
 #[cfg(test)]
 mod spatial_viewport_tests;
 mod studio_mixer;
+#[cfg(any(target_arch = "wasm32", target_os = "macos"))]
+mod text_input;
 mod traffic;
 mod video_preview;
 mod visual_sources;

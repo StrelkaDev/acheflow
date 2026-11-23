@@ -6,15 +6,17 @@ use acheflow_media_api::{
     MediaCapabilities,
     audio::{MAX_MIXER_EDITS, MixerAck, MixerRequest},
     live::{
-        ApiError, ControlRequest, LiveStatus, ManageOutputsRequest, OutputAction, OutputProfileAck,
-        OutputProfileRequest, RestartOutputRequest, SceneEdit, SceneSettingsAck,
+        ApiError, ControlRequest, FormatSettingsAck, FormatSettingsEdit, FormatSettingsRequest,
+        LiveStatus, ManageOutputsRequest, MediaTelemetry, MeterReading, MeterTarget, OutputAction,
+        OutputProfileAck, OutputProfileRequest, RestartOutputRequest, SceneEdit, SceneSettingsAck,
         SceneSettingsRequest, SourceCapture, SourcePreviewRequest, SourceSettingsAck,
-        SourceSettingsRequest, StartRequest, TakeSceneAck, TakeSceneRequest,
+        SourceSettingsRequest, StartRequest, StartSavedRequest, StopFormatRequest, TakeSceneAck,
+        TakeSceneRequest,
     },
     workspace::{Output, Resolution, Workspace},
 };
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, Query, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
@@ -75,6 +77,10 @@ impl Runtime {
     }
 
     pub async fn status(&self) -> LiveStatus {
+        self.status_snapshot(true).await
+    }
+
+    async fn status_snapshot(&self, include_load: bool) -> LiveStatus {
         let running = self.formats.lock().await;
         let workspace = self.workspace.read().unwrap();
         let workspace = workspace.as_ref();
@@ -107,7 +113,55 @@ impl Runtime {
             rtmp_tls: self.rtmp_tls.load(Ordering::Relaxed),
             sources,
             formats,
-            server_load: self.monitor.samples(),
+            server_load: if include_load {
+                self.monitor.samples_since(None)
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    async fn telemetry(&self, include_load: bool, after: Option<u64>) -> MediaTelemetry {
+        let (workspace_id, edit_revision, meters, render) = {
+            let formats = self.formats.lock().await;
+            let workspace = self.workspace.read().unwrap();
+            let mut meters = Vec::new();
+            for input in self.inputs.lock().unwrap().values() {
+                meters.extend(input.audio_tracks.lock().unwrap().values().map(|track| {
+                    MeterReading {
+                        target: MeterTarget::Source {
+                            source_id: input.config.id,
+                            track_id: track.id,
+                        },
+                        meter: track.meter(),
+                    }
+                }));
+            }
+            for format in formats.iter() {
+                format.meters(&mut meters);
+            }
+            (
+                workspace.as_ref().map(|workspace| workspace.id.clone()),
+                workspace
+                    .as_ref()
+                    .map_or(0, |workspace| workspace.edit_revision),
+                meters,
+                formats
+                    .iter()
+                    .map(|format| format.render_telemetry())
+                    .collect(),
+            )
+        };
+        MediaTelemetry {
+            workspace_id,
+            edit_revision,
+            meters,
+            render,
+            server_load: if include_load {
+                self.monitor.samples_since(after)
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -607,8 +661,34 @@ fn invalid(error: String) -> (StatusCode, Json<ApiError>) {
     )
 }
 
-pub async fn status(State(runtime): State<RuntimeState>) -> Json<LiveStatus> {
-    Json(runtime.status().await)
+#[derive(serde::Deserialize)]
+pub(crate) struct LiveStatusQuery {
+    include_load: Option<bool>,
+}
+
+pub(crate) async fn status(
+    State(runtime): State<RuntimeState>,
+    Query(query): Query<LiveStatusQuery>,
+) -> Json<LiveStatus> {
+    Json(
+        runtime
+            .status_snapshot(query.include_load.unwrap_or(true))
+            .await,
+    )
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct TelemetryQuery {
+    after: Option<u64>,
+}
+
+pub(crate) async fn telemetry(
+    State(runtime): State<RuntimeState>,
+    Extension(principal): Extension<crate::access::Principal>,
+    Query(query): Query<TelemetryQuery>,
+) -> Json<MediaTelemetry> {
+    let include_load = principal.allows(acheflow_media_api::access::Permission::MediaManage);
+    Json(runtime.telemetry(include_load, query.after).await)
 }
 
 pub async fn edit_mixer(
@@ -722,6 +802,57 @@ pub async fn save_output_profile(
     Ok(Json(OutputProfileAck { revision }))
 }
 
+pub async fn save_format_settings(
+    State(runtime): State<RuntimeState>,
+    Json(request): Json<FormatSettingsRequest>,
+) -> Result<Json<FormatSettingsAck>, (StatusCode, Json<ApiError>)> {
+    let _guard = runtime.control.lock().await;
+    check_owner(&runtime, &request.workspace_id)?;
+    if runtime
+        .formats
+        .lock()
+        .await
+        .iter()
+        .any(|format| format.orientation == request.orientation)
+    {
+        return Err(invalid(
+            "conflict: Stop this format before changing its canvas or destination list".into(),
+        ));
+    }
+    let capabilities = runtime.capabilities.lock().await.clone();
+    let revision = runtime
+        .update_workspace_checked(
+            &request.workspace_id,
+            Some(request.expected_revision),
+            |workspace| {
+                request.apply(workspace)?;
+                match request.edit {
+                    FormatSettingsEdit::AddOutput { index, .. }
+                    | FormatSettingsEdit::SetOutputEnabled {
+                        index,
+                        enabled: true,
+                    } => {
+                        let stream = workspace.stream(request.orientation);
+                        let output = &stream.outputs[index];
+                        validate_destination_settings(output)?;
+                        if capabilities.available && output.enabled {
+                            validate_destination(output, &capabilities)?;
+                            crate::output::validate_video_config(
+                                output,
+                                stream.fps,
+                                &capabilities,
+                            )?;
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            },
+        )
+        .map_err(invalid)?;
+    Ok(Json(FormatSettingsAck { revision }))
+}
+
 pub async fn take_scene(
     State(runtime): State<RuntimeState>,
     Json(request): Json<TakeSceneRequest>,
@@ -770,6 +901,79 @@ pub async fn start(
             }),
         ));
     }
+    let capabilities = runtime.capabilities.lock().await.clone();
+    validate_start(&request, &capabilities)?;
+    runtime.apply(request.workspace).await.map_err(invalid)?;
+    launch_formats(
+        &runtime,
+        request.formats,
+        &capabilities,
+        request.preview_only,
+        request.output,
+    )
+    .await
+}
+
+pub async fn start_saved(
+    State(runtime): State<RuntimeState>,
+    Json(request): Json<StartSavedRequest>,
+) -> ApiResult {
+    let _guard = runtime.control.lock().await;
+    let (revision, workspace) = runtime.saved_state();
+    let mut workspace = workspace
+        .filter(|workspace| {
+            workspace.id == request.workspace_id && revision == request.expected_revision
+        })
+        .ok_or_else(|| {
+            invalid("conflict: Workspace changed on the server. Refresh before starting.".into())
+        })?;
+    let formats: Vec<_> = request
+        .programs()
+        .map(|(orientation, _)| orientation)
+        .collect();
+    if runtime
+        .formats
+        .lock()
+        .await
+        .iter()
+        .any(|format| formats.contains(&format.orientation))
+    {
+        return Err(invalid(
+            "conflict: A requested format is already running".into(),
+        ));
+    }
+    request.apply(&mut workspace).map_err(invalid)?;
+    let start = StartRequest {
+        workspace,
+        formats,
+        preview_only: request.preview_only,
+        output: request.output,
+    };
+    let capabilities = runtime.capabilities.lock().await.clone();
+    validate_start(&start, &capabilities)?;
+    if runtime.activated.load(Ordering::Acquire) {
+        runtime
+            .update_workspace_checked(&request.workspace_id, Some(revision), |workspace| {
+                request.apply(workspace)
+            })
+            .map_err(invalid)?;
+    } else {
+        runtime.apply(start.workspace).await.map_err(invalid)?;
+    }
+    launch_formats(
+        &runtime,
+        start.formats,
+        &capabilities,
+        start.preview_only,
+        start.output,
+    )
+    .await
+}
+
+fn validate_start(
+    request: &StartRequest,
+    capabilities: &MediaCapabilities,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
     if request.formats.is_empty() || request.formats.len() > 2 {
         return Err(invalid("Choose at least one scene/format".into()));
     }
@@ -779,7 +983,6 @@ pub async fn start(
         return Err(invalid("Choose an output in a requested format".into()));
     }
     let mut seen = std::collections::HashSet::new();
-    let capabilities: MediaCapabilities = runtime.capabilities.lock().await.clone();
     if !capabilities.available && !request.preview_only {
         return Err(invalid("FFmpeg is unavailable".into()));
     }
@@ -794,33 +997,49 @@ pub async fn start(
                     .get(target.index)
                     .filter(|output| output.enabled)
                     .ok_or_else(|| invalid("This destination is unavailable or disabled".into()))?;
-                validate_destination(output, &capabilities).map_err(invalid)?;
+                validate_destination(output, capabilities).map_err(invalid)?;
             }
         } else if !request.preview_only {
             for output in outputs.iter().filter(|output| output.enabled) {
-                validate_destination(output, &capabilities).map_err(invalid)?;
+                validate_destination(output, capabilities).map_err(invalid)?;
             }
         }
     }
-    runtime.apply(request.workspace).await.map_err(invalid)?;
-    for orientation in request.formats {
-        let format = crate::compositor::start(
+    Ok(())
+}
+
+async fn launch_formats(
+    runtime: &RuntimeState,
+    orientations: Vec<acheflow_media_api::workspace::Orientation>,
+    capabilities: &MediaCapabilities,
+    preview_only: bool,
+    output: Option<acheflow_media_api::live::OutputTarget>,
+) -> ApiResult {
+    let mut started = Vec::with_capacity(orientations.len());
+    for orientation in orientations {
+        match crate::compositor::start(
             runtime.clone(),
             orientation,
-            &capabilities,
-            request.preview_only || request.output.is_some(),
+            capabilities,
+            preview_only || output.is_some(),
         )
-        .await;
-        match format {
-            Ok(format) => runtime.formats.lock().await.push(format),
+        .await
+        {
+            Ok(format) => started.push(format),
             Err(error) => {
-                runtime.stop().await;
+                for format in &started {
+                    format.cancel.cancel();
+                }
+                for format in started {
+                    format.join().await;
+                }
                 return Err(invalid(error));
             }
         }
     }
-    if let Some(target) = request.output {
-        let outputs = current_outputs(&runtime, target.orientation);
+    runtime.formats.lock().await.extend(started);
+    if let Some(target) = output {
+        let outputs = current_outputs(runtime, target.orientation);
         let mut formats = runtime.formats.lock().await;
         if let Some(format) = formats
             .iter_mut()
@@ -828,7 +1047,7 @@ pub async fn start(
         {
             // The destination status owns encoder errors so the preview remains available.
             format
-                .run_outputs(Some(target.index), &outputs, &capabilities, false)
+                .run_outputs(Some(target.index), &outputs, capabilities, false)
                 .await;
         }
     }
@@ -852,6 +1071,26 @@ fn check_owner(runtime: &RuntimeState, id: &str) -> Result<(), (StatusCode, Json
     }
     Ok(())
 }
+pub async fn stop_format(
+    State(runtime): State<RuntimeState>,
+    Json(request): Json<StopFormatRequest>,
+) -> ApiResult {
+    let _guard = runtime.control.lock().await;
+    check_owner(&runtime, &request.workspace_id)?;
+    let stopped = {
+        let mut formats = runtime.formats.lock().await;
+        formats
+            .iter()
+            .position(|format| format.orientation == request.orientation)
+            .map(|index| formats.remove(index))
+    };
+    if let Some(format) = stopped {
+        format.cancel.cancel();
+        format.join().await;
+    }
+    Ok(Json(runtime.status().await))
+}
+
 pub async fn stop(
     State(runtime): State<RuntimeState>,
     Json(request): Json<ControlRequest>,

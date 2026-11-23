@@ -6,7 +6,9 @@ use tower_http::services::ServeDir;
 mod access;
 mod assets;
 mod audio_input;
+mod audio_meter;
 mod audio_mixer;
+mod audio_monitor;
 mod audio_packet;
 #[cfg(test)]
 mod audio_pipeline_tests;
@@ -185,16 +187,25 @@ async fn serve(
             get(settings::get).put(settings::save),
         )
         .with_state(settings);
-    let live_routes = Router::new()
+    let live_routes = audio_monitor::routes()
         .route("/api/live/status", get(live::status))
+        .route("/api/live/telemetry", get(live::telemetry))
         .route("/api/live/mixer", axum::routing::post(live::edit_mixer))
         .route("/api/live/sources", axum::routing::post(live::save_source))
         .route(
             "/api/live/output/profile",
             axum::routing::post(live::save_output_profile),
         )
+        .route(
+            "/api/live/format/settings",
+            axum::routing::post(live::save_format_settings),
+        )
         .route("/api/live/scenes", axum::routing::post(live::save_scene))
         .route("/api/live/take", axum::routing::post(live::take_scene))
+        .route(
+            "/api/live/format/stop",
+            axum::routing::post(live::stop_format),
+        )
         .route("/api/live/stop", axum::routing::post(live::stop))
         .route(
             "/api/live/output/restart",

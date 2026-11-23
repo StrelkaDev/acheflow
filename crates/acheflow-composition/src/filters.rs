@@ -11,6 +11,11 @@ pub struct PassParams {
     pub time: f32,
     pub source_size: [f32; 2],
 }
+pub(crate) struct LayerProfile<'a> {
+    pub profile: &'a mut crate::gpu_profile::GpuProfile,
+    pub viewport_id: Option<u64>,
+    pub layer: (u64, u32),
+}
 pub struct Filters {
     layout: BindGroupLayout,
     sampler: Sampler,
@@ -141,13 +146,14 @@ impl Filters {
         Ok(())
     }
     /// crop = normalized left, top, right edge and bottom edge in source space.
-    pub fn run(
+    pub(crate) fn run(
         &self,
         device: &Device,
         queue: &Queue,
         input: &Texture,
         targets: &[Texture; 2],
         params: PassParams,
+        mut profile: Option<LayerProfile<'_>>,
     ) -> usize {
         let PassParams {
             crop,
@@ -157,10 +163,24 @@ impl Filters {
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("Layer GPU effects"),
         });
+        let mut draw = |stage: &str, input, target, pipeline, uniforms| {
+            let timestamps = profile.as_mut().and_then(|layer| {
+                layer
+                    .profile
+                    .render_pass(stage, layer.viewport_id, Some(layer.layer))
+            });
+            self.draw(
+                device,
+                &mut encoder,
+                [input, target],
+                pipeline,
+                uniforms,
+                timestamps,
+            );
+        };
         // Crop pass stores four normalized edges in the common parameter slots.
-        self.draw(
-            device,
-            &mut encoder,
+        draw(
+            "Crop",
             input,
             &targets[0],
             &self.crop,
@@ -169,9 +189,8 @@ impl Filters {
         let mut current = 0;
         for (effect, pipeline) in &self.passes {
             let next = 1 - current;
-            self.draw(
-                device,
-                &mut encoder,
+            draw(
+                effect.kind.label(),
                 &targets[current],
                 &targets[next],
                 pipeline,
@@ -191,9 +210,8 @@ impl Filters {
             current = next;
         }
         let next = 1 - current;
-        self.draw(
-            device,
-            &mut encoder,
+        draw(
+            "Premultiply alpha",
             &targets[current],
             &targets[next],
             &self.premultiply,
@@ -206,10 +224,10 @@ impl Filters {
         &self,
         device: &Device,
         encoder: &mut CommandEncoder,
-        input: &Texture,
-        target: &Texture,
+        [input, target]: [&Texture; 2],
         pipeline: &RenderPipeline,
         params: EffectUniforms,
+        timestamp_writes: Option<RenderPassTimestampWrites<'_>>,
     ) {
         let mut floats = [0.; 16];
         floats[..2].copy_from_slice(&[target.width() as f32, target.height() as f32]);
@@ -252,6 +270,7 @@ impl Filters {
         });
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("Layer effect"),
+            timestamp_writes,
             color_attachments: &[Some(RenderPassColorAttachment {
                 view: &output,
                 depth_slice: None,

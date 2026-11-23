@@ -2,6 +2,7 @@ use crate::{live_client::LiveClient, project::Workspace, slider::Slider};
 use acheflow_media_api::audio::{
     AudioMeter, AudioStrip, BusChange, MixerEdit, StripChange, TrackKey,
 };
+use acheflow_media_api::live::MeterTarget;
 use dioxus_native::prelude::*;
 use std::collections::BTreeMap;
 
@@ -14,25 +15,67 @@ pub(crate) fn edit_bus(client: LiveClient, scene: u32, bus: u32, change: BusChan
 }
 
 #[component]
-pub fn Meters(meter: AudioMeter, #[props(default = false)] vertical: bool) -> Element {
+pub(crate) fn LiveMeters(
+    target: MeterTarget,
+    fallback: AudioMeter,
+    #[props(default)] vertical: bool,
+) -> Element {
+    let client = use_context::<LiveClient>();
+    let project = client.project.read();
+    let status = client.status.read();
+    let telemetry = client.telemetry.read();
+    let meter = telemetry
+        .as_ref()
+        .filter(|snapshot| {
+            snapshot.workspace_id.as_deref() == Some(project.id.as_str())
+                && (!matches!(target, MeterTarget::Output { .. })
+                    || status
+                        .as_ref()
+                        .is_some_and(|status| status.edit_revision == snapshot.edit_revision))
+        })
+        .map_or(fallback, |snapshot| {
+            snapshot
+                .meters
+                .iter()
+                .find(|reading| reading.target == target)
+                .map(|reading| reading.meter.clone())
+                .unwrap_or_default()
+        });
+    rsx! {Meters {meter,vertical,source:matches!(target, MeterTarget::Source { .. })}}
+}
+
+#[component]
+pub fn Meters(
+    meter: AudioMeter,
+    #[props(default)] vertical: bool,
+    #[props(default)] source: bool,
+) -> Element {
     rsx! {div {class:if vertical {"audio-meters vertical-meters"}else{"audio-meters"},
         for channel in 0..2 {
             {
                 let peak=f64::from(meter.peak[channel]);
                 let db=decibels(peak);
                 let percentage=db_position(db, -60.);
+                let held=f64::from(meter.held_peak[channel]);
                 let readout=db_text(peak, "dBFS");
                 rsx! {div {class:"audio-meter-row",span {if channel==0 {"L"}else{"R"}}
                     div {class:"audio-meter",role:"meter","aria-label":if channel==0 {"Left peak"}else{"Right peak"},"aria-valuemin":"-60","aria-valuemax":"6.02","aria-valuenow":format!("{:.1}",db.clamp(-60.,max_gain_db())),"aria-valuetext":readout.clone(),
                         div {class:"audio-level"}
                         div {class:"audio-meter-mask",style:format!("{}:{:.2}%;",if vertical {"height"}else{"width"},100.-percentage)}
                         div {class:"audio-meter-zero",title:"0 dBFS"}
+                        if held > 0. {
+                            div {class:"audio-meter-peak-hold","aria-hidden":"true",style:format!("{}:{:.2}%;",if vertical {"bottom"}else{"left"},db_position(decibels(held), -60.))}
+                        }
                     }
                     span {class:"audio-db","{readout}"}
                 }}
             }
         }
-        if meter.clipped_samples>0 {span {class:"field-error","Clipping: {meter.clipped_samples} samples / block"}}
+        span {class:"field-error audio-meter-clip",role:"status",
+            if meter.recently_clipped || meter.clipped_samples > 0 {
+                if source {"Full scale"} else {"Clipping"}
+            }
+        }
     }}
 }
 
@@ -119,7 +162,7 @@ mod scale_tests {
     }
 }
 #[component]
-pub fn AudioMixer(project: Signal<Workspace>) -> Element {
+pub fn AudioMixer(project: Signal<Workspace>, visible: bool) -> Element {
     let client = use_context::<LiveClient>();
     let mut selected = use_signal(|| None::<u32>);
     let workspace = project.read().clone();
@@ -158,7 +201,7 @@ pub fn AudioMixer(project: Signal<Workspace>) -> Element {
                     div {class:"row",button {class:if bus.muted{"selected"}else{""},"aria-pressed":bus.muted.to_string(),onclick:move |_|{edit_bus(client,scene.id,bus.id,BusChange::Mute(!bus.muted))},"Mute"}
                         if bus.id!=1 {button {onclick:move |_|edit_bus(client,scene.id,bus.id,BusChange::Remove),"Remove bus"}}
                     }
-                    Meters {meter:status.as_ref().into_iter().flat_map(|s|&s.formats).flat_map(|f|&f.audio_buses).find(|b|b.scene_id==scene.id && b.bus_id==bus.id).map(|b|b.meter.clone()).unwrap_or_default()}
+                    if visible {LiveMeters {target:MeterTarget::Bus {orientation:scene.orientation,scene_id:scene.id,bus_id:bus.id},fallback:status.as_ref().into_iter().flat_map(|s|&s.formats).flat_map(|f|&f.audio_buses).find(|b|b.scene_id==scene.id && b.bus_id==bus.id).map(|b|b.meter.clone()).unwrap_or_default()}}
                 }
             }}
             div {class:"panel-note","Program is the default bus. Removing another bus resets its destination routes to Program. Bus meters show the applied active scene."}
@@ -180,9 +223,10 @@ pub fn AudioMixer(project: Signal<Workspace>) -> Element {
                                     div {class:"audio-strip-heading",h3 {"{source.name} · track {track_id}"}
                                         span {class:"badge",if track.as_ref().is_some_and(|t|t.active){"Receiving"}else{"Waiting"}}
                                     }
-                                    if let Some(track)=track {p {class:"form-help","{track.codec} → {track.sample_rate} Hz / {track.channels} channels"}Meters {meter:track.meter}
-                                        if let Some(error)=track.error {p {class:"field-error",role:"alert","{error}"}}
-                                    }else{Meters {meter:AudioMeter::default()}}
+                                    if let Some(track)=track.as_ref() {p {class:"form-help","{track.codec} → {track.sample_rate} Hz / {track.channels} channels"}
+                                        if let Some(error)=track.error.as_ref() {p {class:"field-error",role:"alert","{error}"}}
+                                    }
+                                    if visible {LiveMeters {target:MeterTarget::Source {source_id:source.id,track_id},fallback:track.map(|track|track.meter).unwrap_or_default()}}
                                     StripControls {scene_id:scene.id,strip:strip.clone()}
                                     div {class:"audio-sends",for bus in &scene.audio.buses {
                                         div {class:"field",span {"Send → {bus.name}"}GainFader {label:"Send gain",gain:strip.sends.get(&bus.id).copied().unwrap_or(0),reset_unity:false,change:{let id=bus.id;move |v:u32|edit_strip(client,scene.id,key,StripChange::Send {bus:id,gain:v})}}}

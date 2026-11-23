@@ -958,6 +958,18 @@ fn rate_control(encoder: &str, mode: BitrateMode, kbps: u32) -> Vec<String> {
             "1".into(),
         ];
     }
+    if encoder == "libsvtav1" && mode == BitrateMode::Vbr {
+        // SVT-AV1 accepts a maximum bitrate only with CRF. Supplying equal
+        // target and maximum bitrates selects CBR in the FFmpeg wrapper.
+        return vec![
+            "-b:v".into(),
+            "0".into(),
+            "-crf".into(),
+            "35".into(),
+            "-maxrate".into(),
+            format!("{kbps}k"),
+        ];
+    }
     let mut args = vec![
         "-b:v".into(),
         format!("{kbps}k"),
@@ -1001,7 +1013,7 @@ fn encoder_options(encoder: &str) -> &'static [&'static str] {
     match encoder {
         "libx264" | "libx264rgb" => &["-preset", "veryfast", "-tune", "zerolatency"],
         "libx265" => &["-preset", "ultrafast"],
-        "libsvtav1" => &["-preset", "12"],
+        "libsvtav1" => &["-preset", "12", "-svtav1-params", "pred-struct=1"],
         "libvpx-vp9" => &["-deadline", "realtime", "-cpu-used", "8"],
         // FFmpeg VideoToolbox can use a software implementation. Require hardware.
         // https://github.com/FFmpeg/FFmpeg/blob/n9.0/libavcodec/videotoolboxenc.c

@@ -147,6 +147,11 @@ async fn scan(executable: &std::path::Path) -> Result<MediaCapabilities, String>
     {
         let help = output(executable, &["-h", &format!("encoder={}", encoder.name)]).await?;
         encoder.hardware = hardware_encoder_help(&help);
+        encoder.accepts_yuv420p = help.lines().find_map(|line| {
+            line.trim()
+                .strip_prefix("Supported pixel formats:")
+                .map(|formats| formats.split_whitespace().any(|format| format == "yuv420p"))
+        });
     }
     let protocols = output(executable, &["-protocols"]).await?;
     let muxers = output(executable, &["-muxers"]).await?;
@@ -239,6 +244,7 @@ fn parse_encoders(output: &str) -> Vec<Encoder> {
             description: description.into(),
             experimental: flags.as_bytes()[3] == b'X',
             hardware: false,
+            accepts_yuv420p: None,
         });
     }
     encoders.sort_by(|a, b| a.name.cmp(&b.name));

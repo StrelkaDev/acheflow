@@ -40,7 +40,17 @@ fn app() -> Element {
     use_context_provider(|| access);
     crate::live_client::use_live_client(project);
     crate::control_client::use_control_client(project);
-    rsx! {style {{include_str!("dashboard.css")}} Studio {project,visible:true}}
+    let catalog = use_signal(crate::workspaces::Catalog::default);
+    crate::audio_monitor::provide(project, catalog);
+    let separate = use_signal(|| None);
+    use_context_provider(|| crate::source_settings::SeparateSourcePreview(separate));
+    rsx! {style {{include_str!("dashboard.css")}}
+        if let Some(source_id)=separate() {
+            crate::source_settings::SeparateSourceView {project,source_id}
+        } else {
+            Studio {project,visible:true}
+        }
+    }
 }
 
 fn settle(doc: &mut DioxusDocument) {
@@ -197,5 +207,201 @@ async fn studio_switches_draft_capture_to_the_selected_scene() {
     })
     .await;
     assert_eq!(requests.lock().unwrap().len(), previous_requests);
+    server.abort();
+}
+
+#[tokio::test]
+async fn studio_source_preview_switches_between_camera_and_microphone_and_stops_on_close() {
+    use acheflow_media_api::{
+        audio::{AudioMeter, AudioTrackStatus},
+        live::SourceStatus,
+        visual::SourceKind,
+    };
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut workspace = Workspace {
+        server_url: format!("http://{}", listener.local_addr().unwrap()),
+        ..Default::default()
+    };
+    workspace.add_source();
+    workspace.add_source();
+    workspace.sources[0].name = "Camera fixture".into();
+    workspace.sources[0].kind = SourceKind::Camera {
+        device_id: "fixture-camera".into(),
+        mode: None,
+        mirrored: false,
+    };
+    workspace.sources[1].name = "Microphone fixture".into();
+    workspace.sources[1].kind = SourceKind::Microphone {
+        device_id: "fixture-microphone".into(),
+        mode: None,
+    };
+    let camera = workspace.sources[0].id;
+    let microphone = workspace.sources[1].id;
+    let owner = workspace.id.clone();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let leases = requests.clone();
+    let snapshots = requests.clone();
+    let photo = {
+        let mut bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut bytes)
+            .encode_image(&image::RgbImage::from_pixel(16, 9, image::Rgb([255, 0, 0])))
+            .unwrap();
+        bytes
+    };
+    let router = axum::Router::new()
+        .route(
+            "/api/live/status",
+            axum::routing::get(move || {
+                let owner = owner.clone();
+                async move {
+                    let status =
+                        |id, width: Option<u32>, height, audio_tracks: Vec<_>| SourceStatus {
+                            id,
+                            connected: true,
+                            received_bytes: 0,
+                            bitrate_kbps: 0.,
+                            frames: u64::from(width.is_some()),
+                            width,
+                            height,
+                            fps: None,
+                            audio: !audio_tracks.is_empty(),
+                            audio_tracks,
+                            error: None,
+                        };
+                    axum::Json(LiveStatus {
+                        workspace_id: Some(owner),
+                        sources: vec![
+                            status(camera, Some(16), Some(9), vec![]),
+                            status(
+                                microphone,
+                                None,
+                                None,
+                                vec![AudioTrackStatus {
+                                    track_id: 0,
+                                    codec: "PCM".into(),
+                                    sample_rate: 48_000,
+                                    channels: 2,
+                                    active: true,
+                                    meter: AudioMeter {
+                                        peak: [0.5, 0.5],
+                                        ..Default::default()
+                                    },
+                                    error: None,
+                                }],
+                            ),
+                        ],
+                        ..Default::default()
+                    })
+                }
+            }),
+        )
+        .route(
+            "/api/live/source-preview",
+            axum::routing::post(
+                move |axum::Json(request): axum::Json<SourcePreviewRequest>| {
+                    let leases = leases.clone();
+                    async move {
+                        leases.lock().unwrap().push(("lease", request.source_id));
+                        axum::Json(())
+                    }
+                },
+            ),
+        )
+        .route(
+            "/api/live/source/{id}",
+            axum::routing::get(move |axum::extract::Path(id): axum::extract::Path<u32>| {
+                let snapshots = snapshots.clone();
+                let photo = photo.clone();
+                async move {
+                    snapshots.lock().unwrap().push(("video", id));
+                    ([(axum::http::header::CONTENT_TYPE, "image/jpeg")], photo)
+                }
+            }),
+        );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(app).with_root_context(workspace),
+        DocumentConfig {
+            font_ctx: Some(dioxus_native::build_single_font_ctx(include_bytes!(
+                "../assets/DejaVuSans.woff2"
+            ))),
+            ..Default::default()
+        },
+    );
+    doc.initial_build();
+    doc.inner.borrow_mut().set_viewport(Viewport {
+        window_size: (1400, 1000),
+        ..Default::default()
+    });
+    settle(&mut doc);
+    assert!(requests.lock().unwrap().is_empty());
+    const TOGGLE: &str = ".studio-source-preview .panel-heading button";
+    click(&mut doc, TOGGLE);
+    assert!(requests.lock().unwrap().is_empty());
+    click(&mut doc, ".studio-source-options button:first-of-type");
+    let count = |kind, id| {
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|&&(request_kind, source)| request_kind == kind && source == id)
+            .count()
+    };
+    until(&mut doc, |_| {
+        count("lease", camera) > 0 && count("video", camera) > 0
+    })
+    .await;
+
+    click(&mut doc, ".studio-source-options button:nth-of-type(2)");
+    until(&mut doc, |doc| {
+        count("lease", microphone) > 0
+            && doc
+                .inner
+                .borrow()
+                .query_selector(".studio-source-track [role=meter]")
+                .unwrap()
+                .is_some()
+    })
+    .await;
+    assert!(
+        doc.inner
+            .borrow()
+            .query_selector(".studio-source-image")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(count("video", microphone), 0);
+
+    click(
+        &mut doc,
+        ".studio-source-preview .row.padded > button:not([aria-pressed])",
+    );
+    until(&mut doc, |doc| {
+        let inner = doc.inner.borrow();
+        let title = inner.query_selector(".separate-source-view h1").unwrap();
+        title.is_some_and(|title| {
+            inner.get_node(title).unwrap().text_content() == "Microphone fixture"
+        }) && inner
+            .query_selector(".separate-source-view .audio-monitor-control button")
+            .unwrap()
+            .is_some()
+    })
+    .await;
+    click(&mut doc, ".separate-source-view .page-heading button");
+    assert!(
+        doc.inner
+            .borrow()
+            .query_selector(".studio-source-track")
+            .unwrap()
+            .is_none()
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(2_200);
+    // Any in-flight camera fetch can finish, but no requests are scheduled after close.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let previous = requests.lock().unwrap().len();
+    until(&mut doc, |_| tokio::time::Instant::now() >= deadline).await;
+    assert_eq!(requests.lock().unwrap().len(), previous);
     server.abort();
 }

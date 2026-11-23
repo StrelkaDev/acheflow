@@ -3,7 +3,7 @@ use crate::{
 };
 use acheflow_media_api::{
     access::Permission,
-    live::{SourceCapture, SourceEdit, SourceStatus},
+    live::{MeterTarget, SourceCapture, SourceEdit, SourceStatus},
     visual::SourceKind,
     workspace::Source,
 };
@@ -93,12 +93,132 @@ pub(crate) fn preview_source_registered(source_id: u32) -> bool {
         .is_none_or(|sync| !sync.can_edit_workspace() || sync.saved_source(source_id).is_some())
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct SeparateSourcePreview(pub Signal<Option<u32>>);
+
+#[component]
+pub(crate) fn OpenSourcePreview(source_id: u32) -> Element {
+    let Some(SeparateSourcePreview(mut view)) = try_consume_context::<SeparateSourcePreview>()
+    else {
+        return rsx! {};
+    };
+    rsx! {crate::server_settings::ActionButton {onclick:move |_|view.set(Some(source_id)), "Open preview"}}
+}
+
+#[component]
+pub(crate) fn SeparateSourceView(project: Signal<Workspace>, source_id: u32) -> Element {
+    let SeparateSourcePreview(mut view) = use_context::<SeparateSourcePreview>();
+    let client = use_context::<LiveClient>();
+    let workspace = project.read();
+    let source = workspace
+        .sources
+        .iter()
+        .find(|source| source.id == source_id && source.kind.is_media_input());
+    let status = client.status.read();
+    let status = status
+        .as_ref()
+        .filter(|status| status.workspace_id.as_deref() == Some(workspace.id.as_str()));
+    rsx! {
+        div {class:"live-content separate-source-view",
+            div {class:"page-heading",
+                div {h1 {if let Some(source)=source {"{source.name}"} else {"Source preview"}}}
+                crate::server_settings::ActionButton {onclick:move |_|view.set(None),"Close preview"}
+            }
+            if let Some(source)=source {
+                section {class:"panel",
+                    SourcePreview {source_id,video:source.kind.is_video_input(),
+                        activated:status.is_some_and(|status|status.activated),
+                        input:status.and_then(|status|status.sources.iter().find(|input|input.id==source_id)).cloned(),
+                        inspector:true,separate:true}
+                }
+            } else {
+                p {class:"form-help","This source is no longer available."}
+            }
+        }
+    }
+}
+
+#[component]
+pub(crate) fn StudioSourcePreview(project: Signal<Workspace>) -> Element {
+    let client = use_context::<LiveClient>();
+    let mut open = use_signal(|| false);
+    let mut selected = use_signal(|| None::<u32>);
+    use_effect(move || {
+        if let Some(id) = selected()
+            && !project
+                .read()
+                .sources
+                .iter()
+                .any(|source| source.id == id && source.kind.is_media_input())
+        {
+            selected.set(None);
+        }
+    });
+    let workspace = project.read();
+    let sources = workspace
+        .sources
+        .iter()
+        .filter(|source| source.kind.is_media_input())
+        .collect::<Vec<_>>();
+    let source = sources
+        .iter()
+        .copied()
+        .find(|source| Some(source.id) == selected());
+    let status = client.status.read();
+    let status = status
+        .as_ref()
+        .filter(|status| status.workspace_id.as_deref() == Some(workspace.id.as_str()));
+
+    if sources.is_empty() {
+        return rsx! {};
+    }
+    rsx! {
+        section {class:"panel studio-source-preview",
+            div {class:"panel-heading", h2 {"Source preview"}
+                crate::server_settings::ActionButton {expanded:Some(open()), onclick:move |_| {
+                    let next = !open();
+                    open.set(next);
+                    if !next { selected.set(None); }
+                }, if open() {"Close source preview"} else {"Choose source"}}
+            }
+            if open() {
+                div {class:"row padded studio-source-options",role:"group","aria-label":"Sources to preview",
+                    for source in sources {
+                        {
+                            let id = source.id;
+                            let chosen = selected() == Some(id);
+                            rsx! {
+                                crate::server_settings::ActionButton {key:"{id}",class:if chosen {"selected"} else {""},pressed:Some(chosen),
+                                    onclick:move |_|selected.set((!chosen).then_some(id)),
+                                    "{source.name}"
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(source) = source {
+                    div {key:"{source.id}",
+                        div {class:"row padded", OpenSourcePreview {source_id:source.id}}
+                        SourcePreview {source_id:source.id,video:source.kind.is_video_input(),
+                            activated:status.is_some_and(|status|status.activated),
+                            input:status.and_then(|status|status.sources.iter().find(|input|input.id==source.id)).cloned(),
+                            inspector:true
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 pub(crate) fn SourcePreview(
     source_id: u32,
     video: bool,
     activated: bool,
     input: Option<SourceStatus>,
+    #[props(default)] inspector: bool,
+    #[props(default)] separate: bool,
 ) -> Element {
     let Some(client) = try_consume_context::<LiveClient>() else {
         return rsx! {};
@@ -112,10 +232,45 @@ pub(crate) fn SourcePreview(
         }
     }));
     let registered = preview_source_registered(source_id);
-    let previewing = can_request && registered && open();
+    let previewing = can_request && registered && (inspector || open());
     let workspace = client.project.read();
+    if inspector {
+        let unavailable = if !client.owns() {
+            Some("Save or follow this workspace on the server to preview its sources.")
+        } else if video && !crate::server_access::allows(Permission::StudioView) {
+            Some("This device needs Studio viewing access to see video.")
+        } else if !registered {
+            Some("Add this source to the server before previewing it.")
+        } else if !activated && !allowed {
+            Some("This device needs media management access to start an inactive source.")
+        } else {
+            None
+        };
+        if let Some(reason) = unavailable {
+            return rsx! {p {class:"padded form-help",role:"status","{reason}"}};
+        }
+    }
+    let showing = activated || previewing;
+    let connected = input.as_ref().is_some_and(|status| status.connected);
+    let image = showing
+        && video
+        && connected
+        && (!inspector || input.as_ref().is_some_and(|status| status.frames > 0));
+    let error = input.as_ref().and_then(|status| status.error.clone());
+    let primary_track = input.as_ref().and_then(|status| {
+        status
+            .audio_tracks
+            .iter()
+            .filter(|track| track.active)
+            .min_by_key(|track| track.track_id)
+    });
+    let image_class = if separate {
+        "studio-source-image separate-source-image"
+    } else {
+        "studio-source-image"
+    };
     rsx! {
-        if can_request {
+        if can_request && !inspector {
             div {class:"source-footer",
                 button {disabled:!registered,title:if registered {""} else {"Add this source to the server first."},"aria-pressed":previewing.to_string(),onclick:move |_|open.set(!open()),
                     if previewing {"Close preview"} else if video {"Preview source"} else {"Check microphone level"}
@@ -124,14 +279,50 @@ pub(crate) fn SourcePreview(
         }
         if previewing {
             KeepSourcePreview {key:"{workspace.id}-{workspace.server_url}-{source_id}",source_id,
-                waiting:input.as_ref().is_none_or(|status| !status.connected && status.error.is_none())}
+                waiting:!inspector && !connected && error.is_none(),
+                capture_error:if inspector {None} else {error.clone()}}
         }
-        if (activated || previewing) && let Some(status)=input.as_ref() {
-            if video && status.connected {
-                crate::video_preview::VideoPreview {url:client.preview(&format!("/api/live/source/{source_id}")),class:"source-card-preview"}
-            } else if !video && let Some(track)=status.audio_tracks.iter().find(|track|track.track_id==0) {
-                div {class:"padded",crate::audio_mixer::Meters {meter:track.meter.clone()}}
+        if inspector {
+            div {class:"padded studio-source-readout",
+                div {class:"row",
+                    span {class:"badge",role:"status",if error.is_some() {"Source error"} else if connected {"Connected"} else {"Waiting for source"}}
+                    if let Some(status) = input.as_ref() {
+                        if let (Some(width), Some(height)) = (status.width, status.height) {
+                            span {class:"form-help","{width} × {height}"}
+                        }
+                        if let Some(fps) = status.fps {
+                            span {class:"form-help","{fps:.1} FPS"}
+                        }
+                    }
+                    if let Some(track)=primary_track {
+                        crate::audio_monitor::MonitorButton {target:crate::audio_monitor::Target::Source {source:source_id,track:track.track_id},source_preview:true}
+                    }
+                }
+                if let Some(error) = error.as_ref() {
+                    p {class:"field-error",role:"alert","{error}"}
+                }
+                if video && !image {
+                    div {class:format!("{image_class} source-preview-waiting"),"Waiting for video"}
+                }
+                if image {
+                    crate::video_preview::VideoPreview {url:client.preview(&format!("/api/live/source/{source_id}")),class:image_class}
+                }
+                if !video && input.as_ref().is_none_or(|status| status.audio_tracks.is_empty()) {
+                    p {class:"form-help",role:"status","Waiting for microphone samples"}
+                }
+                if let Some(status) = input.as_ref() {
+                    for track in &status.audio_tracks {
+                        div {key:"{track.track_id}",class:"studio-source-track",
+                            span {class:"form-help","Track {track.track_id} · {track.sample_rate} Hz"}
+                            crate::audio_mixer::LiveMeters {target:MeterTarget::Source {source_id,track_id:track.track_id},fallback:track.meter.clone()}
+                        }
+                    }
+                }
             }
+        } else if image {
+            crate::video_preview::VideoPreview {url:client.preview(&format!("/api/live/source/{source_id}")),class:"source-card-preview"}
+        } else if showing && !video && let Some(track)=input.as_ref().and_then(|status|status.audio_tracks.iter().find(|track|track.track_id==0)) {
+            div {class:"padded",crate::audio_mixer::LiveMeters {target:MeterTarget::Source {source_id,track_id:0},fallback:track.meter.clone()}}
         }
     }
 }

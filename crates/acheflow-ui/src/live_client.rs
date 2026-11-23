@@ -1,10 +1,12 @@
 use crate::project::{Orientation, Workspace};
 use acheflow_media_api::audio::{MAX_MIXER_EDITS, MixerAck, MixerEdit, MixerRequest};
 use acheflow_media_api::live::{
-    ApiError, ControlRequest, LiveStatus, ManageOutputsRequest, OutputAction, OutputProfile,
-    OutputProfileAck, OutputProfileRequest, OutputTarget, SceneContent, SceneEdit,
-    SceneSettingsAck, SceneSettingsRequest, SourceEdit, SourcePreviewRequest, SourceSettingsAck,
-    SourceSettingsRequest, StartRequest, TakeSceneAck, TakeSceneRequest,
+    ApiError, ControlRequest, FormatSettingsAck, FormatSettingsEdit, FormatSettingsRequest,
+    LiveStatus, ManageOutputsRequest, MediaTelemetry, OutputAction, OutputProfile,
+    OutputProfileAck, OutputProfileRequest, OutputTarget, SERVER_LOAD_HISTORY, SceneContent,
+    SceneEdit, SceneSettingsAck, SceneSettingsRequest, ServerLoadSample, SourceEdit,
+    SourcePreviewRequest, SourceSettingsAck, SourceSettingsRequest, StartRequest,
+    StartSavedRequest, StopFormatRequest, TakeSceneAck, TakeSceneRequest,
 };
 use dioxus_native::prelude::*;
 
@@ -15,6 +17,8 @@ pub(crate) struct LiveTelemetryInterval(pub Memo<Option<u32>>);
 pub struct LiveClient {
     pub project: Signal<Workspace>,
     pub status: Signal<Option<LiveStatus>>,
+    pub(crate) telemetry: Signal<Option<MediaTelemetry>>,
+    pub(crate) server_load: Signal<Vec<ServerLoadSample>>,
     pub busy: Signal<bool>,
     pub error: Signal<Option<String>>,
     pub connection: Signal<Option<String>>,
@@ -29,6 +33,7 @@ enum ScopedEdit {
     Source(u32, SourceEdit),
     Scene(u32, SceneEdit),
     Output(OutputTarget, OutputProfile, u64),
+    Format(FormatSettingsRequest),
 }
 
 #[derive(Clone, Copy)]
@@ -41,6 +46,7 @@ pub enum Action {
     },
     Outputs(OutputAction, Option<OutputTarget>),
     Stop,
+    StopFormat(Orientation),
     Deactivate,
     DeactivateActive,
 }
@@ -50,6 +56,8 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
     let mut client = LiveClient {
         project,
         status: use_signal(|| None),
+        telemetry: use_signal(|| None),
+        server_load: use_signal(Vec::new),
         busy: use_signal(|| false),
         error: use_signal(|| None),
         connection: use_signal(|| None),
@@ -75,6 +83,8 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
         if previous_owner.peek().as_ref() != Some(&owner) {
             previous_owner.set(Some(owner.clone()));
             client.status.set(None);
+            client.telemetry.set(None);
+            client.server_load.set(Vec::new());
             client.traffic.set(Default::default());
             client.error.set(None);
             client
@@ -93,13 +103,14 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
                 if !*client.busy.peek() {
                     let generation = *client.generation.peek();
                     let workspace = project.peek().clone();
-                    let response = request_media::<LiveStatus>(
-                        &workspace,
-                        reqwest::Method::GET,
-                        "/api/live/status",
-                        None,
-                    )
-                    .await;
+                    let path = if client.telemetry.peek().is_some() {
+                        "/api/live/status?include_load=false"
+                    } else {
+                        "/api/live/status"
+                    };
+                    let response =
+                        request_media::<LiveStatus>(&workspace, reqwest::Method::GET, path, None)
+                            .await;
                     if owner == identity()
                         && generation == *client.generation.peek()
                         && !*client.busy.peek()
@@ -136,14 +147,88 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
             }
         }
     });
+    use_resource(move || {
+        let owner = identity();
+        let foreground = telemetry.and_then(|interval| (interval.0)());
+        let endpoint = crate::media::server_url(&project.peek(), "/api/live/telemetry");
+        async move {
+            let (Some(interval), Ok(endpoint)) = (foreground, endpoint) else {
+                return;
+            };
+            let mut failures = 0u8;
+            let mut after = None;
+            loop {
+                let started = web_time::Instant::now();
+                let url = after.map_or_else(
+                    || endpoint.clone(),
+                    |cursor| format!("{endpoint}?after={cursor}"),
+                );
+                let result =
+                    request_media_at::<MediaTelemetry>(reqwest::Method::GET, &url, None).await;
+                if owner != identity() {
+                    return;
+                }
+                match result {
+                    Ok(mut snapshot) => {
+                        failures = 0;
+                        if !snapshot.server_load.is_empty() {
+                            let samples = std::mem::take(&mut snapshot.server_load);
+                            let mut history = client.server_load.write();
+                            merge_load_history(&mut history, samples, after);
+                            after = history.last().map(|sample| sample.time_ms);
+                        } else if after.is_none() && !client.server_load.peek().is_empty() {
+                            client.server_load.set(Vec::new());
+                        }
+                        if client.telemetry.peek().as_ref() != Some(&snapshot) {
+                            client.telemetry.set(Some(snapshot));
+                        }
+                    }
+                    Err(_) => {
+                        failures = failures.saturating_add(1);
+                        after = None;
+                        if client.telemetry.peek().is_some() {
+                            client.telemetry.set(None);
+                        }
+                        if !client.server_load.peek().is_empty() {
+                            client.server_load.set(Vec::new());
+                        }
+                    }
+                }
+                let delay = polling_delay(true, failures, interval);
+                let elapsed = started.elapsed().as_millis().min(u128::from(delay)) as u32;
+                crate::scene_preview::pause(delay - elapsed).await;
+            }
+        }
+    });
     client
 }
 
 fn live_polling_delay(foreground_ms: Option<u32>, active: bool, failures: u8) -> u32 {
-    match foreground_ms {
-        Some(interval) => polling_delay(true, failures, interval),
-        None => polling_delay(active, failures, 500),
+    polling_delay(foreground_ms.is_some() || active, failures, 1000)
+}
+
+fn merge_load_history(
+    history: &mut Vec<ServerLoadSample>,
+    samples: Vec<ServerLoadSample>,
+    after: Option<u64>,
+) {
+    if after.is_none()
+        || samples
+            .last()
+            .zip(after)
+            .is_some_and(|(sample, cursor)| sample.time_ms < cursor)
+    {
+        history.clear();
     }
+    for sample in samples {
+        if history
+            .last()
+            .is_none_or(|last| last.time_ms < sample.time_ms)
+        {
+            history.push(sample);
+        }
+    }
+    history.drain(..history.len().saturating_sub(SERVER_LOAD_HISTORY));
 }
 
 impl LiveClient {
@@ -158,6 +243,28 @@ impl LiveClient {
             let revision = self.project.peek().edit_revision;
             self.queue_edit(sync, ScopedEdit::Output(target, profile, revision));
         }
+    }
+
+    pub(crate) fn save_format_settings(self, orientation: Orientation, edit: FormatSettingsEdit) {
+        let Some(sync) = try_consume_context::<crate::workspace_sync::WorkspaceSync>() else {
+            return;
+        };
+        if *self.busy.peek()
+            || *self.scoped_pending.peek()
+            || sync.saved_stream(orientation).is_none()
+        {
+            return;
+        }
+        let request = {
+            let project = self.project.peek();
+            FormatSettingsRequest {
+                workspace_id: project.id.clone(),
+                expected_revision: project.edit_revision,
+                orientation,
+                edit,
+            }
+        };
+        self.queue_edit(sync, ScopedEdit::Format(request));
     }
 
     pub(crate) fn save_scene(self, id: u32) {
@@ -388,6 +495,30 @@ impl LiveClient {
                             Err(error) => error,
                         }
                     }
+                    [ScopedEdit::Format(request)] => {
+                        let result = match serde_json::to_value(request) {
+                            Ok(body) => {
+                                request_media::<FormatSettingsAck>(
+                                    &workspace,
+                                    reqwest::Method::POST,
+                                    "/api/live/format/settings",
+                                    Some(body),
+                                )
+                                .await
+                            }
+                            Err(error) => Err(error.to_string()),
+                        };
+                        if !same_workspace() {
+                            return;
+                        }
+                        match result {
+                            Ok(ack) if sync.applied_format_settings(request, ack) => continue,
+                            Ok(_) => {
+                                "Workspace version changed while saving format settings.".into()
+                            }
+                            Err(error) => error,
+                        }
+                    }
                     [ScopedEdit::Scene(id, edit)] => {
                         let request = SceneSettingsRequest {
                             workspace_id: workspace.id.clone(),
@@ -494,20 +625,52 @@ impl LiveClient {
                     "Starting outputs"
                 }
                 Action::Outputs(OutputAction::Restart, _) => "Restarting outputs",
-                Action::Stop => "Stopping stream",
+                Action::Stop | Action::StopFormat(_) => "Stopping stream",
                 Action::Deactivate | Action::DeactivateActive => "Deactivating workspace",
             },
         );
         let mut workspace = self.project.peek().clone();
-        if let Action::Start { scenes, .. } = action {
-            for (orientation, scene) in Orientation::ALL.into_iter().zip(scenes) {
-                workspace.set_active(orientation, scene);
+        let sync = try_consume_context::<crate::workspace_sync::WorkspaceSync>();
+        let saved_start = if let Action::Start {
+            output,
+            preview_only,
+            scenes,
+        } = action
+        {
+            if self.owns() {
+                let request = StartSavedRequest {
+                    workspace_id: workspace.id.clone(),
+                    expected_revision: workspace.edit_revision,
+                    scenes,
+                    preview_only,
+                    output,
+                };
+                if !sync.is_some_and(|sync| {
+                    request
+                        .programs()
+                        .all(|(orientation, scene)| sync.can_take_scene(orientation, scene))
+                }) {
+                    self.error.set(Some(
+                        "Follow the server workspace and save the selected scenes before starting."
+                            .into(),
+                    ));
+                    self.connection.set(None);
+                    return;
+                }
+                Some(request)
+            } else {
+                for (orientation, scene) in Orientation::ALL.into_iter().zip(scenes) {
+                    workspace.set_active(orientation, scene);
+                }
+                None
             }
-        }
-        let applies_workspace = matches!(&action, Action::Apply | Action::Start { .. });
+        } else {
+            None
+        };
+        let applies_workspace =
+            saved_start.is_none() && matches!(action, Action::Apply | Action::Start { .. });
         let target = workspace.clone();
         let identity = crate::server_access::identity();
-        let sync = try_consume_context::<crate::workspace_sync::WorkspaceSync>();
         self.busy.set(true);
         self.error.set(None);
         *self.generation.write() += 1;
@@ -518,6 +681,11 @@ impl LiveClient {
                     reqwest::Method::PUT,
                     "/api/live/config",
                     serde_json::to_value(workspace.server_configuration()),
+                ),
+                Action::Start { .. } if saved_start.is_some() => (
+                    reqwest::Method::POST,
+                    "/api/live/format/start",
+                    serde_json::to_value(&saved_start),
                 ),
                 Action::Start {
                     output,
@@ -555,6 +723,14 @@ impl LiveClient {
                         workspace_id: workspace.id,
                     }),
                 ),
+                Action::StopFormat(orientation) => (
+                    reqwest::Method::POST,
+                    "/api/live/format/stop",
+                    serde_json::to_value(StopFormatRequest {
+                        workspace_id: workspace.id,
+                        orientation,
+                    }),
+                ),
                 Action::Deactivate => (
                     reqwest::Method::DELETE,
                     "/api/live/config",
@@ -588,6 +764,13 @@ impl LiveClient {
             }
             match result {
                 Ok(status) => {
+                    if let (Some(request), Some(sync)) = (saved_start.as_ref(), sync)
+                        && !sync.applied_start(request, status.edit_revision)
+                    {
+                        self.error.set(Some(
+                            "Workspace version changed while starting the format.".into(),
+                        ));
+                    }
                     if applies_workspace
                         && status.workspace_id.as_deref() == Some(target.id.as_str())
                     {
@@ -753,9 +936,16 @@ async fn request_media<T: serde::de::DeserializeOwned>(
     path: &str,
     body: Option<serde_json::Value>,
 ) -> Result<T, String> {
+    request_media_at(method, &crate::media::server_url(workspace, path)?, body).await
+}
+
+async fn request_media_at<T: serde::de::DeserializeOwned>(
+    method: reqwest::Method,
+    url: &str,
+    body: Option<serde_json::Value>,
+) -> Result<T, String> {
     let mut request =
-        crate::server_access::request(method, &crate::media::server_url(workspace, path)?)?
-            .timeout(std::time::Duration::from_secs(15));
+        crate::server_access::request(method, url)?.timeout(std::time::Duration::from_secs(15));
     if let Some(body) = body {
         request = request.json(&body);
     }
@@ -796,9 +986,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn telemetry_history_deduplicates_and_recovers_after_clock_reset() {
+        let sample = |time_ms| ServerLoadSample {
+            time_ms,
+            cpu_percent: 0.,
+            ram_used_bytes: 0,
+            ram_total_bytes: 1,
+            busiest_gpu_percent: None,
+            gpus: Vec::new(),
+        };
+        let mut history = vec![sample(100), sample(200)];
+        merge_load_history(&mut history, vec![sample(200), sample(300)], Some(200));
+        assert_eq!(history, vec![sample(100), sample(200), sample(300)]);
+        merge_load_history(&mut history, vec![sample(50)], Some(300));
+        assert_eq!(history, vec![sample(50)]);
+        merge_load_history(&mut history, vec![sample(50), sample(100)], None);
+        assert_eq!(history, vec![sample(50), sample(100)]);
+    }
+
+    #[test]
     fn polling_is_slow_when_idle_and_backs_off_when_unreachable() {
-        assert_eq!(live_polling_delay(Some(100), false, 0), 100);
-        assert_eq!(live_polling_delay(Some(250), false, 0), 250);
+        assert_eq!(live_polling_delay(Some(100), false, 0), 1000);
+        assert_eq!(live_polling_delay(Some(250), false, 0), 1000);
         assert_eq!(live_polling_delay(None, false, 0), 5000);
         assert_eq!(live_polling_delay(Some(100), true, 1), 2000);
         assert_eq!(polling_delay(true, 0, 500), 500);

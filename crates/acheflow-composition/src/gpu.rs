@@ -313,6 +313,16 @@ impl GpuScene {
         ctx: &mut dyn RenderContext,
         frame: &SceneFrame,
     ) -> Result<Vec<LayerBox>, String> {
+        self.prepare_profiled(ctx, frame, None, None)
+    }
+
+    pub(crate) fn prepare_profiled(
+        &mut self,
+        ctx: &mut dyn RenderContext,
+        frame: &SceneFrame,
+        mut profile: Option<&mut crate::gpu_profile::GpuProfile>,
+        viewport_id: Option<u64>,
+    ) -> Result<Vec<LayerBox>, String> {
         while self.layers.len() > frame.scene.layers.len() {
             self.layers.pop().unwrap().release(ctx);
         }
@@ -443,6 +453,13 @@ impl GpuScene {
                         time: frame.time as f32,
                         source_size: [source.size.width as f32, source.size.height as f32],
                     },
+                    profile
+                        .as_deref_mut()
+                        .map(|profile| crate::filters::LayerProfile {
+                            profile,
+                            viewport_id,
+                            layer: (layer.id, layer.source_id),
+                        }),
                 )
             } else {
                 let slot = gpu.slot.lock().unwrap();

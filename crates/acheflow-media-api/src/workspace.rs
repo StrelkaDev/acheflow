@@ -161,7 +161,7 @@ impl Output {
     }
 }
 
-fn valid_stream_size(size: &Resolution) -> bool {
+pub(crate) fn valid_stream_size(size: &Resolution) -> bool {
     (16..=7680).contains(&size.width)
         && (16..=7680).contains(&size.height)
         && size.width.is_multiple_of(2)

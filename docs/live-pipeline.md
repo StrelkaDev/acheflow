@@ -36,12 +36,26 @@ receive a display projection without stream keys or transport URLs. See
    Track zero of each distinct video-layer source defaults to Program; additional
    tracks need explicit sends. Destination cards omit routing controls; new outputs
    use Program. Existing JSON routes are preserved. See [audio capabilities](audio-capabilities.md).
-4. In Studio choose a horizontal and/or vertical scene. **Preview draft inputs**
+4. In Studio, open **Source preview** with **Choose source** and select a camera,
+   microphone or network input. The panel shows video and available audio track
+   levels before scene composition. An already active source uses its existing
+   capture. With the workspace inactive, the panel opens only the chosen saved
+   input temporarily. Closing the panel or leaving Studio ends its requests.
+   A temporary capture expires about seven seconds after its last request.
+   Use **Open preview** here or on a card in **Live / Sources** to see only that
+   source in a larger view. **Close preview** returns to the starting tab.
+   This preview leaves the current program and audio routing in place.
+
+   Choose a horizontal and/or vertical scene. **Preview draft inputs**
    starts temporary capture for that format's draft. **Start program preview**
-   runs the server composition without sending it to destinations. Use **Start output**
-   on a destination to publish to it, or **Start all outputs** to launch the
-   enabled destinations for the selected formats. During a preview or broadcast,
-   starting an output keeps the composition and other running outputs in place.
+   runs the server composition without sending it to destinations. Use
+   **Start format preview** to run a single composition, **Start output** to
+   publish to one destination, or **Start all outputs** to publish to the
+   enabled destinations. Once a preview is running, the global output controls
+   act on the running formats. **Stop format** stops that composition and its
+   outputs while the other format and the workspace inputs stay active.
+   Studio starts saved scenes and destination settings when the workspace is
+   already on the server.
    Choosing a different scene opens its draft preview. **Take live** switches
    the program for that format to the saved scene. In a preview-only session,
    the same action is called **Use scene**.
@@ -66,9 +80,10 @@ receive a display projection without stream keys or transport URLs. See
 5. Scene edits show up in the local preview as you work. Use **Save scene** or
    **Update on air** to publish the selected scene's content. Mixer edits for
    saved server scenes apply as you work and keep
-   the video encoder running. Stop the format before changing its base canvas,
-   FPS or destination list. Changes to a destination’s enabled state take effect
-   at the next format start.
+   the video encoder running. In **Live / Settings**, use **Save canvas and FPS**
+   to save the base canvas and render rate of one format. Stop that format
+   before saving its canvas, adding or removing a destination, or changing
+   which destinations are enabled at its next start.
    Stop live leaves registered inputs available; deactivate sources stops both
    composition and incoming publishers.
 
@@ -94,7 +109,12 @@ missed frame deadlines are separate measurements from device activity.
 
 Each format shows observed and target FPS, p95 render time including readback,
 and the share of render attempts over the frame budget. **Render graph** shows
-the last minute of p95 values against the format's frame budget. Destination
+the last minute of p95 values against the format's frame budget. On adapters
+with GPU timestamp support, the graph also shows the latest sampled frame's
+GPU time per layer and pass. Time is sampled once per second and when the
+program scene changes. Cached layer effects cost no GPU passes on that frame.
+Viewport composition batches the layers together. Its timing, the 3D camera
+pass and the GPU readback copy appear separately. Destination
 cards show FFmpeg's FPS and speed relative to real time, repeated frames,
 inserted 20-ms silence blocks and automatic reconnects. Use
 [output-track profiling](development.md#output-track-profiling) to inspect
@@ -115,7 +135,10 @@ encoder, muxer, rate control, frame rate and keyframe interval without connectin
 to the destination. It exports decoded PNG snapshots at up to 15 FPS. Two encoded profiles per format can be previewed concurrently,
 and the encoder closes after four seconds without requests. Profile previews
 show the server's scene. A draft preview shows the selected scene from the
-local project. While workspace sources are inactive, **Preview draft inputs**
+local project. **Edit draft** opens the primary-viewport layer inspector in
+Studio. It shares undo history with **Scenes**. The running program stays in a
+separate preview alongside output status and the program mixer.
+While workspace sources are inactive, **Preview draft inputs**
 temporarily opens the saved inputs used by the scene's visible viewports and
 its routed audio tracks. Overlays remain part of the draft. Switching scenes
 changes which inputs Studio requests. **Stop draft capture** or leaving Studio
@@ -126,7 +149,20 @@ draft. **Update on air** publishes
 changes to the current program scene. **Take live** is enabled
 when the previewed scene and its sources match the saved version. It switches
 that format without publishing other draft edits or restarting outputs.
-Preview audio playback is not implemented; source audio is carried by outputs.
+In **Studio**, use **Listen** on a source track or a running scene bus, or
+**Listen to source** in the individual preview. Track and source monitoring
+play the input before scene mixing. Bus monitoring plays the live bus after
+its mix and before destination-specific gain. **Monitor volume** changes
+local playback. Only one monitor plays at a time on a device. Listening
+requires Studio View and Media Manage permissions.
+Choose headphones or another playback device under **Settings → General →
+Audio monitoring**. The client saves the selection across workspaces. Changing
+it stops local listening. Select **Listen** again to use the new output. If the
+saved device is unavailable, reconnect it or explicitly select **System default**.
+Browsers expose specific outputs only when the browser and site permissions
+support it. If the browser needs permission to discover audio devices, use
+**Allow browser device discovery**. The client releases the microphone after
+the permission check.
 The Studio preview widget reuses two wgpu textures per visible preview; the editor
 uses the shared GPU scene renderer with bounded per-layer textures. It bypasses Blitz's unbounded URL/image caches; widget
 resource registrations are automatically released by Blitz when the node drops.
@@ -146,8 +182,10 @@ destinations.
   if required by the receiver. See the [FFmpeg SRT options](https://ffmpeg.org/ffmpeg-protocols.html#srt).
 
 Check the [server's FFmpeg capabilities](ffmpeg.md#srt-input-and-output) if the
-chosen transport has no available encoders. Save an existing destination's
-profile with **Save output profile**, then start or restart it from Studio.
+chosen transport has no available encoders. Use **+ Output** and **Save new output**
+to add a destination to the server. **Remove** and **Output at next start**
+save their changes immediately. Save transport and encoder changes with
+**Save output profile**, then start or restart that destination from Studio.
 
 ## Source setup
 
@@ -408,8 +446,14 @@ the mixer uses bounded audio playout and reports the missing common timestamp.
 The clock correction in Studio is a PTS-derived estimate. The marker probe measures
 end-to-end offset. See [sustained A/V timing](development.md#sustained-av-timing).
 
-With Studio, Mixer or Sources open, the client requests status up to ten times
-per second. Audio meters move toward each reported block peak over 200 ms.
+With Studio, Mixer or Sources open, the client requests media telemetry up to
+ten times per second. Overview requests load updates four times per second.
+The telemetry response carries levels, render timing and new load samples.
+Unchanged load samples stay in the client graph history. Media status refreshes
+separately, about once per second in the foreground.
+Audio meters move toward each reported block peak over 200 ms. A marker holds
+each channel's peak for one second. Clipping and full-scale input indicators
+stay visible for one second after the last affected block.
 Preview FPS controls image snapshots independently. Each output consumes the
 latest composed image and its own bounded PCM stream, encoded as one AAC stereo
 track, 48 kHz / 128 kbps. Each encoder attempt starts its video clock at the
@@ -458,6 +502,18 @@ and extension configure/run permissions because it replaces their configuration.
 
 - `GET /api/live/status`: owner workspace id, RTMP bind address, source and format/output state; no tokens or destination URLs/keys. Sources report cumulative `received_bytes` and rolling `bitrate_kbps`; outputs report their workspace `index`, `sent_bytes` and `bitrate_kbps`. An output waiting for or making an automatic reconnection reports `state: "starting"` and the one-based `reconnect_attempt`. Input bytes count compressed audio/video payload, output bytes count FFmpeg FLV or MPEG-TS mux bytes. Rates use a two-second rolling window; transport overhead and GUI preview traffic are excluded. Output counters reset when a new encoder starts; input byte counters span publisher reconnects.
 - `PUT /api/live/config`: apply a workspace. Layout/source validation is independent of unfinished output drafts. Running encoding profiles cannot be changed.
+- `GET /api/live/telemetry` returns audio levels, render timing and server load
+  without media configuration. Supply `after` with the last load sample's
+  timestamp in milliseconds to receive only newer load samples. Server load
+  requires the media management permission.
+- `POST /api/live/format/settings` saves one canvas, destination addition, removal
+  or enabled state. It takes a workspace ID, expected edit revision, orientation
+  and a tagged edit, and returns the saved revision. The target format must be stopped.
+- `POST /api/live/format/start` starts saved compositions. Send the workspace ID,
+  expected edit revision, scene IDs in horizontal/vertical order, a preview-only
+  flag and an optional output target. Use `null` for an orientation to leave alone.
+- `POST /api/live/format/stop` takes a workspace ID and orientation and stops that
+  format's compositor and outputs.
 - `POST /api/live/start`: `{ "workspace": <workspace>, "formats": ["horizontal", "vertical"] }`. Starts the requested formats. Set `"preview_only": true` to leave all enabled outputs stopped, or set `"output": {"orientation": "horizontal", "index": 0}` to start one output. With neither field, the session starts all enabled outputs in the requested formats.
 - `POST /api/live/output/profile` saves the transport and encoder profile for
   one existing output at the expected workspace revision. The response returns

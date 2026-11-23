@@ -626,8 +626,8 @@ pub(crate) fn HistoryControls(
                     step_history(project,history,redo);
                 }
             },
-            button {disabled:!undo,onclick:move |_|step_history(project,history,false),title:"Undo scene edit (⌘/Ctrl+Z)","Undo"}
-            button {disabled:!redo,onclick:move |_|step_history(project,history,true),title:"Redo scene edit (⌘/Ctrl+Shift+Z)","Redo"}
+            crate::server_settings::ActionButton {disabled:!undo,onclick:move |_|step_history(project,history,false),"Undo"}
+            crate::server_settings::ActionButton {disabled:!redo,onclick:move |_|step_history(project,history,true),"Redo"}
             if blocked {span {class:"form-help",role:"status","History conflicts with the current scene."}}
         }
     }

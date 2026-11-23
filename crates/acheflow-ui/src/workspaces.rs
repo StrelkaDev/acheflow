@@ -19,6 +19,8 @@ pub struct WorkspaceRecord {
 struct Preferences {
     background_animation: bool,
     preview_fps: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    monitor_output: Option<crate::audio_monitor::OutputDevice>,
     server: crate::server_settings::ServerPreferences,
 }
 impl Default for Preferences {
@@ -26,6 +28,7 @@ impl Default for Preferences {
         Self {
             background_animation: true,
             preview_fps: crate::video_preview::DEFAULT_PREVIEW_FPS,
+            monitor_output: None,
             server: Default::default(),
         }
     }
@@ -81,6 +84,15 @@ impl Catalog {
     }
     pub(crate) fn set_preview_fps(&mut self, fps: u32) {
         self.preferences.preview_fps = fps.clamp(1, crate::video_preview::MAX_PREVIEW_FPS);
+    }
+    pub(crate) fn monitor_output(&self) -> Option<&crate::audio_monitor::OutputDevice> {
+        self.preferences.monitor_output.as_ref()
+    }
+    pub(crate) fn set_monitor_output(
+        &mut self,
+        output: Option<crate::audio_monitor::OutputDevice>,
+    ) {
+        self.preferences.monitor_output = output;
     }
     pub fn active_id(&self) -> u32 {
         self.active
@@ -289,7 +301,7 @@ fn WorkspaceCreation(
         Ok(config) => create.call(config),
         Err(message) => error.set(Some(message)),
     };
-    rsx! {form {class:"workspace-create",onsubmit:move |event|event.prevent_default(),onkeydown:move |event| {
+    rsx! {form {class:"workspace-create","data-text-submit":"",onsubmit:move |event|{event.prevent_default();submit();},onkeydown:move |event| {
         if event.key()==Key::Named(NamedKey::Enter) {event.prevent_default();submit();}
     },
         h3 {"New workspace"}
@@ -448,6 +460,12 @@ mod disk_tests {
         assert!(load_at(&path).unwrap().is_none());
         let mut catalog = Catalog::default();
         catalog.set_background_animation(false);
+        let headphones = serde_json::from_value(serde_json::json!({
+            "id": "test-headphones",
+            "label": "USB Headphones"
+        }))
+        .unwrap();
+        catalog.set_monitor_output(Some(headphones));
         let mut first = catalog.current().clone();
         first.server_url = "https://first.example".into();
         first.edit_revision = 7;
@@ -489,7 +507,9 @@ mod disk_tests {
         assert!(reopened.current().client_capabilities.is_empty());
         reopened.active = 1;
         assert_eq!(reopened.current(), &first);
-        let imported = Workspace::from_json(first.json().unwrap().as_bytes()).unwrap();
+        let exported = first.json().unwrap();
+        assert!(!exported.contains("test-headphones"));
+        let imported = Workspace::from_json(exported.as_bytes()).unwrap();
         assert_eq!(imported.client_capabilities, first.client_capabilities);
         assert_eq!(imported.extensions, first.extensions);
         #[cfg(unix)]
@@ -519,6 +539,7 @@ mod preference_tests {
         value["preferences"] = serde_json::json!({"background_animation": false});
         let restored = Catalog::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
         assert!(!restored.background_animation());
+        assert!(restored.monitor_output().is_none());
         assert_eq!(restored.preferences.server, Default::default());
         for port in [0, 1935] {
             value["preferences"]["server"] = serde_json::json!({"http_port":port});

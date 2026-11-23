@@ -2,6 +2,7 @@ use crate::{
     layer_editor::{LayerTarget, add_layer},
     project::Workspace,
     scene_canvas::SceneHistory,
+    server_settings::ActionButton,
 };
 use acheflow_media_api::spatial::*;
 use dioxus_native::prelude::*;
@@ -14,6 +15,7 @@ pub fn SpatialEditor(
     mut project: Signal<Workspace>,
     scene_id: u32,
     mut history: Signal<SceneHistory>,
+    visible: bool,
     children: Element,
 ) -> Element {
     let height = project
@@ -44,7 +46,6 @@ pub fn SpatialEditor(
             }
         }
     });
-    let mut preview = use_signal(|| false);
     let mut content = use_signal(|| false);
     let workspace = project.read();
     let Some(scene) = workspace.scenes.iter().find(|s| s.id == scene_id) else {
@@ -57,6 +58,7 @@ pub fn SpatialEditor(
     };
     drop(workspace);
     let selected = view.read().selected;
+    let camera_selected = selected == Some(0);
     let current = spatial
         .objects
         .iter()
@@ -66,17 +68,6 @@ pub fn SpatialEditor(
         .as_ref()
         .is_some_and(|o| matches!(o.kind, ObjectKind::Viewport { primary: true, .. }));
     rsx! {section{class:"spatial-editor",
-        div{class:"spatial-header",
-            div{class:"editor-mode",role:"group","aria-label":"Scene view mode",
-                button{class:if !preview(){"selected"}else{""},"aria-pressed":(!preview()).to_string(),onclick:move |_|preview.set(false),"Scene editor"}
-                button{class:if preview(){"selected"}else{""},"aria-pressed":preview().to_string(),onclick:move |_|preview.set(true),"Camera preview"}
-            }
-        }
-        if preview(){
-            div{class:"camera-preview-heading",span{"Camera · Active"}button{onclick:move |_|{view.write().selected=Some(0);preview.set(false);},"Edit camera"}}
-            div{class:"camera-preview-wrap",style:format!("aspect-ratio:{} / {};",base.width,base.height),crate::spatial_viewport::SpatialViewport{project,scene_id,orientation,view,camera_preview:true}}
-            p{class:"editor-help","Draft view from this scene's camera. {base.width} × {base.height}"}
-        }else{
             div{class:"editor-workspace",
                 div{class:"editor-main",
                     div{class:"editor-tools",
@@ -88,12 +79,17 @@ pub fn SpatialEditor(
                         }
                         div{class:"editor-tool-group",for (name,yaw,pitch) in [("Front",0.,0.),("Right",90.,0.),("Top",0.,-89.5)]{button{onclick:move |_|{let mut v=view.write();v.yaw=yaw;v.pitch=pitch;v.perspective=false;},"{name}"}}}
                     }
-                    crate::spatial_viewport::SpatialViewport{project,scene_id,orientation,view,camera_preview:false,history:Some(history)}
+                    div{class:"editor-viewport",
+                        crate::spatial_viewport::SpatialViewport{project,scene_id,orientation,view,camera_preview:false,history:Some(history)}
+                        if visible && camera_selected {
+                            CameraPreview {project,scene_id,orientation,camera:spatial.camera.clone()}
+                        }
+                    }
                     p{class:"editor-help","Click to select · Drag an axis · Empty space / Alt + drag: orbit · Shift + drag: pan / snap · Wheel: zoom · F: frame · G / R / S: tools · Esc: cancel"}
                 }
                 aside{class:"spatial-hierarchy","aria-label":"Scene hierarchy",
                     div{class:"hierarchy-title",strong{"Scene collection"}span{"{spatial.objects.len()} objects"}}
-                    button{class:if selected==Some(0){"hierarchy-item selected"}else{"hierarchy-item"},onclick:move |_|view.write().selected=Some(0),span{class:"object-type","CAM"}span{"Camera"}small{"Active"}}
+                    ActionButton {class:if camera_selected {"hierarchy-item selected"}else{"hierarchy-item"},pressed:camera_selected,onclick:move |_|view.write().selected=Some(0),span{class:"object-type","CAM"}span{"Camera"}small{"Active"}}
                     for object in &spatial.objects {button{key:"{object.id}",class:if selected==Some(object.id){"hierarchy-item selected"}else{"hierarchy-item"},onclick:{let id=object.id;move |_|view.write().selected=Some(id)},span{class:"object-type",match object.kind{ObjectKind::Viewport{..}=>"VP",_=>"MESH"}}span{"{object.name}"}if !object.visible{small{"Hidden"}}}}
                     div{class:"hierarchy-add",span{"Add object"}button{disabled:spatial.objects.len()>=32 || project.read().sources.len()>=8,onclick:move |_|{if let Some(id)=add_chat_object(&mut project.write(),scene_id,&mut history.write()){view.write().selected=Some(id);}},"+ Chat"}for kind in ["Viewport","Plane","Cube"]{button{disabled:spatial.objects.len()>=32,onclick:{let base=base.clone();move |_|{
                         edit_spatial(project,scene_id,history,|spatial|{
@@ -105,20 +101,62 @@ pub fn SpatialEditor(
                     }},"+ {kind}"}}}
                 }
             }
-        }
-            section{class:"spatial-inspector",style:if preview(){"display:none"}else{"display:block"},"aria-label":"Selected object inspector",
-                div{class:"inspector-heading",strong{"Inspector"}span{{if selected==Some(0){"Camera · Active".to_owned()}else{current.as_ref().map(|o|o.name.clone()).unwrap_or_else(||"No selection".into())}}}}
-                if selected==Some(0){CameraInspector{key:"camera-{scene_id}",project,scene_id,camera:spatial.camera.clone(),canvas_height:base.height as f32,history}}
+            section{class:"spatial-inspector","aria-label":"Selected object inspector",
+                div{class:"inspector-heading",strong{"Inspector"}span{{if camera_selected{"Camera · Active".to_owned()}else{current.as_ref().map(|o|o.name.clone()).unwrap_or_else(||"No selection".into())}}}}
+                if camera_selected {CameraInspector{key:"camera-{scene_id}",project,scene_id,camera:spatial.camera.clone(),canvas_height:base.height as f32,history}}
                 for object in spatial.objects.iter().filter(|o|visited.read().contains(&o.id)).cloned(){
                     div{key:"object-{object.id}",style:if selected==Some(object.id){"display:block"}else{"display:none"},ObjectInspector{project,scene_id,object:object.clone(),history}}
                 }
                 if selected.is_none(){p{class:"padded form-help","Select an object in the view or scene collection."}}
                 if primary {div{class:"inspector-content-toggle",button{class:if content(){"selected"}else{""},onclick:move |_|{let open=content();content.set(!open);},if content(){"Close viewport content"}else{"Edit viewport content"}}span{class:"form-help","Layers, sources, crop, CSS and effects belong to this viewport."}}}
             }
-        // Keep viewport code editors mounted so switching mode/object keeps drafts.
-        div{class:"viewport-content-editor",style:if primary && content() && !preview(){"display:block"}else{"display:none"},{children}}
+        // Keep viewport code editors mounted so switching objects keeps drafts.
+        div{class:"viewport-content-editor",style:if primary && content(){"display:block"}else{"display:none"},{children}}
     }}
 }
+
+#[component]
+fn CameraPreview(
+    project: Signal<Workspace>,
+    scene_id: u32,
+    orientation: crate::project::Orientation,
+    camera: Camera,
+) -> Element {
+    let mut fullscreen = use_signal(|| false);
+    let mut zoom = use_signal(|| 100u16);
+    let diagnostic = use_signal(|| None::<String>);
+    rsx! {
+        aside {
+            class: if fullscreen() {"camera-preview camera-preview-fullscreen"} else {"camera-preview"},
+            "aria-label":"Active camera preview",
+            onkeydown:move |event| {
+                if fullscreen() && event.key() == Key::Named(NamedKey::Escape) {
+                    event.prevent_default();
+                    event.stop_propagation();
+                    fullscreen.set(false);
+                }
+            },
+            div {class:"camera-preview-controls",
+                ActionButton {aria_label:"Zoom out".to_owned(),disabled:zoom()==100,onclick:move |_|zoom.set(zoom()-25),"−"}
+                ActionButton {aria_label:"Fit camera image".to_owned(),onclick:move |_|zoom.set(100),
+                    if zoom()==100 {"Fit"} else {"{zoom()}%"}
+                }
+                ActionButton {aria_label:"Zoom in".to_owned(),disabled:zoom()==300,onclick:move |_|zoom.set(zoom()+25),"+"}
+                ActionButton {onclick:move |_|fullscreen.set(!fullscreen()),
+                    if fullscreen() {"Exit fullscreen"} else {"Fullscreen"}
+                }
+            }
+            div {class:"camera-preview-frame",
+                crate::scene_preview::ScenePreview {
+                    project,scene_id,orientation,diagnostic,placeholders:true,
+                    camera_preview:Some(crate::scene_preview::CameraPreviewView {camera,zoom:zoom()})
+                }
+                if let Some(error)=diagnostic.read().as_ref(){pre {class:"stage-error",role:"alert","{error}"}}
+            }
+        }
+    }
+}
+
 #[component]
 fn CameraInspector(
     project: Signal<Workspace>,

@@ -147,14 +147,14 @@ pub(crate) fn LayerEditor(
         div {class:"layer-stack",for (index,layer) in layers.iter().enumerate().rev() {
             {let layer_id = layer.id; rsx! {
             div {key:"{layer_id}",class:if selection()==Some(layer_id){"layer-stack-row active"}else{"layer-stack-row"},
-                button {class:"layer-select","aria-pressed":(selection()==Some(layer_id)).to_string(),onclick:move |_|selection.set(Some(layer_id)),
+                crate::server_settings::ActionButton {class:"layer-select",pressed:Some(selection()==Some(layer_id)),onclick:move |_|selection.set(Some(layer_id)),
                     "{index + 1} · "
                     {{workspace.sources.iter().find(|s|s.id==layer.source_id).map(|s|s.name.clone()).unwrap_or_else(||"Missing source".into())}}
                 }
-                button {disabled:index+1==layers.len(),title:"Bring forward",onclick:move |_| {
+                crate::server_settings::ActionButton {disabled:index+1==layers.len(),aria_label:Some("Bring forward".into()),onclick:move |_| {
                     move_layer(project,target,layer_id,1,history);
                 },"Forward"}
-                button {disabled:index==0,title:"Send backward",onclick:move |_| {
+                crate::server_settings::ActionButton {disabled:index==0,aria_label:Some("Send backward".into()),onclick:move |_| {
                     move_layer(project,target,layer_id,-1,history);
                 },"Backward"}
             }

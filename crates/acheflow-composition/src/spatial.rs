@@ -1,5 +1,6 @@
 //! Shared native/web/headless 3D pass over GPU-rendered 2D viewport textures.
 use crate::gpu::{GpuScene, SceneFrame};
+use crate::gpu_profile::GpuProfile;
 use acheflow_media_api::{
     spatial::{Camera, ObjectKind, Projection, Transform},
     workspace::Resolution,
@@ -46,7 +47,13 @@ impl Viewport {
             size,
         }
     }
-    fn render(&mut self, handle: &DeviceHandle, frame: &SceneFrame) -> Result<(), String> {
+    fn render(
+        &mut self,
+        handle: &DeviceHandle,
+        frame: &SceneFrame,
+        mut profile: Option<&mut GpuProfile>,
+        viewport_id: u64,
+    ) -> Result<(), String> {
         self.scene.reset();
         let mut encoder = handle
             .device
@@ -64,13 +71,26 @@ impl Viewport {
             );
             let mut painter =
                 VelloHybridScenePainter::new(&mut self.scene, images, &mut self.bindings, handle);
-            self.core.prepare(&mut painter, frame)?;
+            self.core.prepare_profiled(
+                &mut painter,
+                frame,
+                profile.as_deref_mut(),
+                Some(viewport_id),
+            )?;
             self.core.draw(&mut painter, &self.size);
         }
         let mut bindings = TextureBindings::new();
         for (id, view) in &self.bindings {
             bindings.insert(vello_common::TextureId(id.into_ffi()), view.clone());
         }
+        let end = profile.as_mut().and_then(|profile| {
+            profile.begin(
+                &mut encoder,
+                "Viewport composition",
+                Some(viewport_id),
+                None,
+            )
+        });
         self.renderer
             .render(
                 &self.scene,
@@ -88,6 +108,9 @@ impl Viewport {
                 TargetInit::Clear(ClearSettings::default()),
             )
             .map_err(|e| format!("Viewport render: {e}"))?;
+        if let Some(profile) = profile {
+            profile.end(&mut encoder, end);
+        }
         handle.queue.submit([encoder.finish()]);
         Ok(())
     }
@@ -233,16 +256,26 @@ impl SpatialRenderer {
         &self.size
     }
     pub fn render(&mut self, frame: &SceneFrame) -> Result<wgpu::Texture, String> {
-        self.render_with_clear(frame, wgpu::Color::BLACK)
+        self.render_with_clear(frame, wgpu::Color::BLACK, None)
+    }
+
+    #[cfg(all(feature = "headless", not(target_arch = "wasm32")))]
+    pub(crate) fn render_profiled(
+        &mut self,
+        frame: &SceneFrame,
+        profile: Option<&mut GpuProfile>,
+    ) -> Result<wgpu::Texture, String> {
+        self.render_with_clear(frame, wgpu::Color::BLACK, profile)
     }
     /// Transparent empty space lets editor guides sit behind solid scene objects.
     pub fn render_editor(&mut self, frame: &SceneFrame) -> Result<wgpu::Texture, String> {
-        self.render_with_clear(frame, wgpu::Color::TRANSPARENT)
+        self.render_with_clear(frame, wgpu::Color::TRANSPARENT, None)
     }
     fn render_with_clear(
         &mut self,
         frame: &SceneFrame,
         clear: wgpu::Color,
+        mut profile: Option<&mut GpuProfile>,
     ) -> Result<wgpu::Texture, String> {
         let scene = frame.scene.spatial.as_ref().ok_or("3D scene is missing")?;
         if frame.size != self.size {
@@ -295,7 +328,7 @@ impl SpatialRenderer {
                     if !primary {
                         contents.scene.layers = layers.clone();
                     }
-                    viewport.render(&self.handle, &contents)?;
+                    viewport.render(&self.handle, &contents, profile.as_deref_mut(), object.id)?;
                     (viewport.texture.clone(), [1.; 4], false)
                 }
                 ObjectKind::Plane { color } => (self.white.clone(), *color, false),
@@ -347,6 +380,9 @@ impl SpatialRenderer {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("3D scene render"),
                 });
+        let timestamp_writes = profile
+            .as_mut()
+            .and_then(|profile| profile.render_pass("3D camera", None, None));
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Camera view"),
@@ -367,7 +403,7 @@ impl SpatialRenderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes,
                 occlusion_query_set: None,
                 multiview_mask: None,
             });

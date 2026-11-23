@@ -55,7 +55,7 @@ pub(crate) fn Packages(server: bool) -> Element {
         PackageAction{id:if server{"server-packages-expand"}else{"client-packages-expand"},label:(if expanded(){"Hide"}else{"Manage packages"}).to_owned(),disabled:busy(),onclick:move|_|expanded.set(!expanded())}}
         if expanded(){div{class:"padded",
             if !supported {p{class:"form-help","This browser uses bundled client extensions. You can upload server packages from the Server tab."}}
-            if supported && can_upload {PackageAction{id:if server{"server-package-choose"}else{"client-package-choose"},label:"Choose ZIP package".to_owned(),disabled:busy(),onclick:move|_|{
+            if supported && can_upload {div{class:"row",PackageAction{id:if server{"server-package-choose"}else{"client-package-choose"},label:"Choose ZIP package".to_owned(),disabled:busy(),onclick:move|_|{
                 if busy(){return;}let target=owner_now(client);busy.set(true);error.set(String::new());review.set(None);trusted.set(false);
                 spawn(async move{
                     if let Some(file)=rfd::AsyncFileDialog::new().add_filter("Extension package",&["zip"]).pick_file().await {
@@ -64,7 +64,7 @@ pub(crate) fn Packages(server: bool) -> Element {
                     }
                     busy.set(false);
                 });
-            }}}
+            }}}}
             if let Some(package)=review(){
                 div{class:"package-review",h3{"{package.name}"}p{class:"form-help","{package.id} · {package.digest}"}
                     p{"Capabilities: " {package.capabilities.join(", ")}}

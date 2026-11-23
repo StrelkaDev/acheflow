@@ -7,11 +7,12 @@ use crate::{
 use acheflow_media_api::audio::{MixerAck, MixerEdit, MixerRequest};
 use acheflow_media_api::{
     live::{
-        OutputProfile, OutputProfileAck, OutputProfileRequest, OutputTarget, SceneContent,
-        SceneEdit, SceneSettingsAck, SceneSettingsRequest, SourceEdit, SourceSettingsAck,
-        SourceSettingsRequest, TakeSceneAck, TakeSceneRequest,
+        FormatSettingsAck, FormatSettingsEdit, FormatSettingsRequest, OutputProfile,
+        OutputProfileAck, OutputProfileRequest, OutputTarget, SceneContent, SceneEdit,
+        SceneSettingsAck, SceneSettingsRequest, SourceEdit, SourceSettingsAck,
+        SourceSettingsRequest, StartSavedRequest, TakeSceneAck, TakeSceneRequest,
     },
-    workspace::Source,
+    workspace::{Source, Stream},
 };
 use dioxus_native::prelude::*;
 
@@ -32,7 +33,7 @@ pub(crate) struct SceneSaveState {
 }
 
 impl WorkspaceSync {
-    pub(crate) fn output_profiles(&self, orientation: Orientation) -> Option<Vec<OutputProfile>> {
+    pub(crate) fn saved_stream(&self, orientation: Orientation) -> Option<Stream> {
         if !(self.following)() || (self.control.sync_conflict)() {
             return None;
         }
@@ -41,22 +42,55 @@ impl WorkspaceSync {
                 .read()
                 .editable_base(&self.project.read())?
                 .stream(orientation)
-                .outputs
-                .iter()
-                .map(OutputProfile::of)
-                .collect(),
+                .clone(),
         )
     }
 
+    pub(crate) fn applied_format_settings(
+        mut self,
+        request: &FormatSettingsRequest,
+        ack: FormatSettingsAck,
+    ) -> bool {
+        let Some(session) = try_consume_context::<crate::server_access::AccessState>()
+            .and_then(|state| state.session.peek().clone())
+        else {
+            return false;
+        };
+        let mut next = self.catalog.peek().clone();
+        let mut draft = self.project.peek().clone();
+        // Canvas and new destination fields are already editable in the draft.
+        if !matches!(
+            request.edit,
+            FormatSettingsEdit::Canvas { .. } | FormatSettingsEdit::AddOutput { .. }
+        ) && request.apply(&mut draft).is_err()
+        {
+            return false;
+        }
+        if !next.applied_delta(
+            &self.project.peek(),
+            request.expected_revision,
+            ack.revision,
+            &session.server_id,
+            |base| request.apply(base),
+        ) {
+            return false;
+        }
+        draft.edit_revision = ack.revision;
+        next.update_current(draft.clone());
+        self.project.set(draft);
+        self.catalog.set(next);
+        true
+    }
+
     pub(crate) fn changed_output_profile(&self, target: OutputTarget) -> Option<OutputProfile> {
-        let saved = self.output_profiles(target.orientation)?;
+        let saved = self.saved_stream(target.orientation)?.outputs;
         let project = self.project.read();
         let draft = &project.stream(target.orientation).outputs;
-        if saved.len() != draft.len() {
+        if saved.len() > draft.len() {
             return None;
         }
         let profile = OutputProfile::of(draft.get(target.index)?);
-        (saved.get(target.index)? != &profile).then_some(profile)
+        (OutputProfile::of(saved.get(target.index)?) != profile).then_some(profile)
     }
 
     pub(crate) fn applied_output_profile(
@@ -208,7 +242,24 @@ impl WorkspaceSync {
                 .can_take_scene(&self.project.read(), orientation, scene)
     }
 
-    pub(crate) fn applied_program(mut self, request: &TakeSceneRequest, ack: TakeSceneAck) -> bool {
+    pub(crate) fn applied_program(self, request: &TakeSceneRequest, ack: TakeSceneAck) -> bool {
+        self.applied_program_change(request.expected_revision, ack.revision, |base| {
+            request.apply(base)
+        })
+    }
+
+    pub(crate) fn applied_start(self, request: &StartSavedRequest, revision: u64) -> bool {
+        self.applied_program_change(request.expected_revision, revision, |base| {
+            request.apply(base)
+        })
+    }
+
+    fn applied_program_change(
+        mut self,
+        expected: u64,
+        revision: u64,
+        apply: impl Fn(&mut Workspace) -> Result<(), String>,
+    ) -> bool {
         let Some(session) = try_consume_context::<crate::server_access::AccessState>()
             .and_then(|state| state.session.peek().clone())
         else {
@@ -217,18 +268,18 @@ impl WorkspaceSync {
         let mut next = self.catalog.peek().clone();
         if !next.applied_delta(
             &self.project.peek(),
-            request.expected_revision,
-            ack.revision,
+            expected,
+            revision,
             &session.server_id,
-            |base| request.apply(base),
+            &apply,
         ) {
             return false;
         }
         let mut project = self.project.peek().clone();
         // A locally deleted target may still exist on the server. Keep the
         // deletion draft intact and let the applied program status report it.
-        let _ = request.apply(&mut project);
-        project.edit_revision = ack.revision;
+        let _ = apply(&mut project);
+        project.edit_revision = revision;
         next.update_current(project.clone());
         self.project.set(project);
         self.catalog.set(next);

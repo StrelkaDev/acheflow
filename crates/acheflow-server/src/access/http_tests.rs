@@ -74,10 +74,15 @@ fn fixture() -> (Directory, Arc<Access>, Router, String) {
     };
     let app = Router::new()
         .merge(access.routes())
+        .merge(crate::audio_monitor::routes().with_state(access.host.runtime.clone()))
         .merge(crate::server_workspace::routes(access.host.clone()))
         .route(
             "/api/live/status",
             get(|| async { Json(LiveStatus::default()) }),
+        )
+        .route(
+            "/api/live/telemetry",
+            get(crate::live::telemetry).with_state(access.host.runtime.clone()),
         )
         .route("/api/control/state", get(snapshot))
         .route("/api/control/commands", post(snapshot))
@@ -108,6 +113,18 @@ fn fixture() -> (Directory, Arc<Access>, Router, String) {
         .route(
             "/api/live/output/profile",
             post(crate::live::save_output_profile).with_state(access.host.runtime.clone()),
+        )
+        .route(
+            "/api/live/format/settings",
+            post(crate::live::save_format_settings).with_state(access.host.runtime.clone()),
+        )
+        .route(
+            "/api/live/format/start",
+            post(crate::live::start_saved).with_state(access.host.runtime.clone()),
+        )
+        .route(
+            "/api/live/format/stop",
+            post(crate::live::stop_format).with_state(access.host.runtime.clone()),
         )
         .route(
             "/api/live/scenes",
@@ -174,6 +191,76 @@ async fn paired(app: &Router, owner: &str, permissions: &[P]) -> PairResponse {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     serde_json::from_value(value(response).await).unwrap()
+}
+
+#[tokio::test]
+async fn audio_monitor_authorizes_pcm_and_ends_an_open_stream_after_revocation() {
+    use futures_util::StreamExt;
+    let (_directory, access, app, owner) = fixture();
+    let mut workspace = acheflow_media_api::workspace::Workspace::default();
+    workspace.add_source();
+    let source_id = workspace.sources[0].id;
+    let endpoint = format!(
+        "/api/live/monitor/source/{source_id}/0?workspace={}",
+        workspace.id
+    );
+    let runtime = &access.host.runtime;
+    runtime.install(workspace, true).await.unwrap();
+    let input = runtime.inputs.lock().unwrap()[&source_id].clone();
+    let track = Arc::new(crate::audio_input::AudioTrack::new(0, "PCM"));
+    input.audio_tracks.lock().unwrap().insert(0, track.clone());
+
+    let viewer = paired(&app, &owner, &[P::StudioView]).await;
+    let status = call(
+        &app,
+        "GET",
+        &endpoint,
+        viewer.token.as_deref(),
+        serde_json::Value::Null,
+        None,
+    )
+    .await
+    .status();
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let listener = paired(&app, &owner, &[P::StudioView, P::MediaManage]).await;
+    let response = call(
+        &app,
+        "GET",
+        &endpoint,
+        listener.token.as_deref(),
+        serde_json::Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let mut body = response.into_body().into_data_stream();
+    track.publish(&input, 0, Arc::new(vec![0x1357, -2]));
+    let chunk = tokio::time::timeout(std::time::Duration::from_secs(1), body.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(&chunk[..], &[0x57, 0x13, 0xfe, 0xff]);
+
+    access
+        .registry
+        .revoke(
+            &access.registry.authenticate(&owner, now()).unwrap(),
+            &listener.session.device.id,
+            now(),
+        )
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(520)).await;
+    track.publish(&input, 960, Arc::new(vec![11, 12]));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), body.next())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(access.monitor_slots.available_permits(), 8);
+    runtime.close().await;
 }
 
 #[tokio::test]
@@ -270,10 +357,72 @@ async fn saving_an_output_profile_returns_the_revision_acknowledgment() {
 }
 
 #[tokio::test]
+async fn telemetry_preserves_short_audio_peaks_for_studio_viewers() {
+    use acheflow_media_api::{
+        live::{MediaTelemetry, MeterTarget},
+        workspace::Workspace,
+    };
+
+    let (_directory, access, app, owner) = fixture();
+    let mut workspace = Workspace::default();
+    workspace.add_source();
+    let source_id = workspace.sources[0].id;
+    let workspace_id = workspace.id.clone();
+    let runtime = &access.host.runtime;
+    runtime.install(workspace, true).await.unwrap();
+    let input = runtime.inputs.lock().unwrap()[&source_id].clone();
+    let track = Arc::new(crate::audio_input::AudioTrack::new(0, "PCM"));
+    input.audio_tracks.lock().unwrap().insert(0, track.clone());
+
+    let viewer = paired(&app, &owner, &[P::StudioView]).await;
+    let chat = paired(&app, &owner, &[P::ChatRead]).await;
+    let path = "/api/live/telemetry?after=42";
+    let denied = call(
+        &app,
+        "GET",
+        path,
+        chat.token.as_deref(),
+        serde_json::Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    track.publish(&input, 0, Arc::new(vec![i16::MAX, 8000]));
+    track.publish(&input, 960, Arc::new(vec![0, 0]));
+    let allowed = call(
+        &app,
+        "GET",
+        path,
+        viewer.token.as_deref(),
+        serde_json::Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(allowed.status(), StatusCode::OK);
+    let telemetry: MediaTelemetry = serde_json::from_value(value(allowed).await).unwrap();
+    assert_eq!(telemetry.workspace_id, Some(workspace_id));
+    assert!(telemetry.server_load.is_empty());
+    assert_eq!(telemetry.meters.len(), 1);
+    let reading = &telemetry.meters[0];
+    assert_eq!(
+        reading.target,
+        MeterTarget::Source {
+            source_id,
+            track_id: 0
+        }
+    );
+    assert_eq!(reading.meter.peak, [0., 0.]);
+    assert!(reading.meter.held_peak[0] > 0.99);
+    assert!(reading.meter.recently_clipped);
+    runtime.close().await;
+}
+
+#[tokio::test]
 async fn every_api_boundary_requires_authentication_even_with_loopback_proxy_headers() {
     let (_directory, _access, app, _owner) = fixture();
     for (method, path) in [
         ("GET", "/api/live/status"),
+        ("GET", "/api/live/telemetry"),
         ("GET", "/api/control/state"),
         ("GET", "/api/server/settings"),
         ("GET", "/api/server/logs"),
@@ -285,6 +434,9 @@ async fn every_api_boundary_requires_authentication_even_with_loopback_proxy_hea
         ("POST", "/api/live/take"),
         ("POST", "/api/live/sources"),
         ("POST", "/api/live/scenes"),
+        ("POST", "/api/live/format/settings"),
+        ("POST", "/api/live/format/start"),
+        ("POST", "/api/live/format/stop"),
         ("POST", "/api/live/output/profile"),
         ("POST", "/api/live/outputs"),
         ("GET", "/api/live/preview/horizontal.jpg"),

@@ -542,7 +542,7 @@ pub(crate) fn Panel(project: Signal<Workspace>) -> Element {
             }
         } else {
             section {class:"access-card access-connect-card",div {class:"access-card-heading",span {class:"access-connect-icon","aria-hidden":"true","↔"}h3 {"Connect this device"}p {"Enter a device link from your profile, or an invitation from an administrator."}}
-                div {class:"access-connect-form",
+                div {class:"access-connect-form","data-text-submit":"",onsubmit:move |event|{event.prevent_default();if !busy() && !code.peek().is_empty(){connect(());}},
                     label {class:"field",span {"Device name"}input {r#type:"text",maxlength:80,value:name(),disabled:busy(),oninput:move|e|name.set(e.value())}}
                     label {class:"field",span {"Invitation or device-link code"}input {r#type:"password",autocomplete:"off",maxlength:64,placeholder:"Paste your invitation code",value:code(),disabled:busy(),oninput:move|e|code.set(e.value()),onkeydown:move|event|{if event.key()==Key::Named(NamedKey::Enter) && !code.peek().is_empty(){event.prevent_default();connect(());}}}}
                     ActionButton {id:"access-connect",class:"primary",disabled:busy() || code.read().is_empty(),onclick:connect,if busy(){"Connecting…"}else{"Connect device"}}

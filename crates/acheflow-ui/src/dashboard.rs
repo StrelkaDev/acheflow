@@ -39,6 +39,7 @@ pub fn dashboard() -> Element {
     });
     let workspace_open = use_signal(|| false);
     let live = use_live_client(project);
+    crate::audio_monitor::provide(project, catalog);
     let control = crate::control_client::use_control_client(project);
     let sync = crate::workspace_sync::provide(project, catalog, control);
     crate::diagnostics::observe(live, control);
@@ -46,7 +47,7 @@ pub fn dashboard() -> Element {
     #[cfg(not(target_arch = "wasm32"))]
     let activation_notice = crate::native_activation::provide(project, page);
     rsx! {
-        {mobile_input_mount()}
+        {text_input_mount()}
         style {{include_str!("dashboard.css")}}
         div {class:"app",
             aside {class:"sidebar",
@@ -85,17 +86,14 @@ pub fn dashboard() -> Element {
                                         Stat {title:"RESTREAM OUTPUTS",value:(project.read().horizontal.outputs.len()+project.read().vertical.outputs.len()).to_string(),detail:"Configured destinations"}
                                         Stat {title:"SESSION",value:if live.running(){"Running"}else{"Idle"},detail:"Media worker state"}
                                     }
-                                    if page()=="Overview" && let Some(status)=live.status.read().as_ref()
-                                        && !status.server_load.is_empty() {
-                                        crate::live::ServerLoad {samples:status.server_load.clone()}
-                                    }
+                                    if page()=="Overview" {crate::live::ServerLoadPanel {}}
                                     section {class:"panel",div {class:"panel-heading",h2 {"Prepare your broadcast"}}div {class:"padded",h3 {"Sources → Scenes → Studio"}p {"Register expected RTMP inputs in Live / Sources. Build compositions in Live / Scenes, set separate output profiles in Settings and monitor both formats in Studio."}p {"FFmpeg ingests authorized RTMP sources and renders scenes. Manage the live session in Studio."}}}
                                 }
 
                                 if tab=="Extensions"{
                                     crate::interaction::ExtensionsPage {}
                                 }
-                                if tab=="Settings"{GeneralSettings {effects,project,catalog,storage_status}}
+                                if tab=="Settings"{GeneralSettings {effects,project,catalog,storage_status,visible:page()=="Settings"}}
                                 footer {class:"content-footer",span {"ACHEFLOW / STREAM CONTROL"}}
                             }
                         }
@@ -124,6 +122,7 @@ pub(crate) fn GeneralSettings(
     project: Signal<crate::project::Workspace>,
     catalog: Signal<crate::workspaces::Catalog>,
     storage_status: Signal<String>,
+    #[props(default = true)] visible: bool,
 ) -> Element {
     let mut section = use_signal(|| "General");
     rsx! {
@@ -135,6 +134,7 @@ pub(crate) fn GeneralSettings(
         }
         div {style:if section()=="General"{""}else{"display:none"},
         crate::server_settings::ServerSettings {project,catalog,storage_status}
+        if visible && section()=="General" {crate::audio_monitor::OutputSettings {}}
         section {class:"panel",
             div {class:"panel-heading",h2 {"Appearance"}}
             div {class:"padded settings-row",
@@ -161,12 +161,16 @@ fn SparksBackground(backend: Signal<String>) -> Element {
     rsx! {object {class:"sparks","data":sparks}}
 }
 
-fn mobile_input_mount() -> Element {
+fn text_input_mount() -> Element {
     #[cfg(target_arch = "wasm32")]
     {
         rsx! {crate::mobile_input::Mount {}}
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(target_os = "macos")]
+    {
+        rsx! {crate::native_text_input::Mount {}}
+    }
+    #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
     {
         rsx! {}
     }

@@ -1,6 +1,6 @@
 //! Compact controls for the scene actually being mixed in each Studio format.
 use crate::{
-    audio_mixer::{GainFader, Meters, StripControls, edit_bus, edit_strip},
+    audio_mixer::{GainFader, LiveMeters, StripControls, edit_bus, edit_strip},
     live_client::LiveClient,
     project::{Orientation, Scene, Workspace},
     slider::Slider,
@@ -8,7 +8,7 @@ use crate::{
 use acheflow_media_api::audio::{
     AudioStrip, BusChange, MAX_SYNC_OFFSET_MS, StripChange, SyncMode, TrackKey, TrackSyncStatus,
 };
-use acheflow_media_api::live::FormatStatus;
+use acheflow_media_api::live::{FormatStatus, MeterTarget};
 use dioxus_native::prelude::*;
 
 fn current_scene<'a>(
@@ -31,6 +31,7 @@ fn current_scene<'a>(
 pub(crate) fn StudioMixer(
     project: Signal<Workspace>,
     orientation: Orientation,
+    visible: bool,
     #[props(default)] preview_scene: Option<Option<u32>>,
 ) -> Element {
     let client = use_context::<LiveClient>();
@@ -118,7 +119,10 @@ pub(crate) fn StudioMixer(
                             p {class:"form-help",if sends.is_empty(){"Not routed"}else{"Sends → {sends}"}}
                             div {class:"studio-fader-bank",
                                 GainFader {label:"Gain",vertical:true,gain:strip.gain,change:move |v:u32|edit_strip(client,scene.id,key,StripChange::Gain(v))}
-                                Meters {vertical:true,meter:track.map(|t|t.meter.clone()).unwrap_or_default()}
+                                if visible {LiveMeters {vertical:true,target:MeterTarget::Source {source_id:key.source_id,track_id:key.track_id},fallback:track.map(|t|t.meter.clone()).unwrap_or_default()}}
+                            }
+                            if visible {
+                                crate::audio_monitor::MonitorButton {target:crate::audio_monitor::Target::Source {source:key.source_id,track:key.track_id},disabled:track.is_none_or(|track|!track.active)}
                             }
                             if let Some(error)=track.and_then(|t|t.error.as_ref()){p {class:"field-error",role:"alert","{error}"}}
                             if source.is_some_and(|source| source.kind.is_audio_only()) {
@@ -145,7 +149,10 @@ pub(crate) fn StudioMixer(
                         p {class:"form-help",if destinations.is_empty(){"No destinations"}else{"→ {destinations}"}}
                         div {class:"studio-fader-bank",
                             GainFader {label:"Gain",vertical:true,gain:bus.gain,change:{let id=bus.id;move |gain:u32|{edit_bus(client,scene.id,id,BusChange::Gain(gain))}}}
-                            Meters {vertical:true,meter:levels.map(|b|b.meter.clone()).unwrap_or_default()}
+                            if visible {LiveMeters {vertical:true,target:MeterTarget::Bus {orientation,scene_id:scene.id,bus_id:bus.id},fallback:levels.map(|b|b.meter.clone()).unwrap_or_default()}}
+                        }
+                        if visible {
+                            crate::audio_monitor::MonitorButton {target:crate::audio_monitor::Target::Bus {orientation,scene:scene.id,bus:bus.id},disabled:levels.is_none()}
                         }
                         div {class:"studio-mixer-master",
                             button {class:if bus.muted{"selected"}else{""},"aria-label":format!("Mute {} bus",bus.name),"aria-pressed":bus.muted.to_string(),onclick:{let id=bus.id;let muted=bus.muted;move |_|edit_bus(client,scene.id,id,BusChange::Mute(!muted))},"Mute"}
