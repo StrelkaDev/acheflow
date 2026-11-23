@@ -40,25 +40,31 @@ pub fn Live(project: Signal<Workspace>, visible: bool, mut monitor_tab: Signal<b
             button {class:if tab()==name {"selected"}else{""},onclick:move |_|{separate.set(None);tab.set(name);},"{name}"}
         }}
         LiveNotice {}
-        if visible && let Some(source_id)=separate() {
-            crate::source_settings::SeparateSourceView {key:"{project.read().id}-{project.read().server_url}-{source_id}",project,source_id}
-        }
-        div {class:"live-pages",hidden:showing_source,style:if showing_source {"display:none"} else {""},for name in ["Analytics","Sources","Scenes","Mixer","Studio","Chat","Interactive","Settings"] {
-            div {key:"{name}",class:if visible && !showing_source && tab()==name {"tab-scroll active"}else{"tab-scroll"},"aria-hidden":if visible && !showing_source && tab()==name {"false"}else{"true"},
-                div {class:"live-content",
-                    if name=="Analytics" {Analytics {}}
-                    if name=="Sources" {Sources {key:"{project.read().id}-{project.read().server_url}",project,visible:visible && !showing_source && tab()==name}}
-                    if name=="Scenes" {Scenes {key:"{project.read().id}-{project.read().server_url}",project,visible:visible && !showing_source && tab()==name}}
-                    if name=="Mixer" {crate::audio_mixer::AudioMixer {project,visible:visible && !showing_source && tab()==name}}
-                    if name=="Studio" {Studio {key:"{project.read().id}-{project.read().server_url}",project,visible:visible && !showing_source && tab()==name}}
-                    if name=="Chat" {
-                        StandaloneChat {running:client.running()}
+        // Keep the mounted tabs in the layout tree when swapping views. Blitz can
+        // retain stale layout children if we hide the tree while updating its contents.
+        div {class:"live-pages",
+            for name in ["Analytics","Sources","Scenes","Mixer","Studio","Chat","Interactive","Settings"] {
+                div {key:"{name}",class:if visible && !showing_source && tab()==name {"tab-scroll active"}else{"tab-scroll"},"aria-hidden":if visible && !showing_source && tab()==name {"false"}else{"true"},
+                    div {class:"live-content",
+                        if name=="Analytics" {Analytics {}}
+                        if name=="Sources" {Sources {key:"{project.read().id}-{project.read().server_url}",project,visible:visible && !showing_source && tab()==name}}
+                        if name=="Scenes" {Scenes {key:"{project.read().id}-{project.read().server_url}",project,visible:visible && !showing_source && tab()==name}}
+                        if name=="Mixer" {crate::audio_mixer::AudioMixer {project,visible:visible && !showing_source && tab()==name}}
+                        if name=="Studio" {Studio {key:"{project.read().id}-{project.read().server_url}",project,visible:visible && !showing_source && tab()==name}}
+                        if name=="Chat" {
+                            StandaloneChat {running:client.running()}
+                        }
+                        if name=="Interactive" {crate::interaction::InteractivePage {}}
+                        if name=="Settings" {Settings {key:"{project.read().id}-{project.read().server_url}",project}}
                     }
-                    if name=="Interactive" {crate::interaction::InteractivePage {}}
-                    if name=="Settings" {Settings {key:"{project.read().id}-{project.read().server_url}",project}}
                 }
             }
-        }}
+            if visible && let Some(source_id)=separate() {
+                div {class:"tab-scroll active",
+                    crate::source_settings::SeparateSourceView {key:"{project.read().id}-{project.read().server_url}-{source_id}",project,source_id}
+                }
+            }
+        }
     }}
 }
 
@@ -276,8 +282,14 @@ pub fn Sources(mut project: Signal<Workspace>, #[props(default = true)] visible:
                     if camera && expanded.read().contains(&source.id) {
                         CameraSettings{project,source_id:source.id,inventory:camera_inventory,refresh:refresh_cameras}
                     }
-                    NumberField {label:"Offline preview width",value:source.resolution.width,min:16,max:((1920*1080/source.resolution.height.max(1)).min(3840)/2)*2,step:2,change:move |v|crate::source_settings::edit_source(project,source.id,SourceEdit::PreviewWidth(v))}
-                    NumberField {label:"Offline preview height",value:source.resolution.height,min:16,max:((1920*1080/source.resolution.width.max(1)).min(3840)/2)*2,step:2,change:move |v|crate::source_settings::edit_source(project,source.id,SourceEdit::PreviewHeight(v))}
+                    if let Some(size)=source.camera_mode_resolution() {
+                        div {class:"field",span {"Offline preview size"}
+                            div {class:"readonly-field","{size.width} × {size.height}"}
+                        }
+                    } else {
+                        NumberField {label:"Offline preview width",value:source.resolution.width,min:16,max:((1920*1080/source.resolution.height.max(1)).min(3840)/2)*2,step:2,change:move |v|crate::source_settings::edit_source(project,source.id,SourceEdit::PreviewWidth(v))}
+                        NumberField {label:"Offline preview height",value:source.resolution.height,min:16,max:((1920*1080/source.resolution.width.max(1)).min(3840)/2)*2,step:2,change:move |v|crate::source_settings::edit_source(project,source.id,SourceEdit::PreviewHeight(v))}
+                    }
                 }
                 crate::source_settings::SourceCaptureActions {source:source.clone()}
                 if let Some(input)=input {
@@ -291,7 +303,10 @@ pub fn Sources(mut project: Signal<Workspace>, #[props(default = true)] visible:
                     }
                     if let Some(error)=input.error.as_ref(){p {class:"field-error padded","{error}"}}
                 }
-                div {class:"panel-note","Incoming video keeps its original resolution. Resize and fit it in the scene layer. Offline preview dimensions only size the test pattern while no video is available."}
+                div {class:"panel-note",
+                    if camera {"The offline test pattern follows the selected capture mode. Auto uses the manual preview size."}
+                    else {"Offline preview dimensions only size the test pattern while no video is available."}
+                }
                 }
             }}
             }
@@ -529,9 +544,7 @@ fn CameraSettings(
         } else {
             crate::extension_panel::PanelSelect {label:"Capture mode",value:mode_value,options:mode_labels,onselect:move |label:String|{
                 let Some((_, next))=mode_options.iter().find(|(choice, _)| *choice==label) else {return};
-                if let Some(source)=project.write().sources.iter_mut().find(|source|source.id==source_id)
-                    && let SourceKind::Camera{device_id,mode,..}=&mut source.kind
-                    && *device_id==mode_device_id {*mode = *next;}
+                change_camera_mode(project, source_id, &mode_device_id, *next);
             }}
         }
         div {class:"field",
@@ -545,6 +558,49 @@ fn CameraSettings(
                 },
                 if mirrored {"On"} else {"Off"}
             }
+        }
+    }
+}
+
+fn change_camera_mode(
+    mut project: Signal<Workspace>,
+    source_id: u32,
+    expected_device: &str,
+    next: Option<acheflow_media_api::visual::CameraMode>,
+) {
+    use acheflow_media_api::{live::SourceCapture, visual::SourceKind};
+    let capture = {
+        let mut workspace = project.write();
+        let Some(source) = workspace
+            .sources
+            .iter_mut()
+            .find(|source| source.id == source_id)
+        else {
+            return;
+        };
+        let SourceKind::Camera {
+            device_id, mode, ..
+        } = &mut source.kind
+        else {
+            return;
+        };
+        if device_id != expected_device || *mode == next {
+            return;
+        }
+        *mode = next;
+        SourceCapture::of(source)
+    };
+    if let Some(client) = try_consume_context::<LiveClient>()
+        .filter(|client| client.owns() && !*client.busy.peek() && !*client.scoped_pending.peek())
+        && let Some(mut saved) = try_consume_context::<crate::workspace_sync::WorkspaceSync>()
+            .and_then(|sync| sync.saved_source(source_id))
+        && let SourceKind::Camera { mode, .. } = &mut saved.kind
+    {
+        *mode = next;
+        // Apply a preset change on its own. Device and mirror edits use the
+        // existing capture settings action, which applies those drafts together.
+        if capture.matches(&saved) {
+            client.source_edit(source_id, SourceEdit::Capture(capture));
         }
     }
 }

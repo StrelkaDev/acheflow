@@ -192,6 +192,8 @@ save their changes immediately. Save transport and encoder changes with
 To check one saved source while the workspace inputs are inactive, open its
 card and select **Preview source**. For a microphone, use **Check microphone
 level**. Video snapshots and microphone levels use the saved capture settings.
+Source previews fit the complete frame according to its aspect ratio, including
+portrait camera modes.
 For RTMP and SRT, start the publisher after opening the preview. This registers
 only that input temporarily, so the format renderers and outputs remain idle.
 Closing the card, leaving Sources or losing the connection ends its periodic
@@ -222,9 +224,10 @@ These actions preserve the active scene and other inputs.
   grant camera access when the Acheflow app asks. The server opens each camera
   by its saved device identity. Add each camera once and reuse it across scenes.
   The source card can switch devices, choose a **Capture mode** reported by that
-  camera or keep **Auto**, and mirror the source horizontally. Use **Reconnect
-  camera** to apply those settings during capture. Camera capture preserves native dimensions, including
-  portrait modes. Set rotation on the layer in the scene.
+  camera or keep **Auto**, and mirror the source horizontally. Changing only
+  **Capture mode** on a saved camera applies it directly. Use the card's capture
+  action when changing the device or mirror setting. Camera capture preserves
+  native dimensions, including portrait modes. Set rotation on the layer in the scene.
   The card reports the observed incoming FPS after frames arrive.
   Camera sources provide video.
   The device list refreshes while the picker is open. For OBS, start
@@ -365,9 +368,11 @@ scene editor substitutes a cached detailed test-pattern SourceFrame before GPU
 processing. Real snapshots carry their original dimensions in `X-Frame-Width`
 and `X-Frame-Height` headers, so px crop, object-fit and shader parameters use
 native dimensions. JPEG snapshots now retain those dimensions at quality 95;
-there is no preview-only downscale or upscale. The saved source `resolution`
-only sizes the offline pattern; it never resizes incoming video. Disconnects/stalls restore the pattern; real
-frames replace it on the next snapshot. Studio and broadcast missing inputs
+there is no preview-only downscale or upscale. A fixed camera capture mode sets
+the offline pattern’s intrinsic size and aspect ratio. Cameras in Auto and other
+video sources use the saved source `resolution` for the pattern. Disconnects and
+stalls restore the pattern, and real frames replace it on the next snapshot.
+Studio and broadcast missing inputs
 remain black/silent. Studio editor overlays are never painted over composition;
 errors, empty states and connection status remain outside its image.
 CSS/WGSL animation can redraw between
@@ -479,8 +484,8 @@ format can be replaced. Restart output cancels its outstanding retry and starts
 one encoder with a fresh budget.
 
 Current execution limits: 8 sources, 32 layers per scene, 8 outputs, source decode
-frames at most 8,294,400 pixels, offline source patterns at most 2,073,600 pixels,
-and composed/output frames at most 8,294,400 pixels.
+frames at most 8,294,400 pixels, manual offline pattern sizes at most 2,073,600
+pixels, and composed/output frames at most 8,294,400 pixels.
 FPS remains 1–120; throughput depends on scene size, hardware and encoder.
 Composition uses 8-bit RGBA GPU textures and RGB24 readback. HDR/color management,
 transition effects, recording and production A/V

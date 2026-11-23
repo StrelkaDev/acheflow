@@ -840,7 +840,12 @@ fn source_aspect(
                 .sources
                 .iter()
                 .find(|source| source.id == id)
-                .map(|source| (source.resolution.width, source.resolution.height))
+                .map(|source| {
+                    let size = source
+                        .camera_mode_resolution()
+                        .unwrap_or_else(|| source.resolution.clone());
+                    (size.width, size.height)
+                })
         })?;
     (width > 0 && height > 0).then(|| f64::from(width) / f64::from(height))
 }

@@ -187,9 +187,22 @@ pub struct Source {
     pub name: String,
     pub url: String,
     pub key: String,
-    /// Offline editor pattern size. Live frames retain their decoded dimensions.
+    /// Manual offline pattern size, used when the source has no fixed camera mode.
     #[serde(default = "default_input_size")]
     pub resolution: Resolution,
+}
+impl Source {
+    pub fn camera_mode_resolution(&self) -> Option<Resolution> {
+        match self.kind {
+            crate::visual::SourceKind::Camera {
+                mode: Some(mode), ..
+            } if mode.is_valid() => Some(Resolution {
+                width: mode.width,
+                height: mode.height,
+            }),
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

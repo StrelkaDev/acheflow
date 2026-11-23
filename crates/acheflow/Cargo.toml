@@ -14,7 +14,7 @@ acheflow-extension-api = { path = "../acheflow-extension-api" }
 winit = "=0.31.0-beta.4"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder", "NSEvent", "NSUserActivity", "block2"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSNotification", "NSString", "NSURL", "NSValue", "NSUserActivity"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSData", "NSDictionary", "NSNotification", "NSString", "NSURL", "NSValue", "NSUserActivity"] }
 block2 = "0.6"
 blitz-shell = { git = "https://github.com/DioxusLabs/blitz", rev = "e42ee1f2577f968e29ea148a75d2d4f0d2cf19cc", default-features = false }
 

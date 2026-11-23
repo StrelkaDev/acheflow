@@ -120,22 +120,35 @@ static BOOL configureMode(AVCaptureDevice *device, const CameraMode *mode) {
             device.activeVideoMaxFrameDuration = duration;
         }
     } @catch (NSException *error) {
-        return NO;
-    } @finally {
         [device unlockForConfiguration];
+        return NO;
     }
+    // Keep the explicit format locked while the macOS capture session is using it.
     return YES;
+}
+
+static BOOL modeIsActive(AVCaptureDevice *device, const CameraMode *mode) {
+    CMVideoDimensions size = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription);
+    CMTime duration = CMTimeMake(mode->duration_value, (int32_t)mode->duration_scale);
+    return size.width == (int64_t)mode->width && size.height == (int64_t)mode->height
+        && CMTimeCompare(device.activeVideoMinFrameDuration, duration) == 0
+        && CMTimeCompare(device.activeVideoMaxFrameDuration, duration) == 0;
 }
 
 @interface AcheflowCamera : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
 @property(nonatomic, strong) AVCaptureSession *session;
 @property(nonatomic, strong) AVCaptureVideoDataOutput *output;
+@property(nonatomic, strong) AVCaptureDevice *lockedDevice;
 @property(nonatomic, strong) dispatch_queue_t queue;
 @property void *context;
 @property VideoCallback callback;
 @end
 
 @implementation AcheflowCamera
+- (void)dealloc {
+    [_lockedDevice unlockForConfiguration];
+}
+
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sample
        fromConnection:(AVCaptureConnection *)connection {
     CVPixelBufferRef image = CMSampleBufferGetImageBuffer(sample);
@@ -203,14 +216,23 @@ void *acheflow_camera_open(const char *id, const CameraMode *mode, void *context
         }
         [capture.session addInput:input];
         [capture.session addOutput:capture.output];
-        if (mode && !configureMode(selected, mode)) {
-            *status = 6;
-            [capture.session commitConfiguration];
-            return NULL;
+        if (mode) {
+            if (!configureMode(selected, mode)) {
+                *status = 6;
+                [capture.session commitConfiguration];
+                return NULL;
+            }
+            capture.lockedDevice = selected;
         }
         [capture.session commitConfiguration];
-        [capture.output setSampleBufferDelegate:capture queue:capture.queue];
         [capture.session startRunning];
+        if (!capture.session.running) return NULL;
+        if (mode && !modeIsActive(selected, mode)) {
+            [capture.session stopRunning];
+            *status = 6;
+            return NULL;
+        }
+        [capture.output setSampleBufferDelegate:capture queue:capture.queue];
         return (__bridge_retained void *)capture;
     }
 }

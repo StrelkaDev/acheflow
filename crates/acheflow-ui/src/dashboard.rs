@@ -59,11 +59,7 @@ pub fn dashboard() -> Element {
                         span {class:"nav-symbol",if item=="Live"{"▷"}else if item=="Settings"{"⚙"}else{"▦"}}"{item}"
                     }
                 }}
-                div {class:"sidebar-footer",
-                    div {class:"local-badge",span {class:"status-dot"}if (sync.following)(){if (sync.ready)(){"Server workspace"}else{"Connecting to workspace"}}else{"Local draft"}}
-                    p {class:"sidebar-backend","{backend}"}
-                    p {class:"app-version","v{APP_VERSION}"}
-                }
+                SidebarFooter {backend,following:(sync.following)(),ready:(sync.ready)()}
             }
             div {class:"workspace",
                 {native_activation_notice(
@@ -102,6 +98,22 @@ pub fn dashboard() -> Element {
                 if live.running(){aside {class:"live-chat-sidebar","aria-label":"Live chat",crate::interaction::ChatPanel {}}}
                 }
             }
+        }
+    }
+}
+
+#[component]
+fn SidebarFooter(backend: Signal<String>, following: bool, ready: bool) -> Element {
+    let status = match (following, ready) {
+        (true, true) => "Server workspace",
+        (true, false) => "Connecting to workspace",
+        (false, _) => "Local draft",
+    };
+    rsx! {
+        div {class:"sidebar-footer",
+            div {class:"local-badge",span {class:"status-dot"},span {"{status}"}}
+            p {class:"sidebar-backend","{backend}"}
+            p {class:"app-version","v{APP_VERSION}"}
         }
     }
 }

@@ -295,7 +295,7 @@ pub(crate) fn SourcePreview(
                     div {class:format!("{image_class} source-preview-waiting"),"Waiting for video"}
                 }
                 if image {
-                    crate::video_preview::VideoPreview {url:client.preview(&format!("/api/live/source/{source_id}")),class:image_class}
+                    crate::video_preview::VideoPreview {url:client.preview(&format!("/api/live/source/{source_id}")),class:image_class,fit:true}
                 }
                 if !video && input.as_ref().is_none_or(|status| status.audio_tracks.is_empty()) {
                     p {class:"form-help",role:"status","Waiting for microphone samples"}
@@ -307,7 +307,7 @@ pub(crate) fn SourcePreview(
                 }
             }
         } else if image {
-            crate::video_preview::VideoPreview {url:client.preview(&format!("/api/live/source/{source_id}")),class:"source-card-preview"}
+            crate::video_preview::VideoPreview {url:client.preview(&format!("/api/live/source/{source_id}")),class:"source-card-preview",fit:true}
         } else if showing && !video && let Some(status)=input.as_ref() {
             div {class:"padded",
                 for track in &status.audio_tracks {

@@ -69,6 +69,7 @@ pub(crate) fn PreviewRate(#[props(default)] compact: bool) -> Element {
 pub fn VideoPreview(
     url: String,
     #[props(default = "live-preview")] class: &'static str,
+    #[props(default)] fit: bool,
     #[props(default)] max_fps: Option<u32>,
     #[props(default)] notice: Option<Signal<Option<&'static str>>>,
 ) -> Element {
@@ -79,6 +80,7 @@ pub fn VideoPreview(
         CustomWidgetAttr::new(PreviewWidget {
             latest: widget_latest,
             gpu: None,
+            fit,
         })
     });
     let mut version = use_signal(|| 0u64);
@@ -230,6 +232,14 @@ struct Gpu {
 struct PreviewWidget {
     latest: Latest,
     gpu: Option<Gpu>,
+    fit: bool,
+}
+
+fn source_fit(frame_width: f64, frame_height: f64, width: f64, height: f64) -> Affine {
+    let scale = (width / frame_width).min(height / frame_height);
+    let left = (width - frame_width * scale) / 2.;
+    let top = (height - frame_height * scale) / 2.;
+    Affine::translate((left, top)) * Affine::scale(scale)
 }
 
 impl Widget for PreviewWidget {
@@ -335,18 +345,22 @@ impl Widget for PreviewWidget {
             );
             gpu.sequence = frame.sequence;
         }
+        let (width, height) = (f64::from(width), f64::from(height));
+        let (frame_width, frame_height) = (f64::from(frame.width), f64::from(frame.height));
+        let transform = if self.fit {
+            source_fit(frame_width, frame_height, width, height)
+        } else {
+            Affine::scale_non_uniform(width / frame_width, height / frame_height)
+        };
         scene.fill(
             Fill::NonZero,
-            Affine::scale_non_uniform(
-                width as f64 / frame.width as f64,
-                height as f64 / frame.height as f64,
-            ),
+            transform,
             PaintRef::Resource(ImageBrush {
                 image: gpu.targets[gpu.current].id,
                 sampler: ImageSampler::default(),
             }),
             None,
-            &Rect::new(0., 0., frame.width as f64, frame.height as f64),
+            &Rect::new(0., 0., frame_width, frame_height),
         );
         scene
     }

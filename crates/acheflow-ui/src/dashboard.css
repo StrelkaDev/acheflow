@@ -24,10 +24,11 @@ nav { display: flex; flex-direction: column; gap: 6px; }
 .nav-item { display: flex; align-items: center; gap: 12px; text-align: left; border-color: transparent; background: transparent; color: #95a1b4; padding: 12px; }
 .nav-symbol { width: 18px; font-size: 18px; }
 .nav-item.selected { background: var(--accent-surface); color: var(--accent-text); border-color: var(--accent-border); }
-.sidebar-footer { margin-top: auto; padding: 16px 8px 0; border-top: 1px solid #252c38; font-size: 11px; }
-.sidebar-backend { font-size: 10px; overflow-wrap: anywhere; }
-.local-badge { display: flex; gap: 8px; align-items: center; color: #cbd2df; }
-.status-dot { width: 6px; height: 6px; border-radius: 3px; background: #74bd9a; }
+.sidebar-footer { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; margin-top: auto; padding: 16px 8px 0; border-top: 1px solid #252c38; font-size: 11px; }
+.sidebar-footer p { margin: 0; white-space: nowrap; }
+.sidebar-backend { font-size: 10px; }
+.local-badge { display: flex; gap: 8px; align-items: center; color: #cbd2df; white-space: nowrap; }
+.status-dot { flex: 0 0 6px; height: 6px; border-radius: 3px; background: #74bd9a; }
 .workspace { flex: 1; min-width: 0; min-height: 0; height: 100%; position: relative; overflow: hidden; display: flex; flex-direction: column; }
 .workspace-body { display:flex; flex:1; min-width:0; min-height:0; position:relative; z-index:1; }
 .tab-viewport { position: relative; flex: 1; min-width:0; min-height: 0; overflow: hidden; z-index: 1; }
@@ -268,7 +269,6 @@ button.selected { background:var(--accent-surface); color:var(--accent-text); bo
 .studio-source-preview { margin-bottom:20px; }
 .audio-monitor-control { display:grid; gap:6px; align-content:start; }
 .audio-monitor-control .slider-control { min-width:100px; }
-.separate-source-view { flex:1; min-height:0; overflow:auto; }
 .studio-source-image.separate-source-image { height:clamp(230px,56vh,720px); }
 .studio-source-options { flex-wrap:wrap; }
 .studio-source-options button { max-width:100%; overflow-wrap:anywhere; }

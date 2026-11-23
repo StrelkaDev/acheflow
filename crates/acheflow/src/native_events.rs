@@ -13,8 +13,8 @@ use objc2_app_kit::{
     NSUserActivityRestoring,
 };
 use objc2_foundation::{
-    NSArray, NSData, NSNotification, NSNumber, NSObject, NSObjectProtocol, NSURL, NSUserActivity,
-    ns_string,
+    NSArray, NSBundle, NSData, NSNotification, NSNumber, NSObject, NSObjectProtocol, NSURL,
+    NSUserActivity, ns_string,
 };
 use std::{cell::RefCell, collections::VecDeque, ptr::NonNull};
 use winit::event_loop::EventLoopProxy;
@@ -176,10 +176,21 @@ impl Registration {
         })
     }
     pub fn show_dock(&self) {
-        // Also brand direct CLI launches, where there is no .app bundle metadata.
-        let data = NSData::with_bytes(include_bytes!("../../acheflow-ui/assets/achedev-logo.icns"));
-        if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
-            self.application.set_icon(&image);
+        // Let AppKit render the bundle's icon in the Dock. Only the unbundled
+        // executable needs a runtime icon.
+        let bundle = NSBundle::mainBundle();
+        if bundle
+            .objectForInfoDictionaryKey(ns_string!("CFBundleIconFile"))
+            .is_none()
+            && bundle
+                .objectForInfoDictionaryKey(ns_string!("CFBundleIconName"))
+                .is_none()
+        {
+            let data =
+                NSData::with_bytes(include_bytes!("../../acheflow-ui/assets/achedev-logo.icns"));
+            if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+                self.application.set_icon(&image);
+            }
         }
         self.application
             .setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Regular);

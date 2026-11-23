@@ -155,16 +155,31 @@ pub fn ScenePreview(
             state.live_clock = live_time.is_some();
         }
         let frame_epoch_ms = state.visual_epoch_ms;
+        let mut inputs = state
+            .frame
+            .as_ref()
+            .map(|f| f.inputs.clone())
+            .unwrap_or_default();
         if placeholders {
+            // Reuse decoded frames and replace old placeholders after a size change.
+            inputs.retain(|id, input| {
+                state
+                    .patterns
+                    .get(id)
+                    .is_none_or(|pattern| !Arc::ptr_eq(&input.image, &pattern.image))
+            });
             for source in workspace.sources.iter().filter(|s| s.kind.is_video_input()) {
+                let size = source
+                    .camera_mode_resolution()
+                    .unwrap_or_else(|| source.resolution.clone());
                 if state
                     .patterns
                     .get(&source.id)
-                    .is_none_or(|p| p.size != source.resolution)
+                    .is_none_or(|p| p.size != size)
                 {
                     state
                         .patterns
-                        .insert(source.id, SourceFrame::test_pattern(&source.resolution));
+                        .insert(source.id, SourceFrame::test_pattern(&size));
                 }
             }
             state.patterns.retain(|id, _| {
@@ -173,13 +188,6 @@ pub fn ScenePreview(
                     .iter()
                     .any(|s| s.kind.is_video_input() && s.id == *id)
             });
-        }
-        let mut inputs = state
-            .frame
-            .as_ref()
-            .map(|f| f.inputs.clone())
-            .unwrap_or_default();
-        if placeholders {
             for (id, pattern) in &state.patterns {
                 inputs.entry(*id).or_insert_with(|| pattern.clone());
             }
