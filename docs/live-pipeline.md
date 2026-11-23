@@ -6,7 +6,7 @@ workspace JSON receives a generated identity and default offline source pattern 
 those fields are absent. Importing a workspace in the GUI creates a separate
 identity. Disk/browser catalogs remain local; the server durably stores one workspace
 configuration. Restart restores its identity and revision without activating
-inputs, outputs or integrations. Apply sources explicitly to activate it; media
+inputs, outputs or integrations. Use **Activate workspace sources** to activate it; media
 production does not resume automatically. [Getting started](getting-started.md)
 covers application/server launch and the first broadcast.
 
@@ -20,8 +20,10 @@ receive a display projection without stream keys or transport URLs. See
 ## User flow
 
 1. In **Live / Sources**, choose **Add source**, then add an RTMP stream, SRT
-   stream, camera, microphone, or overlay. Apply sources to activate them on the server.
-   Expand a live video source to see its preview and input status.
+   stream, camera, microphone, or overlay. Use **Add to server** on a new card
+   when editing the server workspace. For a new or inactive workspace, use
+   **Activate workspace sources** to start listening and capture. Expand a live
+   video source to see its preview and input status.
 2. In Scenes create a scene, add source layers, and set placement/size. Layer
    order is compositing order, last on top. Select a layer and drag its corners
    to resize, or set exact geometry in the CSS inspector.
@@ -34,30 +36,39 @@ receive a display projection without stream keys or transport URLs. See
    Track zero of each distinct video-layer source defaults to Program; additional
    tracks need explicit sends. Destination cards omit routing controls; new outputs
    use Program. Existing JSON routes are preserved. See [audio capabilities](audio-capabilities.md).
-4. In Studio choose a horizontal and/or vertical scene. **Start preview** renders
-   the selected scenes without sending them to destinations. Use **Start output**
+4. In Studio choose a horizontal and/or vertical scene. **Preview draft inputs**
+   starts temporary capture for that format's draft. **Start program preview**
+   runs the server composition without sending it to destinations. Use **Start output**
    on a destination to publish to it, or **Start all outputs** to launch the
    enabled destinations for the selected formats. During a preview or broadcast,
    starting an output keeps the composition and other running outputs in place.
+   Choosing a different scene opens its draft preview. **Take live** switches
+   the program for that format to the saved scene. In a preview-only session,
+   the same action is called **Use scene**.
    **Restart output** reconnects one destination, and **Restart all outputs**
    reconnects all enabled destinations in the running formats. Each active output
-   gets an independent
-   FFmpeg process with its configured codec, encoder, resolution, bitrate and CBR/VBR
-   mode. Settings cards expand/collapse and support removal. CBR uses matching
+   gets an independent FFmpeg process that scales and encodes frames from the
+   shared renderer for its format. Each destination has its own protocol, codec,
+   encoder, resolution, bitrate and CBR/VBR mode. Settings cards expand/collapse and support removal. CBR uses matching
    min/target/max rates plus encoder-specific CBR switches (including x264 HRD
    and VideoToolbox constant bitrate); VBR retains a capped variable rate. Legacy
    JSON without `bitrate_mode` defaults to VBR. The bitrate setting controls video;
-   outgoing traffic also includes AAC audio (128 kbps target) and FLV container bytes.
+   outgoing traffic also includes AAC audio (128 kbps target) and FLV or MPEG-TS container bytes.
    Each output has a **Keyframe interval (seconds)** setting (1–20, default 2).
    The encoder receives a GOP limit and periodic keyframe requests on the media
-   timeline. Older JSON without `keyframe_interval_secs` uses 2 seconds. Changing
-   this interval requires Stop/Start. Studio can restart one destination
-   independently with **Restart output**. Temporary transport failures show a
+   timeline. Older JSON without `keyframe_interval_secs` uses 2 seconds. Use
+   **Save output profile** in Settings to save a destination’s transport and
+   encoder settings. Studio uses the saved profile for framing and encoded
+   preview. An active destination continues with its current settings until
+   you select **Restart output** for that destination. A stopped destination
+   starts with the saved profile. Temporary transport failures show a
    reconnect attempt on the affected output.
-5. Apply scene/source/mixer/route edits while running. Drag release applies live
-   placement; audio-only changes keep the video encoder running. Changing an
-   active format's base, FPS, output transport or video profile is rejected until
-   Stop/Start.
+5. Scene edits show up in the local preview as you work. Use **Save scene** or
+   **Update on air** to publish the selected scene's content. Mixer edits for
+   saved server scenes apply as you work and keep
+   the video encoder running. Stop the format before changing its base canvas,
+   FPS or destination list. Changes to a destination’s enabled state take effect
+   at the next format start.
    Stop live leaves registered inputs available; deactivate sources stops both
    composition and incoming publishers.
 
@@ -67,41 +78,99 @@ each output's starting, reconnecting, streaming or failed state and FFmpeg progr
 It also lists each selected scene source as receiving video or waiting for input,
 so an active compositor with disconnected inputs is not mistaken for a frozen preview.
 Reloading the GUI does not stop a server-side live session.
-Studio and Overview show line graphs for up to 60 seconds of CPU and RAM measurements. The
-server normally samples every 250 ms. On Linux it also shows the busiest GPU
-for which the server's driver reports a utilization counter.
+Studio and Overview show up to 60 seconds of CPU, RAM and GPU history.
+CPU and RAM normally sample every 250 ms. Device metrics sample about once
+per second when available:
+
+- On macOS, a compatible GPU driver exposes device activity and the amount
+  of system memory used by the GPU through IORegistry.
+- On Linux, compatible DRM drivers expose GPU activity and dedicated
+  memory. On Linux or Windows, `nvidia-smi` from the NVIDIA driver adds
+  per-GPU activity, VRAM used/total, and encoder and decoder activity if supported.
+
+The graphs leave unavailable device counters blank. The server does not
+sample Neural Engine utilization. For neural filters, model-run time and
+missed frame deadlines are separate measurements from device activity.
+
 Each format shows observed and target FPS, p95 render time including readback,
-and the share of render attempts over the frame budget. Destination counters
-show repeated frames, inserted 20-ms silence blocks and automatic reconnect
-attempts since the format started.
-**Live / Settings / Preview FPS** sets the client's JPEG snapshot rate from 1
-to 60 FPS (default 10). The same preference applies to source cards, editor
-source snapshots and Studio. Source cadence, JPEG encoding and the connection
-determine the achieved rate. The broadcast render and encoder retain their own
-FPS settings.
+and the share of render attempts over the frame budget. **Render graph** shows
+the last minute of p95 values against the format's frame budget. Destination
+cards show FFmpeg's FPS and speed relative to real time, repeated frames,
+inserted 20-ms silence blocks and automatic reconnects. Use
+[output-track profiling](development.md#output-track-profiling) to inspect
+separate video and audio timings.
+**Preview FPS** in Studio and Live / Settings sets the client snapshot rate
+from 1 to 60 FPS (default 10). Studio samples at up to the configured FPS of
+the format. Each format renders once, at its own FPS, and shares the frames
+between preview and the destination encoders. Actual preview FPS depends on
+render speed, image encoding and the connection.
+
 In Studio, **Preview profile** switches between the scene canvas and the
 destinations configured for the running format, including disabled destinations.
-It shows each profile's resolution, codec, bitrate mode, bitrate and FPS.
-**After encoding** runs a local video encoder and decoder with the destination's
-resolution, encoder, rate control, frame rate and keyframe interval. This shows
-compression before going live, without contacting the destination. The server
-sends lossless PNG snapshots at up to 15 FPS. **Before encoding** shows the
-framing with JPEG snapshots. The server reuses snapshots between viewers of the
-same profile. Two encoded profiles per format can be previewed concurrently,
-and the encoder closes after four seconds without requests. Studio shows the
-draft selection and the applied scene separately. **Apply scene & sources**
-updates the applied scene.
+The canvas and **Before encoding (PNG)** display lossless snapshots of the shared
+frames. Destination framing scales the canvas to that profile's resolution.
+Snapshots use at most a 4K pixel budget. The server shares matching snapshots
+between viewers. **After encoding** tests the selected destination's resolution,
+encoder, muxer, rate control, frame rate and keyframe interval without connecting
+to the destination. It exports decoded PNG snapshots at up to 15 FPS. Two encoded profiles per format can be previewed concurrently,
+and the encoder closes after four seconds without requests. Profile previews
+show the server's scene. A draft preview shows the selected scene from the
+local project. While workspace sources are inactive, **Preview draft inputs**
+temporarily opens the saved inputs used by the scene's visible viewports and
+its routed audio tracks. Overlays remain part of the draft. Switching scenes
+changes which inputs Studio requests. **Stop draft capture** or leaving Studio
+ends the requests. An input stays active as long as any viewer renews it, and
+releases about seven seconds after the last request. The draft preview can
+show input meters. Use **Add scene to server** or **Save scene** to publish the
+draft. **Update on air** publishes
+changes to the current program scene. **Take live** is enabled
+when the previewed scene and its sources match the saved version. It switches
+that format without publishing other draft edits or restarting outputs.
 Preview audio playback is not implemented; source audio is carried by outputs.
-The Studio JPEG widget reuses two wgpu textures per visible preview; the editor
+The Studio preview widget reuses two wgpu textures per visible preview; the editor
 uses the shared GPU scene renderer with bounded per-layer textures. It bypasses Blitz's unbounded URL/image caches; widget
 resource registrations are automatically released by Blitz when the node drops.
 Inactive tabs do not mount preview widgets or fetch snapshots.
 
+## Output setup
+
+In **Live / Settings**, expand a destination and select **Output protocol**.
+Existing destinations default to RTMP. Each format can mix RTMP and SRT
+destinations.
+
+- **RTMP** sends FLV to an `rtmp://` endpoint using the configured stream key.
+- **SRT** sends MPEG-TS in caller mode to a receiver listening at
+  `srt://receiver.example:9000`. The optional **SRT passphrase** must match
+  the receiver. Use 10–79 ASCII letters, digits, underscores or hyphens.
+  Append `?latency=120000` for 120 ms, or include a URL-encoded `streamid`
+  if required by the receiver. See the [FFmpeg SRT options](https://ffmpeg.org/ffmpeg-protocols.html#srt).
+
+Check the [server's FFmpeg capabilities](ffmpeg.md#srt-input-and-output) if the
+chosen transport has no available encoders. Save an existing destination's
+profile with **Save output profile**, then start or restart it from Studio.
+
 ## Source setup
+
+To check one saved source while the workspace inputs are inactive, open its
+card and select **Preview source**. For a microphone, use **Check microphone
+level**. Video snapshots and microphone levels use the saved capture settings.
+For RTMP and SRT, start the publisher after opening the preview. This registers
+only that input temporarily, so the format renderers and outputs remain idle.
+Closing the card, leaving Sources or losing the connection ends its periodic
+requests. The server releases the input seven seconds after the last request.
+Concurrent viewers share the same input, and activating the workspace reuses
+a previewed input when its capture settings match.
+
 
 On macOS, the camera and microphone pickers update when devices are connected
 or disconnected. For a USB camera such as an Osmo, select **Webcam** on the
 device so macOS exposes it as a video input.
+
+Names and preview dimensions save when you complete the field. Transport and
+device edits take effect when you use that card's **Reconnect** button. If
+capture is inactive, **Save capture settings** stores the settings for the next
+activation. **Remove** removes that source and its layer and mixer references.
+These actions preserve the active scene and other inputs.
 
 - **RTMP.** Copy the ingest URL to the publisher's server field and the source's
   stream key to its key field. The listener address is shown in Sources.
@@ -111,12 +180,12 @@ device so macOS exposes it as a video input.
   receiver uses the first video track and first audio track. **Add source**
   shows whether SRT is available. Use **Refresh FFmpeg** after installing an
   [SRT-enabled build](ffmpeg.md#srt-input) on the media server.
-- **Camera.** On macOS, select a connected camera by name. Apply sources and
+- **Camera.** On macOS, select a connected camera by name. Activate workspace sources and
   grant camera access when the Acheflow app asks. The server opens each camera
   by its saved device identity. Add each camera once and reuse it across scenes.
   The source card can switch devices, choose a **Capture mode** reported by that
-  camera or keep **Auto**, and mirror the source horizontally. Apply sources to
-  use these settings. Camera capture preserves native dimensions, including
+  camera or keep **Auto**, and mirror the source horizontally. Use **Reconnect
+  camera** to apply those settings during capture. Camera capture preserves native dimensions, including
   portrait modes. Set rotation on the layer in the scene.
   The card reports the observed incoming FPS after frames arrive.
   Camera sources provide video.
@@ -128,10 +197,10 @@ device so macOS exposes it as a video input.
   macOS server. The source card lets you change **Device** and select
   **Capture quality** from the sample rates, bit depths and channel counts
   reported by that device. **Auto** uses its current format and is selected
-  when you switch devices. Apply sources and grant microphone access when
+  when you switch devices. Use **Reconnect microphone** during capture and grant microphone access when
   prompted. The card shows input status and levels. In **Live / Mixer**, select
   the receiving scene, set the microphone's **Send → Program** to the desired
-  level (0 dB for unity gain), then apply the mixer. Repeat for each scene
+  level (0 dB for unity gain). Repeat for each scene
   that needs the microphone, using whichever bus its output selects.
   Studio shows gain, mute, balance and up to 250 ms of audio delay. Microphones
   work without a scene layer and start unrouted. The browser lists devices on
@@ -146,7 +215,7 @@ in a scene. It displays the merged chat supplied by enabled provider extensions.
 The source settings select channels, a message limit, display lifetime and entry/
 exit durations. The defaults are twenty messages, fifteen seconds of display,
 250 ms for entry and 300 ms for exit. Layer geometry controls placement and size.
-Apply source/scene changes to update the server's output.
+Save the overlay settings and scene to update the server's output.
 
 The source CSS editor styles `.chat`, `.chat-message`, `.chat-author`, `.chat-body`
 and `.chat-platform`; role classes include `.broadcaster` and `.moderator`.
@@ -218,7 +287,7 @@ inspector and its draft, native selection and cursor. Two layers of the same
 source have independent identities. CSS/WGSL syntax highlighting shares an
 ordinary Blitz textarea, with scroll rails shown only on overflowing axes; no
 browser-only editor is used.
-Apply scene & sources publishes local edits to the server. CSS is limited to
+**Save scene** or **Update on air** publishes the selected scene. CSS is limited to
 16 KiB/layer. Stylesheet edits rebuild that layer document; keyframes are sampled
 against the common scene timeline, but transitions between separate stylesheet
 edits are not retained.
@@ -230,7 +299,7 @@ ordered effects per layer are allowed, each independently enabled/removed/moved.
 **Chroma key** uses a hex RGB key color in the layer inspector. **Tolerance**
 sets the chroma range to remove. **Softness** feathers the transition, **Edge
 smoothing** samples nearby pixels, and **Despill** reduces the key-color fringe.
-**Amount** controls the strength of the complete effect. Apply the scene to use
+**Amount** controls the strength of the complete effect. Save the scene to use
 the same settings in Studio and the broadcast.
 
 Custom WGSL uses this signature.
@@ -268,11 +337,8 @@ snapshots; the server renders at configured FPS independently of any open GUI.
 Server time/renderer/errors are exposed in format status. GPU readback produces
 RGB24 for FFmpeg; zero-copy hardware-encoder integration is not implemented.
 JPEG compression and the preview refresh rate can differ from the full-rate output.
-In the primary viewport, **Undo** and **Redo** cover layer moves, resizes and
-stacking order while the editor is open for that scene. Each drag, Forward
-or Backward action records one step. With the
-canvas focused, use **Cmd/Ctrl+Z** or **Cmd/Ctrl+Shift+Z**. Undo and redo apply
-the result to a running composition just like releasing a drag.
+The scene header has **Undo** and **Redo** for draft layer and viewport edits,
+camera and object inspectors, and scene renames. See [scene editing controls](controls.md#3d-scenes-and-viewports).
 
 ## Media path
 
@@ -319,18 +385,21 @@ queues; large discontinuities rebase instead of building a backlog. This is not
 a claim of qualified end-to-end A/V synchronization.
 
 Every destination stores its scene→bus map (default Program), so two destinations
-can share one mix or use isolated mixes. Live / Mixer edits scene controls;
-Destination cards omit routing controls; existing JSON routes remain supported. Studio also shows a single row of vertical channel strips with horizontal scrolling under each format preview, following the applied scene during streaming and the selected scene while offline. It includes source levels/gain/mute/solo/balance, bus master controls and destination names. Apply updates
-mixers/routes without restarting video; video/transport changes still require
-stopping. Status reports source tracks, stereo peak/RMS, bus levels, clipping,
-and the actual applied destination scene/bus.
+can share one mix or use isolated mixes. Existing JSON routes remain supported.
+Live / Mixer and the Studio mixer save channel, send and bus changes as you work.
+Changes target one scene's mixer. Studio follows the applied scene during
+streaming and the selected scene while offline. Local-only scenes keep their
+mix in the draft. The server preserves the selected program scene, video
+encoder and unrelated workspace settings when saving the mix. Status reports
+source tracks, stereo peak/RMS, bus levels, clipping and the applied destination
+scene/bus.
 
 Each Studio track has **Auto**, **Auto + trim**, and **Manual** sync modes.
 Auto follows the same source's presented video PTS. Auto + trim adds a
 saved, signed correction of up to 250 ms. Manual applies that correction
 with the audio playout clock. Positive values delay the track. Negative values
-delay source video, which all its tracks share in that scene. Use **Apply mixer**
-to update the running format. Frame cadence and the bounded video history can
+delay source video, which all its tracks share in that scene. Sync settings
+take effect as you edit them. Frame cadence and the bounded video history can
 limit the achieved delay, which Studio reports as buffering alongside the
 applied delays. Auto uses several distinct presented frames to acquire the
 clock and outputs silence during that interval. It reacquires after a source
@@ -382,26 +451,46 @@ previews and loopback clients. Mutations require `X-Acheflow-Request: 1` and the
 corresponding management grants; full Apply/Start requires workspace, scene, media
 and extension configure/run permissions because it replaces their configuration.
 
-- `GET /api/media/capabilities` reports SRT input support from the server's
+- `GET /api/media/capabilities` reports SRT input and output support from the server's
   FFmpeg. `GET /api/media/cameras` lists available local video devices for
   operators with media management access. `GET /api/media/microphones` lists
   available local audio inputs for the same operators.
 
-- `GET /api/live/status`: owner workspace id, RTMP bind address, source and format/output state; no tokens or destination URLs/keys. Sources report cumulative `received_bytes` and rolling `bitrate_kbps`; outputs report their workspace `index`, `sent_bytes` and `bitrate_kbps`. An output waiting for or making an automatic reconnection reports `state: "starting"` and the one-based `reconnect_attempt`. Input bytes count compressed audio/video payload, output bytes count FFmpeg FLV mux bytes. Rates use a two-second rolling window; transport overhead and GUI preview traffic are excluded. Output counters reset when a new encoder starts; input byte counters span publisher reconnects.
+- `GET /api/live/status`: owner workspace id, RTMP bind address, source and format/output state; no tokens or destination URLs/keys. Sources report cumulative `received_bytes` and rolling `bitrate_kbps`; outputs report their workspace `index`, `sent_bytes` and `bitrate_kbps`. An output waiting for or making an automatic reconnection reports `state: "starting"` and the one-based `reconnect_attempt`. Input bytes count compressed audio/video payload, output bytes count FFmpeg FLV or MPEG-TS mux bytes. Rates use a two-second rolling window; transport overhead and GUI preview traffic are excluded. Output counters reset when a new encoder starts; input byte counters span publisher reconnects.
 - `PUT /api/live/config`: apply a workspace. Layout/source validation is independent of unfinished output drafts. Running encoding profiles cannot be changed.
 - `POST /api/live/start`: `{ "workspace": <workspace>, "formats": ["horizontal", "vertical"] }`. Starts the requested formats. Set `"preview_only": true` to leave all enabled outputs stopped, or set `"output": {"orientation": "horizontal", "index": 0}` to start one output. With neither field, the session starts all enabled outputs in the requested formats.
+- `POST /api/live/output/profile` saves the transport and encoder profile for
+  one existing output at the expected workspace revision. The response returns
+  the new revision. Running output status reports `restart_required` while
+  that encoder uses older settings.
 - `POST /api/live/outputs`: `{ "workspace_id": "<workspace id>", "action": "start" }` starts stopped or failed enabled outputs in the running formats. Use `"action": "restart"` to restart active outputs too. The optional `output` target uses the same orientation and zero-based index as the start request. The response reports individual destination errors in each output's status.
+- `POST /api/live/mixer` validates and saves a batch of track or bus edits for the current workspace revision. The response acknowledges the new revision. A revision conflict preserves the local draft.
+- `POST /api/live/sources` saves an edit for one source at the current workspace
+  revision. Capture changes restart only the affected input while active.
+  Registering or editing an input in an inactive workspace preserves that state.
+- `POST /api/live/scenes` registers, edits or removes one scene at the current
+  workspace revision. Content edits save its name, layers and spatial graph,
+  preserving the mixer and program scene selection. A running program scene
+  must be switched away from or stopped before removal.
+- `POST /api/live/take` switches one running format to a saved scene using
+  `workspace_id`, `expected_revision`, `orientation`, and `scene_id`.
+  A successful response acknowledges the new revision. Other formats and
+  the workspace's source, output and scene settings are preserved.
 - `POST /api/live/output/restart`: `{ "workspace_id": "...", "orientation": "horizontal", "index": 0 }`. Restarts one enabled destination with its applied profile. Index is the original workspace output index, including disabled entries. Owner mismatches return 409; inactive formats or absent/disabled destinations return 422. Other encoders, the compositor and audio mixer continue running.
 - `POST /api/live/stop`: `{ "workspace_id": "..." }`. Idempotent for the matching workspace.
 - `DELETE /api/live/config`: same control body; stop and unregister inputs.
 - `GET /api/live/preview/horizontal.jpg` and `vertical.jpg`: composed previews.
   Optional `output` selects a zero-based destination index in that format
   and returns a JPEG at the destination resolution up to a 4K pixel budget.
-  Larger profiles are scaled proportionally for the JPEG.
+  Add `mode=lossless` for a PNG from the shared canvas or the selected
+  destination framing. The lossless snapshot honors the same pixel budget.
   Add `mode=encoded` with `output` for a PNG decoded from the locally encoded
   video. A warming-up encoder returns 202, a full preview pool returns 429,
   and an unsupported profile returns 422.
-- `GET /api/live/source/{id}`: input snapshot.
+- `POST /api/live/source-preview` starts or renews temporary capture of a saved
+  media source. It accepts `workspace_id` and `source_id` and requires media
+  management permission. A preview expires after seven seconds without a request.
+- `GET /api/live/source/{id}`: input snapshot. Requires Studio view permission.
 
 Preview URLs include `?workspace=<workspace-id>` to avoid displaying another
 workspace's frames after a switch. Snapshots use `Cache-Control: no-store`. Errors use an

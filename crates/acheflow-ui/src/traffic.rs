@@ -138,7 +138,7 @@ pub fn TrafficCharts() -> Element {
         div {class:"traffic-charts",for (prefix,title) in [("in:","Receiving"),("out:","Sending")] {
             TrafficChart {history:history.clone(),prefix,title}
         }}
-        p {class:"form-help","Last 2 minutes · rolling media bitrate, including audio. Incoming: compressed media payload; outgoing: encoded FLV bytes. Excludes network protocol overhead and preview traffic."}
+        p {class:"form-help","Last 2 minutes · rolling media bitrate, including audio. Incoming: compressed media payload; outgoing: encoded FLV or MPEG-TS bytes. Excludes network protocol overhead and preview traffic."}
     }
 }
 #[component]

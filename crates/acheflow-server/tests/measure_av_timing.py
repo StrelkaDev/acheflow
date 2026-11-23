@@ -1,4 +1,4 @@
-"""Measure the loopback captures from sustained_rtmp_av_markers."""
+"""Analyze A/V timing in the sustained RTMP or mixed-output preview captures."""
 
 import argparse
 import bisect
@@ -141,13 +141,40 @@ def summarize(capture, start, end, fps, *, qualify, drift_required=False):
     }
 
 
+def preview_load_report(directory, ffmpeg, ffprobe):
+    report = {}
+    for fps in (30, 60):
+        run_dir = directory / str(fps)
+        metrics = json.loads((run_dir / "preview-load.json").read_text())
+        captures = {}
+        for name, filename in (
+            ("source", "source.flv"),
+            ("rtmp", "horizontal.flv"),
+            ("srt", "vertical.ts"),
+            ("rtmp_restarted", "horizontal-restarted.flv"),
+        ):
+            capture = inspect(run_dir / filename, ffmpeg, ffprobe)
+            streams, _ = capture
+            first = max(timestamps[0] for timestamps in streams.values())
+            last = min(timestamps[-1] for timestamps in streams.values())
+            captures[name] = summarize(capture, first, last, fps, qualify=False)
+        report[fps] = {"metrics": metrics, "captures": captures}
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
     parser.add_argument("--ffmpeg", default=os.environ.get("ACHEFLOW_FFMPEG", "ffmpeg"))
     parser.add_argument("--ffprobe", default="ffprobe")
+    parser.add_argument("--preview-load", action="store_true", help="analyze the 30/60 FPS mixed-output preview probe")
     parser.add_argument("--markers-csv", type=Path, help="save each matched pulse with its signed offset")
     args = parser.parse_args()
+    if args.preview_load:
+        if args.markers_csv:
+            parser.error("--markers-csv is only available for the sustained RTMP probe")
+        print(json.dumps(preview_load_report(args.directory, args.ffmpeg, args.ffprobe), indent=2))
+        return
     phases = json.loads((args.directory / "phases.json").read_text())
     fps = phases["fps"]
     vertical_fps = phases.get("vertical_fps", fps)

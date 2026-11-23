@@ -1,6 +1,7 @@
 use crate::{
-    live_client::{Action, LiveClient},
+    layer_editor::{LayerTarget, add_layer},
     project::Workspace,
+    scene_canvas::SceneHistory,
 };
 use acheflow_media_api::spatial::*;
 use dioxus_native::prelude::*;
@@ -9,8 +10,12 @@ use dioxus_native::prelude::*;
 mod tests;
 
 #[component]
-pub fn SpatialEditor(mut project: Signal<Workspace>, scene_id: u32, children: Element) -> Element {
-    let client = use_context::<LiveClient>();
+pub fn SpatialEditor(
+    mut project: Signal<Workspace>,
+    scene_id: u32,
+    mut history: Signal<SceneHistory>,
+    children: Element,
+) -> Element {
     let height = project
         .read()
         .scenes
@@ -21,11 +26,22 @@ pub fn SpatialEditor(mut project: Signal<Workspace>, scene_id: u32, children: El
     let mut view = use_signal(|| crate::spatial_view::EditorView::new(height as f32));
     let mut visited = use_signal(std::collections::HashSet::<u64>::new);
     use_effect(move || {
-        if let Some(id) = view.read().selected
+        let selected = view.read().selected;
+        if let Some(id) = selected
             && id != 0
-            && !visited.peek().contains(&id)
         {
-            visited.write().insert(id);
+            let workspace = project.read();
+            let exists = workspace
+                .scenes
+                .iter()
+                .find(|scene| scene.id == scene_id)
+                .and_then(|scene| scene.spatial.as_ref())
+                .is_some_and(|spatial| spatial.objects.iter().any(|object| object.id == id));
+            if !exists {
+                view.write().selected = None;
+            } else if !visited.peek().contains(&id) {
+                visited.write().insert(id);
+            }
         }
     });
     let mut preview = use_signal(|| false);
@@ -55,12 +71,11 @@ pub fn SpatialEditor(mut project: Signal<Workspace>, scene_id: u32, children: El
                 button{class:if !preview(){"selected"}else{""},"aria-pressed":(!preview()).to_string(),onclick:move |_|preview.set(false),"Scene editor"}
                 button{class:if preview(){"selected"}else{""},"aria-pressed":preview().to_string(),onclick:move |_|preview.set(true),"Camera preview"}
             }
-            div{class:"row",span{class:"editor-save-hint","Local draft"}button{class:"primary",disabled:(client.busy)(),onclick:move |_|client.command(Action::Apply),"Apply scene"}}
         }
         if preview(){
             div{class:"camera-preview-heading",span{"Camera · Active"}button{onclick:move |_|{view.write().selected=Some(0);preview.set(false);},"Edit camera"}}
             div{class:"camera-preview-wrap",style:format!("aspect-ratio:{} / {};",base.width,base.height),crate::spatial_viewport::SpatialViewport{project,scene_id,orientation,view,camera_preview:true}}
-            p{class:"editor-help","Output from the active scene camera. {base.width} × {base.height}"}
+            p{class:"editor-help","Draft view from this scene's camera. {base.width} × {base.height}"}
         }else{
             div{class:"editor-workspace",
                 div{class:"editor-main",
@@ -73,27 +88,29 @@ pub fn SpatialEditor(mut project: Signal<Workspace>, scene_id: u32, children: El
                         }
                         div{class:"editor-tool-group",for (name,yaw,pitch) in [("Front",0.,0.),("Right",90.,0.),("Top",0.,-89.5)]{button{onclick:move |_|{let mut v=view.write();v.yaw=yaw;v.pitch=pitch;v.perspective=false;},"{name}"}}}
                     }
-                    crate::spatial_viewport::SpatialViewport{project,scene_id,orientation,view,camera_preview:false}
+                    crate::spatial_viewport::SpatialViewport{project,scene_id,orientation,view,camera_preview:false,history:Some(history)}
                     p{class:"editor-help","Click to select · Drag an axis · Empty space / Alt + drag: orbit · Shift + drag: pan / snap · Wheel: zoom · F: frame · G / R / S: tools · Esc: cancel"}
                 }
                 aside{class:"spatial-hierarchy","aria-label":"Scene hierarchy",
                     div{class:"hierarchy-title",strong{"Scene collection"}span{"{spatial.objects.len()} objects"}}
                     button{class:if selected==Some(0){"hierarchy-item selected"}else{"hierarchy-item"},onclick:move |_|view.write().selected=Some(0),span{class:"object-type","CAM"}span{"Camera"}small{"Active"}}
                     for object in &spatial.objects {button{key:"{object.id}",class:if selected==Some(object.id){"hierarchy-item selected"}else{"hierarchy-item"},onclick:{let id=object.id;move |_|view.write().selected=Some(id)},span{class:"object-type",match object.kind{ObjectKind::Viewport{..}=>"VP",_=>"MESH"}}span{"{object.name}"}if !object.visible{small{"Hidden"}}}}
-                    div{class:"hierarchy-add",span{"Add object"}button{disabled:spatial.objects.len()>=32 || project.read().sources.len()>=8,onclick:move |_|{if let Some(id)=add_chat_object(&mut project.write(),scene_id){view.write().selected=Some(id);}},"+ Chat"}for kind in ["Viewport","Plane","Cube"]{button{disabled:spatial.objects.len()>=32,onclick:{let base=base.clone();move |_|{
-                        let mut p=project.write();let Some(scene)=p.scenes.iter_mut().find(|s|s.id==scene_id)else{return;};let layers=vec![];let Some(s)=scene.spatial.as_mut()else{return;};if s.objects.len()>=32{return;}
-                        let id=crate::project::new_entity_id();let (kind_data,scale)=match kind{"Viewport"=>(ObjectKind::Viewport{primary:false,canvas:base.clone(),layers},[base.width as f32/2.,base.height as f32/2.,1.]),"Plane"=>(ObjectKind::Plane{color:[0.9,0.3,0.05,1.]},[200.,200.,1.]),_=>(ObjectKind::Cube{color:[0.9,0.3,0.05,1.]},[150.;3])};
-                        let transform=Transform{position:[0.,0.,100.],scale,..Default::default()};s.objects.push(SceneObject{id,name:format!("{kind} {}",s.objects.len()+1),visible:true,transform:transform.clone(),kind:kind_data});
-                        let mut v=view.write();v.selected=Some(id);v.frame(&transform);
+                    div{class:"hierarchy-add",span{"Add object"}button{disabled:spatial.objects.len()>=32 || project.read().sources.len()>=8,onclick:move |_|{if let Some(id)=add_chat_object(&mut project.write(),scene_id,&mut history.write()){view.write().selected=Some(id);}},"+ Chat"}for kind in ["Viewport","Plane","Cube"]{button{disabled:spatial.objects.len()>=32,onclick:{let base=base.clone();move |_|{
+                        edit_spatial(project,scene_id,history,|spatial|{
+                            if spatial.objects.len()>=32{return;}
+                            let id=crate::project::new_entity_id();let (kind_data,scale)=match kind{"Viewport"=>(ObjectKind::Viewport{primary:false,canvas:base.clone(),layers:vec![]},[base.width as f32/2.,base.height as f32/2.,1.]),"Plane"=>(ObjectKind::Plane{color:[0.9,0.3,0.05,1.]},[200.,200.,1.]),_=>(ObjectKind::Cube{color:[0.9,0.3,0.05,1.]},[150.;3])};
+                            let transform=Transform{position:[0.,0.,100.],scale,..Default::default()};spatial.objects.push(SceneObject{id,name:format!("{kind} {}",spatial.objects.len()+1),visible:true,transform:transform.clone(),kind:kind_data});
+                            let mut v=view.write();v.selected=Some(id);v.frame(&transform);
+                        });
                     }},"+ {kind}"}}}
                 }
             }
         }
             section{class:"spatial-inspector",style:if preview(){"display:none"}else{"display:block"},"aria-label":"Selected object inspector",
                 div{class:"inspector-heading",strong{"Inspector"}span{{if selected==Some(0){"Camera · Active".to_owned()}else{current.as_ref().map(|o|o.name.clone()).unwrap_or_else(||"No selection".into())}}}}
-                if selected==Some(0){CameraInspector{key:"camera-{scene_id}",project,scene_id,camera:spatial.camera.clone(),canvas_height:base.height as f32}}
+                if selected==Some(0){CameraInspector{key:"camera-{scene_id}",project,scene_id,camera:spatial.camera.clone(),canvas_height:base.height as f32,history}}
                 for object in spatial.objects.iter().filter(|o|visited.read().contains(&o.id)).cloned(){
-                    div{key:"object-{object.id}",style:if selected==Some(object.id){"display:block"}else{"display:none"},ObjectInspector{project,scene_id,object:object.clone()}}
+                    div{key:"object-{object.id}",style:if selected==Some(object.id){"display:block"}else{"display:none"},ObjectInspector{project,scene_id,object:object.clone(),history}}
                 }
                 if selected.is_none(){p{class:"padded form-help","Select an object in the view or scene collection."}}
                 if primary {div{class:"inspector-content-toggle",button{class:if content(){"selected"}else{""},onclick:move |_|{let open=content();content.set(!open);},if content(){"Close viewport content"}else{"Edit viewport content"}}span{class:"form-help","Layers, sources, crop, CSS and effects belong to this viewport."}}}
@@ -108,55 +125,106 @@ fn CameraInspector(
     scene_id: u32,
     camera: Camera,
     canvas_height: f32,
+    history: Signal<SceneHistory>,
 ) -> Element {
     rsx! {div{class:"inspector-body",
         div{class:"inspector-transform",
-            VectorInput{label:"Position",value:camera.transform.position,change:move|value|edit_scene(project,scene_id,|s|s.camera.transform.position=value)}
-            VectorInput{label:"Rotation (degrees)",value:camera.transform.rotation,change:move|value|edit_scene(project,scene_id,|s|s.camera.transform.rotation=value)}
+            VectorInput{label:"Position",value:camera.transform.position,change:move|value|edit_spatial(project,scene_id,history,|s|s.camera.transform.position=value)}
+            VectorInput{label:"Rotation (degrees)",value:camera.transform.rotation,change:move|value|edit_spatial(project,scene_id,history,|s|s.camera.transform.rotation=value)}
             div{class:"camera-lens",
-                crate::live::Choice{label:"Projection",value:if matches!(camera.projection,Projection::Perspective{..}){"Perspective".to_owned()}else{"Orthographic".to_owned()},choices:vec!["Orthographic".into(),"Perspective".into()],change:move|v:String|edit_scene(project,scene_id,|s|s.camera.projection=if v=="Perspective"{Projection::Perspective{fov_degrees:60.}}else{Projection::Orthographic{height:canvas_height}})}
-                match camera.projection {Projection::Orthographic{height}=>rsx!{FloatInput{label:"View height",value:height,change:move|value:f32|edit_scene(project,scene_id,|s|s.camera.projection=Projection::Orthographic{height:value.clamp(0.01,100_000.)})}},Projection::Perspective{fov_degrees}=>rsx!{FloatInput{label:"Field of view",value:fov_degrees,change:move|value:f32|edit_scene(project,scene_id,|s|s.camera.projection=Projection::Perspective{fov_degrees:value.clamp(1.,175.)})}}}
+                crate::live::Choice{label:"Projection",value:if matches!(camera.projection,Projection::Perspective{..}){"Perspective".to_owned()}else{"Orthographic".to_owned()},choices:vec!["Orthographic".into(),"Perspective".into()],change:move|v:String|edit_spatial(project,scene_id,history,|s|s.camera.projection=if v=="Perspective"{Projection::Perspective{fov_degrees:60.}}else{Projection::Orthographic{height:canvas_height}})}
+                match camera.projection {Projection::Orthographic{height}=>rsx!{FloatInput{label:"View height",value:height,change:move|value:f32|edit_spatial(project,scene_id,history,|s|s.camera.projection=Projection::Orthographic{height:value.clamp(0.01,100_000.)})}},Projection::Perspective{fov_degrees}=>rsx!{FloatInput{label:"Field of view",value:fov_degrees,change:move|value:f32|edit_spatial(project,scene_id,history,|s|s.camera.projection=Projection::Perspective{fov_degrees:value.clamp(1.,175.)})}}}
             }
         }
     }}
 }
 #[component]
-fn ObjectInspector(project: Signal<Workspace>, scene_id: u32, object: SceneObject) -> Element {
+fn ObjectInspector(
+    project: Signal<Workspace>,
+    scene_id: u32,
+    object: SceneObject,
+    history: Signal<SceneHistory>,
+) -> Element {
     let id = object.id;
     rsx! {div{class:"inspector-body",
-        div{class:"inspector-identity",label{class:"field",span{"Name"}input{value:"{object.name}",maxlength:200,oninput:move|e|edit_object(project,scene_id,id,|o|o.name=e.value())}}
-            button{class:if object.visible{"selected"}else{""},onclick:move |_|edit_object(project,scene_id,id,|o|o.visible= !o.visible),if object.visible{"Visible"}else{"Hidden"}}
-            button{class:"remove-object",onclick:move |_|edit_scene(project,scene_id,|s|s.objects.retain(|o|o.id!=id)),"Remove object"}
+        div{class:"inspector-identity",crate::live::CommittedName{label:"Name",value:object.name.clone(),max_bytes:Some(200),change:move|name|edit_inspected_object(project,scene_id,id,history,|o|o.name=name)}
+            button{class:if object.visible{"selected"}else{""},onclick:move |_|edit_inspected_object(project,scene_id,id,history,|o|o.visible= !o.visible),if object.visible{"Visible"}else{"Hidden"}}
+            button{class:"remove-object",onclick:move |_|edit_spatial(project,scene_id,history,|s|s.objects.retain(|o|o.id!=id)),"Remove object"}
         }
         div{class:"inspector-transform",
-            VectorInput{label:"Position",value:object.transform.position,change:move|v|edit_object(project,scene_id,id,|o|o.transform.position=v)}
-            VectorInput{label:"Rotation (degrees)",value:object.transform.rotation,change:move|v|edit_object(project,scene_id,id,|o|o.transform.rotation=v)}
-            VectorInput{label:"Scale / dimensions",value:object.transform.scale,change:move|v:[f32;3]|edit_object(project,scene_id,id,|o|o.transform.scale=v.map(|n|n.clamp(0.01,100_000.)))}
+            VectorInput{label:"Position",value:object.transform.position,change:move|v|edit_inspected_object(project,scene_id,id,history,|o|o.transform.position=v)}
+            VectorInput{label:"Rotation (degrees)",value:object.transform.rotation,change:move|v|edit_inspected_object(project,scene_id,id,history,|o|o.transform.rotation=v)}
+            VectorInput{label:"Scale / dimensions",value:object.transform.scale,change:move|v:[f32;3]|edit_inspected_object(project,scene_id,id,history,|o|o.transform.scale=v.map(|n|n.clamp(0.01,100_000.)))}
         }
         match &object.kind {
             ObjectKind::Viewport{primary:true,..}=>rsx!{},
             ObjectKind::Viewport{canvas,..}=>rsx!{
                 div{class:"form-grid",
-                    crate::live::NumberField{label:"Viewport canvas width",value:canvas.width,min:16,max:(3840*2160/canvas.height.max(1)).min(7680),step:2,change:move|v|edit_object(project,scene_id,id,|o|if let ObjectKind::Viewport{canvas,..}=&mut o.kind{canvas.width=v;})}
-                    crate::live::NumberField{label:"Viewport canvas height",value:canvas.height,min:16,max:(3840*2160/canvas.width.max(1)).min(7680),step:2,change:move|v|edit_object(project,scene_id,id,|o|if let ObjectKind::Viewport{canvas,..}=&mut o.kind{canvas.height=v;})}
+                    crate::live::NumberField{label:"Viewport canvas width",value:canvas.width,min:16,max:(3840*2160/canvas.height.max(1)).min(7680),step:2,change:move|v|edit_inspected_object(project,scene_id,id,history,|o|if let ObjectKind::Viewport{canvas,..}=&mut o.kind{canvas.width=v;})}
+                    crate::live::NumberField{label:"Viewport canvas height",value:canvas.height,min:16,max:(3840*2160/canvas.width.max(1)).min(7680),step:2,change:move|v|edit_inspected_object(project,scene_id,id,history,|o|if let ObjectKind::Viewport{canvas,..}=&mut o.kind{canvas.height=v;})}
                 }
-                ViewportLayers{project,scene_id,object_id:id}
+                ViewportLayers{project,scene_id,object_id:id,history}
             },
-            ObjectKind::Plane{color}|ObjectKind::Cube{color}=>rsx!{div{class:"material-properties",VectorInput{label:"Color RGB",value:[color[0],color[1],color[2]],change:move|v:[f32;3]|edit_object(project,scene_id,id,|o|match &mut o.kind{ObjectKind::Plane{color}|ObjectKind::Cube{color}=>color[..3].copy_from_slice(&v.map(|n|n.clamp(0.,1.))),_=>{}})}}},
+            ObjectKind::Plane{color}|ObjectKind::Cube{color}=>rsx!{div{class:"material-properties",VectorInput{label:"Color RGB",value:[color[0],color[1],color[2]],change:move|v:[f32;3]|edit_inspected_object(project,scene_id,id,history,|o|match &mut o.kind{ObjectKind::Plane{color}|ObjectKind::Cube{color}=>color[..3].copy_from_slice(&v.map(|n|n.clamp(0.,1.))),_=>{}})}}},
         }
     }}
 }
+fn edit_spatial(
+    project: Signal<Workspace>,
+    scene: u32,
+    mut history: Signal<SceneHistory>,
+    change: impl FnOnce(&mut SpatialScene),
+) {
+    edit_scene(project, scene, |spatial| {
+        let before = spatial.clone();
+        change(spatial);
+        history
+            .write()
+            .record_spatial(scene, before, spatial.clone());
+    });
+}
+
+fn edit_inspected_object(
+    project: Signal<Workspace>,
+    scene: u32,
+    id: u64,
+    history: Signal<SceneHistory>,
+    change: impl FnOnce(&mut SceneObject),
+) {
+    edit_spatial(project, scene, history, |spatial| {
+        if let Some(object) = spatial.objects.iter_mut().find(|object| object.id == id) {
+            change(object);
+        }
+    });
+}
+
 pub(crate) fn edit_transform(
     project: Signal<Workspace>,
     scene: u32,
     id: u64,
+    expected: &Transform,
     transform: Transform,
-) {
-    if id == 0 {
-        edit_scene(project, scene, |s| s.camera.transform = transform);
-    } else {
-        edit_object(project, scene, id, |o| o.transform = transform);
+) -> bool {
+    let matches = |workspace: &Workspace| {
+        workspace
+            .scenes
+            .iter()
+            .find(|entry| entry.id == scene)
+            .and_then(|scene| scene.spatial.as_ref())
+            .and_then(|spatial| crate::spatial_view::selected_transform(spatial, id))
+            == Some(expected)
+    };
+    if !matches(&project.peek()) {
+        return false;
     }
+    if expected != &transform {
+        edit_scene(project, scene, |spatial| {
+            if let Some(current) = crate::spatial_view::selected_transform_mut(spatial, id) {
+                *current = transform;
+            }
+        });
+    }
+    true
 }
 fn edit_scene(mut project: Signal<Workspace>, id: u32, edit: impl FnOnce(&mut SpatialScene)) {
     if let Some(scene) = project
@@ -169,19 +237,6 @@ fn edit_scene(mut project: Signal<Workspace>, id: u32, edit: impl FnOnce(&mut Sp
         edit(scene);
     }
 }
-fn edit_object(
-    project: Signal<Workspace>,
-    scene: u32,
-    id: u64,
-    edit: impl FnOnce(&mut SceneObject),
-) {
-    edit_scene(project, scene, |s| {
-        if let Some(object) = s.objects.iter_mut().find(|o| o.id == id) {
-            edit(object);
-        }
-    });
-}
-
 #[component]
 fn FloatInput(label: &'static str, value: f32, change: EventHandler<f32>) -> Element {
     let mut draft = use_signal(|| value.to_string());
@@ -224,7 +279,12 @@ fn VectorInput(label: &'static str, value: [f32; 3], change: EventHandler<[f32; 
     rsx! {div{class:"vector-field",span{"{label}"}div{class:"vector-inputs",for (axis,name) in ["X","Y","Z"].into_iter().enumerate(){FloatInput{label:name,value:value[axis],change:move|n|{let mut next=value;next[axis]=n;change.call(next);}}}}}}
 }
 #[component]
-fn ViewportLayers(mut project: Signal<Workspace>, scene_id: u32, object_id: u64) -> Element {
+fn ViewportLayers(
+    project: Signal<Workspace>,
+    scene_id: u32,
+    object_id: u64,
+    history: Signal<SceneHistory>,
+) -> Element {
     let mut selection = use_signal(|| {
         project
             .peek()
@@ -261,16 +321,18 @@ fn ViewportLayers(mut project: Signal<Workspace>, scene_id: u32, object_id: u64)
         h3{"Content · {object.name}"}
         p{class:"form-help","Editing this viewport only · {canvas.width} × {canvas.height} canvas pixels. Object position and scale place the entire viewport in the scene; layer CSS places its content."}
         div{class:"row",for source in sources{button{onclick:move |_|{
-            let mut p=project.write();let Some(index)=p.scenes.iter().position(|s|s.id==scene_id) else{return;};
-            let before=p.scenes[index].layers.len();p.add_layer(scene_id,source.id);if p.scenes[index].layers.len()==before{return;}
-            let Some(layer)=p.scenes[index].layers.pop() else{return;};let id=layer.id;
-            if let Some(ObjectKind::Viewport{layers,..})=p.scenes[index].spatial.as_mut().and_then(|s|s.objects.iter_mut().find(|o|o.id==object_id)).map(|o|&mut o.kind){layers.push(layer);selection.set(Some(id));}
+            let target = LayerTarget {scene:scene_id,viewport:Some(object_id)};
+            if let Some(id)=add_layer(project,target,source.id,history){selection.set(Some(id));}
         },"+ {source.name}"}}}
-        crate::layer_editor::LayerEditor{project,scene_id,selection,viewport_id:Some(object_id)}
+        crate::layer_editor::LayerEditor{project,scene_id,selection,viewport_id:Some(object_id),history:Some(history)}
     }}
 }
 
-fn add_chat_object(workspace: &mut Workspace, scene_id: u32) -> Option<u64> {
+fn add_chat_object(
+    workspace: &mut Workspace,
+    scene_id: u32,
+    history: &mut SceneHistory,
+) -> Option<u64> {
     let scene = workspace.scenes.iter().find(|s| s.id == scene_id)?;
     let spatial = scene.spatial.as_ref()?;
     let viewports = spatial
@@ -281,6 +343,7 @@ fn add_chat_object(workspace: &mut Workspace, scene_id: u32) -> Option<u64> {
     if spatial.objects.len() >= 32 || viewports >= 8 || workspace.sources.len() >= 8 {
         return None;
     }
+    let source_index = workspace.sources.len();
     workspace.add_source();
     let source = workspace.sources.last_mut()?;
     source.name = "Chat".into();
@@ -292,9 +355,11 @@ fn add_chat_object(workspace: &mut Workspace, scene_id: u32) -> Option<u64> {
         height: 720,
     };
     let source_id = source.id;
+    let source = source.clone();
     let scene = workspace.scenes.iter_mut().find(|s| s.id == scene_id)?;
     let id = crate::project::new_entity_id();
-    scene.spatial.as_mut()?.objects.push(SceneObject {
+    let spatial = scene.spatial.as_mut()?;
+    let object = SceneObject {
         id,
         name: "Chat".into(),
         visible: true,
@@ -316,7 +381,15 @@ fn add_chat_object(workspace: &mut Workspace, scene_id: u32) -> Option<u64> {
                 ..Default::default()
             }],
         },
-    });
+    };
+    history.record_chat_object(
+        scene_id,
+        source,
+        source_index,
+        object.clone(),
+        spatial.objects.len(),
+    );
+    spatial.objects.push(object);
     Some(id)
 }
 
@@ -329,7 +402,7 @@ mod chat_object_tests {
         let scene = workspace.add_scene(crate::project::Orientation::Horizontal);
         workspace.migrate_spatial();
         let original = workspace.scenes[0].layers.clone();
-        let id = add_chat_object(&mut workspace, scene).unwrap();
+        let id = add_chat_object(&mut workspace, scene, &mut SceneHistory::default()).unwrap();
         let object = workspace.scenes[0]
             .spatial
             .as_ref()
@@ -361,6 +434,36 @@ mod chat_object_tests {
         assert_eq!(restored, workspace);
     }
     #[test]
+    fn chat_history_checks_dependencies_and_reused_source_ids() {
+        let mut workspace = Workspace::default();
+        let scene = workspace.add_scene(crate::project::Orientation::Horizontal);
+        let other_scene = workspace.add_scene(crate::project::Orientation::Vertical);
+        workspace.migrate_spatial();
+        let mut history = SceneHistory::default();
+        let _ = add_chat_object(&mut workspace, scene, &mut history).unwrap();
+        let source = workspace.sources[0].clone();
+
+        workspace.add_layer(other_scene, source.id);
+        let before = workspace.clone();
+        assert!(!history.step(&mut workspace, false));
+        assert_eq!(workspace, before);
+        workspace.scenes[1].layers.clear();
+
+        workspace.sources[0].name.push_str(" changed elsewhere");
+        assert!(!history.step(&mut workspace, false));
+        workspace.sources[0] = source.clone();
+        assert!(history.step(&mut workspace, false));
+
+        workspace.add_source();
+        assert_eq!(workspace.sources[0].id, source.id);
+        assert!(!history.step(&mut workspace, true));
+        workspace.sources.clear();
+        assert!(history.step(&mut workspace, true));
+        assert_eq!(workspace.sources[0], source);
+        workspace.validate().unwrap();
+    }
+
+    #[test]
     fn failed_chat_creation_leaves_workspace_unchanged() {
         let mut workspace = Workspace::default();
         let scene = workspace.add_scene(crate::project::Orientation::Horizontal);
@@ -369,7 +472,7 @@ mod chat_object_tests {
             workspace.add_source();
         }
         let before = workspace.clone();
-        assert!(add_chat_object(&mut workspace, scene).is_none());
+        assert!(add_chat_object(&mut workspace, scene, &mut SceneHistory::default()).is_none());
         assert_eq!(workspace, before);
     }
 }

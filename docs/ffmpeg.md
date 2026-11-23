@@ -40,7 +40,7 @@ does not prevent managing workspaces or serving the GUI.
 
 `GET /api/media/capabilities` reads the cache. `POST` to the same endpoint rescans.
 The response includes `available`, `version`, `encoders` (name, codec, media type,
-description, experimental and hardware flags), `srt_input`, `rtmp_output`,
+description, experimental and hardware flags), `srt_input`, `srt_output`, `rtmp_output`,
 `flv_muxer`, `enhanced_rtmp` and `error`. GET does not launch a child process.
 
 The complete inventory includes video, audio and subtitle encoders. The current
@@ -49,13 +49,17 @@ FFmpeg 7+, HEVC/AV1/VP9, provided the RTMP output protocol and FLV muxer exist.
 Other codecs remain visible in the inventory but are not offered as this
 application's RTMP video profiles. AAC remains the audio profile.
 
-### SRT input
+<a id="srt-input"></a>
+
+### SRT input and output
 
 Check that `srt` appears under **Input** in the selected FFmpeg's `-protocols`
 output. On macOS, when automatic detection selects a build without SRT, Acheflow
 also checks the standard Homebrew paths for
 [ffmpeg-full](https://formulae.brew.sh/formula/ffmpeg-full) and uses it for the
-SRT receiver. Other media operations keep the primary FFmpeg. For a source
+SRT receiver. SRT output requires `srt` under **Output** in the primary FFmpeg and
+`mpegts` in its `-muxers` list. It offers installed H.264 and HEVC encoders
+with AAC audio. The source-only fallback does not change the primary FFmpeg. For a source
 checkout with the native build and guest artifacts already prepared, use the
 following commands to select `ffmpeg-full` explicitly for all media operations:
 
@@ -63,12 +67,13 @@ following commands to select `ffmpeg-full` explicitly for all media operations:
 brew install ffmpeg-full
 srt_ffmpeg="$(brew --prefix ffmpeg-full)/bin/ffmpeg"
 "$srt_ffmpeg" -hide_banner -protocols
+"$srt_ffmpeg" -hide_banner -muxers
 ACHEFLOW_FFMPEG="$srt_ffmpeg" ./target/release/acheflow --server
 ```
 
 Omit `--server` to launch the desktop with the same override for its managed
 server. The override takes effect when that server starts. For source settings,
-see [source setup](live-pipeline.md#source-setup).
+see [source setup](live-pipeline.md#source-setup). See [output setup](live-pipeline.md#output-setup) for SRT receiver URLs.
 
 Compiled hardware encoders are not evidence of a working hardware device,
 driver, supported pixel format or supported resolution. Discovery does not run

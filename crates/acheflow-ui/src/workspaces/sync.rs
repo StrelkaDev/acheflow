@@ -1,6 +1,8 @@
 //! Durable merge bases are local catalog metadata, excluded from workspace exports.
 use super::*;
+use acheflow_media_api::audio::{MixerAck, MixerEdit, MixerRequest};
 use acheflow_media_api::server_workspace::WorkspaceState;
+use acheflow_media_api::workspace::Orientation;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(super) struct Replica {
@@ -105,6 +107,159 @@ fn reconcile(
     Ok((config, conflict))
 }
 impl Catalog {
+    pub(crate) fn editable_base(&self, local: &Workspace) -> Option<&Workspace> {
+        self.workspaces
+            .iter()
+            .find(|record| {
+                record.id == self.active
+                    && record.config.id == local.id
+                    && record.config.server_url == local.server_url
+            })
+            .and_then(|record| record.replica.as_ref())
+            .filter(|replica| replica.editable && !replica.conflict)
+            .map(|replica| &replica.workspace)
+    }
+
+    pub(crate) fn applied_mixer(
+        &mut self,
+        local: &Workspace,
+        request: &MixerRequest,
+        ack: MixerAck,
+        server_id: &str,
+    ) -> bool {
+        self.applied_delta(
+            local,
+            request.expected_revision,
+            ack.revision,
+            server_id,
+            |base| {
+                for edit in &request.edits {
+                    edit.apply(base)?;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    pub(crate) fn applied_delta(
+        &mut self,
+        local: &Workspace,
+        expected: u64,
+        revision: u64,
+        server_id: &str,
+        apply: impl FnOnce(&mut Workspace) -> Result<(), String>,
+    ) -> bool {
+        let Some(replica) = self
+            .workspaces
+            .iter_mut()
+            .find(|record| {
+                record.id == self.active
+                    && record.config.id == local.id
+                    && record.config.server_url == local.server_url
+            })
+            .and_then(|record| record.replica.as_mut())
+            .filter(|replica| {
+                replica.server == server_id
+                    && replica.editable
+                    && !replica.conflict
+                    && replica.workspace.edit_revision == expected
+            })
+        else {
+            return false;
+        };
+        if expected.checked_add(1) != Some(revision) {
+            return false;
+        }
+        let mut base = replica.workspace.clone();
+        if apply(&mut base).is_err() {
+            return false;
+        }
+        base.edit_revision = revision;
+        replica.workspace = base;
+        true
+    }
+
+    pub(crate) fn can_take_scene(
+        &self,
+        local: &Workspace,
+        orientation: Orientation,
+        scene: u32,
+    ) -> bool {
+        self.workspaces
+            .iter()
+            .find(|record| {
+                record.id == self.active
+                    && record.config.id == local.id
+                    && record.config.server_url == local.server_url
+            })
+            .and_then(|record| record.replica.as_ref())
+            .is_some_and(|replica| {
+                let server = &replica.workspace;
+                if !replica.editable
+                    || replica.conflict
+                    || local.stream(orientation).base != server.stream(orientation).base
+                {
+                    return false;
+                }
+                let Some(draft) = local
+                    .scenes
+                    .iter()
+                    .find(|entry| entry.id == scene && entry.orientation == orientation)
+                else {
+                    return false;
+                };
+                let Some(saved) = server.scenes.iter().find(|saved| saved.id == scene) else {
+                    return false;
+                };
+                if draft.audio != saved.audio
+                    || !acheflow_media_api::live::SceneContent::unchanged(
+                        draft,
+                        saved,
+                        &server.stream(orientation).base,
+                    )
+                {
+                    return false;
+                }
+                draft.visual_layers().all(|layer| {
+                    local
+                        .sources
+                        .iter()
+                        .find(|source| source.id == layer.source_id)
+                        == server
+                            .sources
+                            .iter()
+                            .find(|source| source.id == layer.source_id)
+                })
+            })
+    }
+
+    pub(crate) fn mixer_has_target(&self, local: &Workspace, edit: &MixerEdit) -> bool {
+        self.workspaces
+            .iter()
+            .find(|record| {
+                record.id == self.active
+                    && record.config.id == local.id
+                    && record.config.server_url == local.server_url
+            })
+            .and_then(|record| record.replica.as_ref())
+            .is_some_and(|replica| {
+                replica.editable
+                    && replica
+                        .workspace
+                        .scenes
+                        .iter()
+                        .any(|entry| entry.id == edit.scene_id())
+                    && match edit {
+                        MixerEdit::Strip { key, .. } => {
+                            replica.workspace.sources.iter().any(|source| {
+                                source.id == key.source_id && source.kind.has_audio_input()
+                            })
+                        }
+                        MixerEdit::Bus { .. } => true,
+                    }
+            })
+    }
+
     pub(crate) fn sync_server(
         &mut self,
         local: &Workspace,

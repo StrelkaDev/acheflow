@@ -1,12 +1,12 @@
 //! Compact controls for the scene actually being mixed in each Studio format.
 use crate::{
-    audio_mixer::{GainFader, Meters, StripControls, edit_strip},
-    live_client::{Action, LiveClient},
+    audio_mixer::{GainFader, Meters, StripControls, edit_bus, edit_strip},
+    live_client::LiveClient,
     project::{Orientation, Scene, Workspace},
     slider::Slider,
 };
 use acheflow_media_api::audio::{
-    AudioStrip, MAX_SYNC_OFFSET_MS, SyncMode, TrackKey, TrackSyncStatus,
+    AudioStrip, BusChange, MAX_SYNC_OFFSET_MS, StripChange, SyncMode, TrackKey, TrackSyncStatus,
 };
 use acheflow_media_api::live::FormatStatus;
 use dioxus_native::prelude::*;
@@ -28,7 +28,11 @@ fn current_scene<'a>(
 }
 
 #[component]
-pub(crate) fn StudioMixer(mut project: Signal<Workspace>, orientation: Orientation) -> Element {
+pub(crate) fn StudioMixer(
+    project: Signal<Workspace>,
+    orientation: Orientation,
+    #[props(default)] preview_scene: Option<Option<u32>>,
+) -> Element {
     let client = use_context::<LiveClient>();
     let workspace = project.read().clone();
     let status = if client.owns() {
@@ -39,7 +43,17 @@ pub(crate) fn StudioMixer(mut project: Signal<Workspace>, orientation: Orientati
     let running = status
         .as_ref()
         .and_then(|s| s.formats.iter().find(|f| f.orientation == orientation));
-    let scene = current_scene(&workspace, orientation, running).cloned();
+    let scene = if running.is_none()
+        && let Some(preview) = preview_scene
+    {
+        workspace
+            .scenes
+            .iter()
+            .find(|scene| Some(scene.id) == preview && scene.orientation == orientation)
+    } else {
+        current_scene(&workspace, orientation, running)
+    }
+    .cloned();
     let strips = scene
         .as_ref()
         .map(|scene| {
@@ -70,12 +84,23 @@ pub(crate) fn StudioMixer(mut project: Signal<Workspace>, orientation: Orientati
             strips
         })
         .unwrap_or_default();
+    let input_levels = status.as_ref().is_some_and(|status| {
+        status.sources.iter().any(|source| {
+            source.audio_tracks.iter().any(|track| {
+                track.active
+                    && strips.contains_key(&TrackKey {
+                        source_id: source.id,
+                        track_id: track.track_id,
+                    })
+            })
+        })
+    });
     rsx! {div {class:"studio-mixer",
         div {class:"panel-heading",div {h3 {"Audio mixer"}
             if let Some(scene)=scene.as_ref() {p {"{scene.name}"}}
         }div {class:"row studio-mixer-heading-actions",
-            span {class:"badge",if running.is_some(){"Live levels"}else{"Offline"}}
-            if scene.is_some(){button {disabled:(client.busy)(),title:"Apply mixer changes to live audio",onclick:move |_|client.command(Action::Apply),"Apply mixer"}}
+            span {class:"badge",if running.is_some(){"Live levels"}else if input_levels {"Input levels"}else{"Offline"}}
+            if (client.scoped_pending)() {span {class:"form-help",role:"status","Saving mix…"}}
         }}
         if let Some(scene)=scene {
             div {class:"studio-mixer-scroll",tabindex:0,role:"region","aria-label":"Scene audio mixer channels",
@@ -92,20 +117,17 @@ pub(crate) fn StudioMixer(mut project: Signal<Workspace>, orientation: Orientati
                             }
                             p {class:"form-help",if sends.is_empty(){"Not routed"}else{"Sends → {sends}"}}
                             div {class:"studio-fader-bank",
-                                GainFader {label:"Gain",vertical:true,gain:strip.gain,change:move |v:u32|edit_strip(project,scene.id,key,|s|s.gain=v)}
+                                GainFader {label:"Gain",vertical:true,gain:strip.gain,change:move |v:u32|edit_strip(client,scene.id,key,StripChange::Gain(v))}
                                 Meters {vertical:true,meter:track.map(|t|t.meter.clone()).unwrap_or_default()}
                             }
                             if let Some(error)=track.and_then(|t|t.error.as_ref()){p {class:"field-error",role:"alert","{error}"}}
                             if source.is_some_and(|source| source.kind.is_audio_only()) {
                                 Slider {label:"Audio delay",unit:" ms",value:strip.active_sync_offset().max(0),min:0,max:MAX_SYNC_OFFSET_MS,reset:Some(0),
-                                    change:move |ms:i32|edit_strip(project,scene.id,key,|strip|{
-                                        strip.sync_mode=SyncMode::Manual;
-                                        strip.sync_offset_ms=ms;
-                                    })}
+                                    change:move |ms:i32|edit_strip(client,scene.id,key,StripChange::ManualDelay(ms))}
                             } else {
-                                TrackSyncControls {project,scene_id:scene.id,strip:strip.clone(),sync}
+                                TrackSyncControls {scene_id:scene.id,strip:strip.clone(),sync}
                             }
-                            StripControls {project,scene_id:scene.id,strip,show_gain:false}
+                            StripControls {scene_id:scene.id,strip,show_gain:false}
                         }}
                     }
                 }
@@ -122,11 +144,11 @@ pub(crate) fn StudioMixer(mut project: Signal<Workspace>, orientation: Orientati
                         div {class:"studio-mixer-title",strong {"{bus.name}"}span {class:"badge","Bus"}}
                         p {class:"form-help",if destinations.is_empty(){"No destinations"}else{"→ {destinations}"}}
                         div {class:"studio-fader-bank",
-                            GainFader {label:"Gain",vertical:true,gain:bus.gain,change:{let id=bus.id;move |gain:u32|{if let Some(b)=project.write().scenes.iter_mut().find(|s|s.id==scene.id).and_then(|s|s.audio.buses.iter_mut().find(|b|b.id==id)){b.gain=gain;}}}}
+                            GainFader {label:"Gain",vertical:true,gain:bus.gain,change:{let id=bus.id;move |gain:u32|{edit_bus(client,scene.id,id,BusChange::Gain(gain))}}}
                             Meters {vertical:true,meter:levels.map(|b|b.meter.clone()).unwrap_or_default()}
                         }
                         div {class:"studio-mixer-master",
-                            button {class:if bus.muted{"selected"}else{""},"aria-label":format!("Mute {} bus",bus.name),"aria-pressed":bus.muted.to_string(),onclick:{let id=bus.id;move |_|{if let Some(b)=project.write().scenes.iter_mut().find(|s|s.id==scene.id).and_then(|s|s.audio.buses.iter_mut().find(|b|b.id==id)){b.muted= !b.muted;}}},"Mute"}
+                            button {class:if bus.muted{"selected"}else{""},"aria-label":format!("Mute {} bus",bus.name),"aria-pressed":bus.muted.to_string(),onclick:{let id=bus.id;let muted=bus.muted;move |_|edit_bus(client,scene.id,id,BusChange::Mute(!muted))},"Mute"}
                         }
                     }}
                 }
@@ -137,13 +159,9 @@ pub(crate) fn StudioMixer(mut project: Signal<Workspace>, orientation: Orientati
 }
 
 #[component]
-fn TrackSyncControls(
-    project: Signal<Workspace>,
-    scene_id: u32,
-    strip: AudioStrip,
-    sync: Option<TrackSyncStatus>,
-) -> Element {
+fn TrackSyncControls(scene_id: u32, strip: AudioStrip, sync: Option<TrackSyncStatus>) -> Element {
     let key = strip.key();
+    let client = use_context::<LiveClient>();
     let requested = strip.active_sync_offset();
     let video_delay = requested.unsigned_abs();
     rsx! {
@@ -153,12 +171,12 @@ fn TrackSyncControls(
                 for (mode,label) in [(SyncMode::Auto,"Auto"),(SyncMode::AutoTrim,"Auto + trim"),(SyncMode::Manual,"Manual")] {
                     button {key:"{label}",class:if strip.sync_mode==mode {"selected"}else{""},
                         "aria-pressed":(strip.sync_mode==mode).to_string(),
-                        onclick:move |_|edit_strip(project,scene_id,key,|strip|strip.sync_mode=mode),"{label}"}
+                        onclick:move |_|edit_strip(client,scene_id,key,StripChange::SyncMode(mode)),"{label}"}
                 }
             }
             if strip.sync_mode != SyncMode::Auto {
                 Slider {label:"Sync offset",unit:" ms",value:strip.sync_offset_ms,min:-MAX_SYNC_OFFSET_MS,max:MAX_SYNC_OFFSET_MS,reset:Some(0),
-                    change:move |ms:i32|edit_strip(project,scene_id,key,|strip|strip.sync_offset_ms=ms)}
+                    change:move |ms:i32|edit_strip(client,scene_id,key,StripChange::SyncOffset(ms))}
                 small {class:"form-help",
                     if requested > 0 {"Delay audio by {requested} ms"}
                     else if requested < 0 {"Delay source video by {video_delay} ms"}

@@ -135,6 +135,60 @@ a change in synchronization at that transition. Use `p95_absolute_offset_ms`
 to compare typical worst-case offsets across runs and `peak_absolute_offset_ms`
 to spot isolated outliers. Frame counters and bitrate cannot measure this offset.
 
+### Mixed-output preview load at 30 and 60 FPS
+
+Use an optimized server build, FFmpeg with `libx264` and SRT, and a headless
+GPU adapter. The probe drives a real horizontal RTMP destination (1280×720)
+and a vertical SRT destination (720×1280) on loopback, both at 30 FPS and then
+both at 60 FPS. A synthetic 320×180 / 30 FPS RTMP source provides flash and
+audio markers. Set `ACHEFLOW_PREVIEW_PROBE_ENCODER=h264_videotoolbox` with a
+compatible FFmpeg build to exercise the hardware encoder.
+
+```sh
+cargo test -p acheflow-server --release --lib --locked mixed_output_preview_load_at_30_and_60_fps -- --ignored --nocapture
+python3 crates/acheflow-server/tests/measure_av_timing.py --preview-load "<capture-directory>" \
+  > "<capture-directory>/report.json"
+```
+
+Each rate runs three eight-second windows: outputs alone, two viewers per
+format and snapshot type (JPEG and lossless PNG), then two viewers per
+format for encoded preview. Snapshot requests invoke the server handlers
+directly, with a target of 10 requests per second per viewer. Response times
+exclude browser decoding and network transfer. The JSON separates render
+cadence and render p95 from snapshot responses, output frame repeats, source
+reconnect and the RTMP restart while SRT stays connected.
+
+The A/V report measures marker offsets and packet gaps in the real receiver
+captures. It summarizes each capture as a whole, including transitions in the
+continuous streams. Use [the sustained probe](#sustained-av-timing) for
+longer steady-state windows and drift qualification. Keep the generated
+captures and reports outside the repository.
+
+On an Apple M5 Max with FFmpeg 9.0.2, both formats held their 30/60 FPS
+targets in every window with `libx264` and `h264_videotoolbox`. Render p95
+across the sampled windows was 1.48–3.39 ms. Raw snapshot viewers received
+about 10 images/s with a response p95 of at most 14 ms. Encoded preview
+delivered 8.1–9.6 images/s including encoder warm-up. The RTMP restart took
+0.71–0.72 s while the SRT output continued. Across the original RTMP and
+continuous SRT captures, p95 absolute A/V offset ranged from 12.5 to 80 ms.
+These short measurements use a simple synthetic scene and loopback transport.
+
+### Output-track profiling
+
+To collect separate latency samples for the output's video and audio tracks,
+start the server with `ACHEFLOW_ENCODER_PROFILE=1` and start the outputs.
+This enables FFmpeg's verbose timestamp diagnostics for the output processes.
+Studio reports a rolling p95 of FFmpeg's per-packet pipeline time for each
+track. When FFmpeg reports an isolated encode stage, Studio also shows its p95
+over the samples that contain that stage. FFmpeg can combine stages or leave
+them out below its reporting threshold. The timing ends before network writes
+and is independent of the receiver's A/V offset. Use profiling during diagnosis
+because FFmpeg writes per-packet traces.
+
+```sh
+ACHEFLOW_ENCODER_PROFILE=1 ./target/release/acheflow --server
+```
+
 Run affected checks after changes; reuse successful evidence only for unchanged
 code/dependencies/environment. Documentation-only edits need link, command, content
 and privacy checks rather than an unrelated media-suite rerun.

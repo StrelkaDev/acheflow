@@ -83,8 +83,9 @@ track, and a negative trim delays the source video shared by its tracks.
 See [live mixing and sync](live-pipeline.md#media-path) for how
 the applied delay and sync status are reported.
 
-Edits save locally and reach the server through Apply mixer/routes. Audio-only
-edits do not restart video encoders; transport/video-profile changes still require
+Mixer settings for scenes saved on the server apply as you work. Unsaved
+scenes and sources keep their mixer edits in the local draft. Audio-only edits
+keep video encoders running. Transport and video-profile changes still require
 Stop/Start. Source meters report zero after 500 ms without decoded PCM. On the
 visible Mixer, Studio or Sources tab, the client requests block peaks up to ten
 times per second and interpolates the meter bars over 200 ms. These indicators

@@ -2,10 +2,10 @@ use crate::fps::FrameRateInput;
 use crate::layer_editor::LayerEditor;
 use crate::live_client::{Action, LiveClient, LiveNotice};
 use crate::media::{EncoderPicker, FfmpegStatus, use_capabilities};
-use crate::project::{Orientation, Output, Resolution, Workspace};
+use crate::project::{Orientation, Output, OutputProtocol, Resolution, Workspace};
 use crate::scene_canvas::Canvas;
 use crate::video_preview::VideoPreview;
-use acheflow_media_api::live::{OutputAction, OutputState, OutputTarget};
+use acheflow_media_api::live::{OutputAction, OutputState, OutputTarget, SourceEdit};
 use acheflow_media_api::{MediaCapabilities, workspace::BitrateMode};
 use dioxus_native::prelude::*;
 
@@ -30,15 +30,15 @@ pub fn Live(project: Signal<Workspace>, visible: bool, mut monitor_tab: Signal<b
             div {key:"{name}",class:if visible && tab()==name {"tab-scroll active"}else{"tab-scroll"},"aria-hidden":if visible && tab()==name {"false"}else{"true"},
                 div {class:"live-content",
                     if name=="Analytics" {Analytics {}}
-                    if name=="Sources" {Sources {project}}
-                    if name=="Scenes" {Scenes {project,visible:visible && tab()==name}}
+                    if name=="Sources" {Sources {key:"{project.read().id}-{project.read().server_url}",project,visible:visible && tab()==name}}
+                    if name=="Scenes" {Scenes {key:"{project.read().id}-{project.read().server_url}",project,visible:visible && tab()==name}}
                     if name=="Mixer" {crate::audio_mixer::AudioMixer {project}}
-                    if name=="Studio" {Studio {project,visible:visible && tab()==name}}
+                    if name=="Studio" {Studio {key:"{project.read().id}-{project.read().server_url}",project,visible:visible && tab()==name}}
                     if name=="Chat" {
                         StandaloneChat {running:client.running()}
                     }
                     if name=="Interactive" {crate::interaction::InteractivePage {}}
-                    if name=="Settings" {Settings {project}}
+                    if name=="Settings" {Settings {key:"{project.read().id}-{project.read().server_url}",project}}
                 }
             }
         }}
@@ -100,7 +100,7 @@ fn Analytics() -> Element {
     }
 }
 #[component]
-pub fn Sources(mut project: Signal<Workspace>) -> Element {
+pub fn Sources(mut project: Signal<Workspace>, #[props(default = true)] visible: bool) -> Element {
     let mut copied = use_signal(|| None::<u32>);
     let mut picking = use_signal(|| false);
     let mut expanded = use_signal(std::collections::HashSet::<u32>::new);
@@ -155,6 +155,7 @@ pub fn Sources(mut project: Signal<Workspace>) -> Element {
     } else {
         None
     };
+    let activated = state.as_ref().is_some_and(|status| status.activated);
     rsx! {
         div {class:"page-heading",h1 {"Sources"}button {id:"add-source",class:"primary",disabled:full,"aria-expanded":picking().to_string(),"aria-controls":"source-types",onclick:move |_|{
             let opening=!picking();
@@ -210,8 +211,10 @@ pub fn Sources(mut project: Signal<Workspace>) -> Element {
             }
         }
         div {class:"source-actions row",
-            button {disabled:(client.busy)(),onclick:move |_|client.command(Action::Apply),"Apply sources / listen"}
-            button {disabled:(client.busy)() || !client.owns(),onclick:move |_|client.command(Action::Deactivate),"Deactivate sources"}
+            if !activated {
+                button {disabled:(client.busy)(),onclick:move |_|client.command(Action::Apply),"Activate workspace sources"}
+            }
+            button {disabled:(client.busy)() || !activated,onclick:move |_|client.command(Action::Deactivate),"Deactivate sources"}
             span {class:"form-help",if let Some(state)=client.status.read().as_ref(){"RTMP listener: {state.rtmp_address}"}}
         }
         if project.read().sources.is_empty(){div {class:"panel empty-state",h3 {"No sources yet"}p {"Add a source to make it available in scenes."}}}
@@ -220,20 +223,19 @@ pub fn Sources(mut project: Signal<Workspace>) -> Element {
             let srt = matches!(source.kind, acheflow_media_api::visual::SourceKind::Srt { .. });
             let camera = matches!(source.kind, acheflow_media_api::visual::SourceKind::Camera { .. });
             let input = state.as_ref().and_then(|s|s.sources.iter().find(|i|i.id==source.id));
-            let preview_class = "source-card-preview";
             let key_label = if srt {"SRT passphrase"}else{"RTMP stream key"};
             rsx!{section {key:"{source.id}",class:"panel",
                 div {class:"panel-heading",button{class:"destination-toggle",onkeydown:move |event|{if !event.is_auto_repeating() && (event.key()==Key::Named(NamedKey::Enter) || event.key()==Key::Character(" ".into())){event.prevent_default();let mut open=expanded.write();if !open.remove(&source.id){open.insert(source.id);}}},"aria-expanded":expanded.read().contains(&source.id).to_string(),onclick:move |_|{let mut open=expanded.write();if !open.remove(&source.id){open.insert(source.id);}},span{if expanded.read().contains(&source.id){"▾"}else{"▸"}}h2 {"{source.name}"}}
                     span {class:"badge",if camera {"Camera"} else if srt {"SRT"} else {"RTMP"}}
-                    span {class:"badge",if srt && !srt_available {"Unavailable"} else if input.is_some_and(|s|s.connected){"Connected"}else if input.is_some_and(|s|s.error.is_some()){"Source error"}else if input.is_some(){"Waiting for input"}else{"Apply to activate"}}
-                    button {onclick:move |_|project.write().remove_source(source.id),"Remove"}
+                    span {class:"badge",if srt && !srt_available {"Unavailable"} else if input.is_some_and(|s|s.connected){"Connected"}else if input.is_some_and(|s|s.error.is_some()){"Source error"}else if input.is_some(){"Waiting for input"}else{"Inactive"}}
+                    crate::source_settings::RemoveSource {project,source_id:source.id}
                 }
                 div {style:if expanded.read().contains(&source.id){"display:block"}else{"display:none"},
-                if expanded.read().contains(&source.id) && input.is_some_and(|status|status.connected) {
-                    VideoPreview {url:client.preview(&format!("/api/live/source/{}",source.id)),class:preview_class}
+                if visible && expanded.read().contains(&source.id) {
+                    crate::source_settings::SourcePreview {source_id:source.id,video:true,activated,input:input.cloned()}
                 }
                 div {class:"form-grid",
-                    Field {label:"Name",value:source.name,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.name=v;}}}
+                    crate::source_settings::SourceName {project,source_id:source.id,value:source.name.clone()}
                     if let acheflow_media_api::visual::SourceKind::Srt { port } = source.kind {
                         NumberField {label:"UDP port",value:u32::from(port),min:1024,max:65535,step:1,change:move |port|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.kind=acheflow_media_api::visual::SourceKind::Srt{port:port as u16};}}}
                         if let Ok(url) = client.srt_url(port) {
@@ -247,18 +249,19 @@ pub fn Sources(mut project: Signal<Workspace>) -> Element {
                             },"Copy URL with passphrase"}}
                         }
                     } else if !camera {
-                        Field {label:"RTMP ingest URL",value:source.url,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.url=v;}}}
+                        Field {label:"RTMP ingest URL",value:source.url.clone(),change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.url=v;}}}
                     }
                     if !camera {
-                    Field {label:key_label,secret:true,value:source.key,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.key=v;}}}
+                    Field {label:key_label,secret:true,value:source.key.clone(),change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.key=v;}}}
                     div {class:"field",button {onclick:move |_|{let key=project.peek().sources.iter().find(|s|s.id==source.id).map(|s|s.key.clone());if let Some(key)=key {spawn(async move {if client.copy_text(key).await {copied.set(Some(source.id));}});}},if copied()==Some(source.id){"Copied"}else if srt {"Copy passphrase"}else{"Copy stream key"}}button {onclick:move |_|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.key=crate::project::new_token();copied.set(None);}},"Generate new key"}}
                     }
                     if camera && expanded.read().contains(&source.id) {
                         CameraSettings{project,source_id:source.id,inventory:camera_inventory,refresh:refresh_cameras}
                     }
-                    NumberField {label:"Offline preview width",value:source.resolution.width,min:16,max:((1920*1080/source.resolution.height.max(1)).min(3840)/2)*2,step:2,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.resolution.width=v;}}}
-                    NumberField {label:"Offline preview height",value:source.resolution.height,min:16,max:((1920*1080/source.resolution.width.max(1)).min(3840)/2)*2,step:2,change:move |v|{if let Some(s)=project.write().sources.iter_mut().find(|s|s.id==source.id){s.resolution.height=v;}}}
+                    NumberField {label:"Offline preview width",value:source.resolution.width,min:16,max:((1920*1080/source.resolution.height.max(1)).min(3840)/2)*2,step:2,change:move |v|crate::source_settings::edit_source(project,source.id,SourceEdit::PreviewWidth(v))}
+                    NumberField {label:"Offline preview height",value:source.resolution.height,min:16,max:((1920*1080/source.resolution.width.max(1)).min(3840)/2)*2,step:2,change:move |v|crate::source_settings::edit_source(project,source.id,SourceEdit::PreviewHeight(v))}
                 }
+                crate::source_settings::SourceCaptureActions {source:source.clone()}
                 if let Some(input)=input {
                     div {class:"source-footer",
                         span {"Decoded frames: {input.frames}"}
@@ -276,7 +279,7 @@ pub fn Sources(mut project: Signal<Workspace>) -> Element {
             }
         }
         crate::microphone_sources::MicrophoneSources{
-            project,inventory:microphone_inventory,refresh:refresh_microphones,status:state,
+            project,inventory:microphone_inventory,refresh:refresh_microphones,status:state,visible,
         }
         crate::visual_sources::VisualSources{project}
     }
@@ -534,7 +537,7 @@ fn Settings(mut project: Signal<Workspace>) -> Element {
     let snapshot = capabilities.read().clone();
     let available = snapshot.as_ref().and_then(|r| r.as_ref().ok()).cloned();
     rsx! {
-        div {class:"page-heading",div {h1 {"Stream settings"}p {"Separate canvases and RTMP outputs for each format."}}}
+        div {class:"page-heading",div {h1 {"Stream settings"}p {"Separate canvases and outputs for each format."}}}
         FfmpegStatus {capabilities,refresh}
         crate::video_preview::PreviewRate {}
         for orientation in Orientation::ALL {StreamSettings {key:"{orientation.label()}",project,orientation,capabilities:available.clone()}}
@@ -548,20 +551,47 @@ fn StreamSettings(
 ) -> Element {
     let stream = project.read().stream(orientation).clone();
     let mut expanded = use_signal(|| None::<usize>);
+    let client = use_context::<LiveClient>();
+    let sync = try_consume_context::<crate::workspace_sync::WorkspaceSync>();
+    let mut topology_changed = use_signal(|| false);
+    use_effect(move || {
+        if topology_changed()
+            && let Some(sync) = sync
+        {
+            let saved = sync.output_profiles(orientation);
+            let project = project.read();
+            let outputs = &project.stream(orientation).outputs;
+            if saved.is_some_and(|saved| {
+                saved.into_iter().eq(outputs
+                    .iter()
+                    .map(acheflow_media_api::live::OutputProfile::of))
+            }) {
+                topology_changed.set(false);
+            }
+        }
+    });
+    let running = client.owns()
+        && client.status.read().as_ref().is_some_and(|status| {
+            status
+                .formats
+                .iter()
+                .any(|format| format.orientation == orientation)
+        });
+    let busy = (client.busy)() || (client.scoped_pending)();
     let sizes = if orientation == Orientation::Horizontal {
         ["1280x720", "1920x1080", "2560x1440", "3840x2160"]
     } else {
         ["720x1280", "1080x1920", "1440x2560", "2160x3840"]
     };
     rsx! {section {class:"panel",
-        div {class:"panel-heading",h2 {"{orientation.label()}"}span {class:"badge","RTMP / FFmpeg"}}
+        div {class:"panel-heading",h2 {"{orientation.label()}"}span {class:"badge","FFmpeg"}}
         div {class:"form-grid",
             Choice {label:"Base canvas",value:format!("{}x{}",stream.base.width,stream.base.height),choices:sizes.into_iter().map(String::from).collect(),change:move |v:String|{if let Some(r)=resolution(&v){project.write().resize_base(orientation,r);}}}
             NumberField {label:"Base width",value:stream.base.width,change:move |v:u32|{if (16..=7680).contains(&v) && v.is_multiple_of(2){let mut r=project.read().stream(orientation).base.clone();r.width=v;project.write().resize_base(orientation,r);}}}
             NumberField {label:"Base height",value:stream.base.height,change:move |v:u32|{if (16..=7680).contains(&v) && v.is_multiple_of(2){let mut r=project.read().stream(orientation).base.clone();r.height=v;project.write().resize_base(orientation,r);}}}
             FrameRateInput {value:stream.fps,change:move |v|project.write().stream_mut(orientation).fps=v}
         }
-        div {class:"panel-heading",h2 {"Restream outputs"}button {class:"primary",onclick:move |_|{let size=project.read().stream(orientation).base.clone();project.write().stream_mut(orientation).outputs.push(Output{name:"New destination".into(),url:String::new(),key:String::new(),resolution:size,quality:"Standard".into(),codec:"h264".into(),encoder:None,bitrate_kbps:4500, bitrate_mode: Default::default(),keyframe_interval_secs:2,enabled:true,audio:Default::default()});expanded.set(Some(project.peek().stream(orientation).outputs.len()-1));},"+ Output"}}
+        div {class:"panel-heading",h2 {"Restream outputs"}button {class:"primary",disabled:running || busy,onclick:move |_|{topology_changed.set(true);let size=project.read().stream(orientation).base.clone();project.write().stream_mut(orientation).outputs.push(Output{ protocol: Default::default(),name:"New destination".into(),url:String::new(),key:String::new(),resolution:size,quality:"Standard".into(),codec:"h264".into(),encoder:None,bitrate_kbps:4500, bitrate_mode: Default::default(),keyframe_interval_secs:2,enabled:true,audio:Default::default()});expanded.set(Some(project.peek().stream(orientation).outputs.len()-1));},"+ Output"}}
         for (index,out) in stream.outputs.iter().enumerate() {
             div {key:"{index}",class:"output-config",
                 div {class:"panel-heading destination-heading",
@@ -569,13 +599,42 @@ fn StreamSettings(
                         span {if expanded()==Some(index){"▾"}else{"▸"}} strong {"{out.name}"}
                     }
                     span {class:"destination-summary","{out.resolution.width} × {out.resolution.height} · {out.bitrate_mode.label()} · {out.bitrate_kbps} kbps"}
+                    span {class:"badge","{out.protocol.label()}"}
                     span {class:"badge",if out.enabled {"Enabled"}else{"Disabled"}}
-                    button {onclick:move |_|{project.write().stream_mut(orientation).outputs.remove(index);expanded.set(expanded().and_then(|selected|if selected==index{None}else{Some(if selected>index{selected-1}else{selected})}));},"Remove"}
+                    button {disabled:running || busy,onclick:move |_|{topology_changed.set(true);project.write().stream_mut(orientation).outputs.remove(index);expanded.set(expanded().and_then(|selected|if selected==index{None}else{Some(if selected>index{selected-1}else{selected})}));},"Remove"}
                 }
-                if expanded()==Some(index) {div {class:"form-grid",
+                if expanded()==Some(index) {
+                    {
+                        let target = OutputTarget {orientation, index};
+                        let (url_label, key_label) = match out.protocol {
+                            OutputProtocol::Rtmp => ("RTMP URL", "Stream key"),
+                            OutputProtocol::Srt => ("SRT receiver URL", "SRT passphrase (optional)"),
+                        };
+                        let can_save = !topology_changed() && sync.is_some_and(|sync| sync.changed_output_profile(target).is_some());
+                        rsx! {div {class:"form-grid",
                     Field {label:"Destination",value:out.name.clone(),change:move |v|project.write().stream_mut(orientation).outputs[index].name=v}
-                    Field {label:"RTMP URL",value:out.url.clone(),change:move |v|project.write().stream_mut(orientation).outputs[index].url=v}
-                    Field {label:"Stream key",secret:true,value:out.key.clone(),change:move |v|project.write().stream_mut(orientation).outputs[index].key=v}
+                    Choice {label:"Output protocol",value:out.protocol.label().to_owned(),
+                        choices:OutputProtocol::ALL.into_iter().map(|protocol|protocol.label().to_owned()).collect(),
+                        change:move |value:String| {
+                            let Some(protocol)=OutputProtocol::ALL.into_iter().find(|protocol|protocol.label()==value) else {return};
+                            let mut workspace=project.write();
+                            let out=&mut workspace.stream_mut(orientation).outputs[index];
+                            if out.protocol != protocol {
+                                out.protocol=protocol;
+                                out.url.clear();
+                                out.key.clear();
+                                if !protocol.video_codecs().contains(&out.codec.as_str()) {
+                                    out.codec="h264".into();
+                                    out.encoder=None;
+                                }
+                            }
+                        }
+                    }
+                    Field {label:url_label,value:out.url.clone(),change:move |v|project.write().stream_mut(orientation).outputs[index].url=v}
+                    Field {label:key_label,secret:true,value:out.key.clone(),change:move |v|project.write().stream_mut(orientation).outputs[index].key=v}
+                    if out.protocol==OutputProtocol::Srt {
+                        p {class:"form-help","SRT caller · MPEG-TS. Enter srt://host:port. Optional URL settings: latency in microseconds and streamid."}
+                    }
                     NumberField {label:"Output width",value:out.resolution.width,change:move |v|project.write().stream_mut(orientation).outputs[index].resolution.width=v}
                     NumberField {label:"Output height",value:out.resolution.height,change:move |v|project.write().stream_mut(orientation).outputs[index].resolution.height=v}
                     Choice {label:"Quality",value:out.quality.clone(),choices:["Low","Standard","High","Custom"].into_iter().map(String::from).collect(),change:move |q:String|{let mut p=project.write();let out=&mut p.stream_mut(orientation).outputs[index];out.bitrate_kbps=match q.as_str(){"Low"=>2500,"High"=>8000,"Standard"=>4500,_=>out.bitrate_kbps};out.quality=q;}}
@@ -583,13 +642,18 @@ fn StreamSettings(
                     NumberField {label:"Video bitrate / limit (kbps)",value:out.bitrate_kbps,min:100,max:100000,change:move |v|{let mut p=project.write();let out=&mut p.stream_mut(orientation).outputs[index];out.bitrate_kbps=v;out.quality="Custom".into();}}
                     NumberField {label:"Keyframe interval (seconds)",value:out.keyframe_interval_secs,min:1,max:20,change:move |v|project.write().stream_mut(orientation).outputs[index].keyframe_interval_secs=v}
                     EncoderPicker {project,orientation,index,capabilities:capabilities.clone()}
-                    Choice {label:"Output",value:if out.enabled {"Enabled"}else{"Disabled"},choices:vec!["Enabled".into(),"Disabled".into()],change:move |v:String|project.write().stream_mut(orientation).outputs[index].enabled=v=="Enabled"}
+                    Choice {label:"Output at next start",value:if out.enabled {"Enabled"}else{"Disabled"},choices:vec!["Enabled".into(),"Disabled".into()],change:move |v:String|project.write().stream_mut(orientation).outputs[index].enabled=v=="Enabled"}
                 }
-                p {class:"form-help padded","CBR keeps a fixed video rate. VBR varies with image complexity up to the configured limit. The bitrate setting applies to video; traffic includes audio and FLV overhead. Audio uses the scene mixer. Keyframe interval changes require Stop/Start."}
+                div {class:"row padded",
+                    button {disabled:busy || !can_save, onclick:move |_|client.save_output_profile(target),"Save output profile"}
+                }
+                p {class:"form-help padded","Save an existing profile here, then restart that output in Studio to use the new encoder settings. Destination additions, removals and enabled state apply at the next format start."}
+                    }
+                    }
                 }
             }
         }
-        if stream.outputs.is_empty(){div {class:"empty-state",p {"No RTMP outputs configured for this format."}}}
+        if stream.outputs.is_empty(){div {class:"empty-state",p {"No outputs configured for this format."}}}
         div {class:"panel-note","Changing the base canvas resizes matching scenes and scales their layers. Output dimensions are independent. Video encoders come from the server FFmpeg. Audio profile: AAC."}
     }}
 }
@@ -597,63 +661,134 @@ fn StreamSettings(
 fn Scenes(mut project: Signal<Workspace>, visible: bool) -> Element {
     let mut selected = use_signal(|| None::<u32>);
     let mut selected_layer = use_signal(|| None::<u64>);
-    let current = project
-        .read()
+    let histories = use_hook(|| {
+        std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::<
+            u32,
+            Signal<crate::scene_canvas::SceneHistory>,
+        >::new()))
+    });
+    let retained_histories = histories.clone();
+    use_effect(move || {
+        let workspace = project.read();
+        retained_histories.borrow_mut().retain(|id, history| {
+            if workspace.scenes.iter().any(|scene| scene.id == *id) {
+                true
+            } else {
+                history.manually_drop();
+                false
+            }
+        });
+    });
+    let workspace = project.read();
+    let current = workspace
         .scenes
         .iter()
         .find(|s| Some(s.id) == selected())
-        .cloned()
-        .or_else(|| project.read().scenes.first().cloned());
+        .or_else(|| workspace.scenes.first());
+    let editor = current.map(|scene| {
+        let history = *histories
+            .borrow_mut()
+            .entry(scene.id)
+            .or_insert_with(|| Signal::new(crate::scene_canvas::SceneHistory::default()));
+        (scene.id, history)
+    });
     rsx! {
         div {class:"page-heading scene-page-heading",div {h1 {"Scenes"}}div {class:"row",for o in Orientation::ALL{button {onclick:move |_|{let id=project.write().add_scene(o);project.write().migrate_spatial();selected.set(Some(id));},"+ {o.label()} scene"}}}}
         div {class:"scene-list",for s in project.read().scenes.clone(){button {class:if current.as_ref().is_some_and(|c|c.id==s.id){"selected"}else{""},onclick:move |_|{selected.set(Some(s.id));selected_layer.set(None);},"{s.name} / {s.orientation.label()}"}}}
-        if let Some(scene)=current {
-            section {key:"scene-{project.read().id}-{project.read().server_url}-{scene.id}",class:"panel scene-editor-panel",div {class:"scene-metadata",
-                    Field {label:"Scene name",value:scene.name.clone(),change:move |v|{if let Some(s)=project.write().scenes.iter_mut().find(|s|s.id==scene.id){s.name=v;}}}
-                    span {class:"form-help","{project.read().stream(scene.orientation).base.width} × {project.read().stream(scene.orientation).base.height} / {scene.orientation.label()}"}
-                    button {onclick:move |_|project.write().remove_scene(scene.id),"Delete scene"}
-                }
-                crate::spatial_editor::SpatialEditor {key:"spatial-{project.read().id}-{scene.id}",project,scene_id:scene.id,
-                PrimaryViewportEditor {project,scene_id:scene.id,orientation:scene.orientation,selected_layer,visible}
-
-                }
-
-            }
+        if let Some((scene_id,history))=editor {
+            SceneEditor {key:"{scene_id}",project,scene_id,selected_layer,visible,history}
         }else{div {class:"panel empty-state",h3 {"Create your first scene"}p {"Horizontal and vertical scenes inherit their respective base canvas size."}}}
     }
 }
 #[component]
-fn PrimaryViewportEditor(
+fn SceneEditor(
     mut project: Signal<Workspace>,
     scene_id: u32,
-    orientation: Orientation,
     selected_layer: Signal<Option<u64>>,
     visible: bool,
+    mut history: Signal<crate::scene_canvas::SceneHistory>,
 ) -> Element {
     let client = use_context::<LiveClient>();
-    let history = use_signal(crate::scene_canvas::SceneHistory::default);
+    let workspace = project.read();
+    let Some(scene) = workspace.scenes.iter().find(|scene| scene.id == scene_id) else {
+        return rsx! {};
+    };
+    let orientation = scene.orientation;
+    let base = &workspace.stream(orientation).base;
     rsx! {
-                div {class:"panel-heading",h3 {"Primary viewport content"}}
-                Canvas {project,scene_id:Some(scene_id),orientation:orientation,editable:true,live_images:visible,selection:Some(selected_layer),history:Some(history)}
-                div {class:"row padded",button {disabled:(client.busy)(),onclick:move |_|client.command(Action::Apply),"Apply scene & sources"}span {class:"form-help","Drag a corner to resize. Hold Shift for the layer ratio or Shift + Option/Alt for the source ratio. The 2D canvas snaps to its edges. Releasing applies live changes."}}
-                div {class:"panel-heading",h3 {"Add a source layer"}}
-                div {class:"row padded",for source in project.read().sources.iter().filter(|s|!s.kind.is_audio_only()).cloned().collect::<Vec<_>>(){button {onclick:move |_|project.write().add_layer(scene_id,source.id),"+ {source.name}"}}if project.read().sources.is_empty(){p {"Add a video source or overlay in Live / Sources."}}}
-                div {class:"panel-heading",h3 {"Primary viewport layers"}}
-                LayerEditor {project,scene_id:scene_id,selection:selected_layer,history:Some(history)}
+        section {class:"panel scene-editor-panel",
+            div {class:"scene-metadata",
+                CommittedName {label:"Scene name",value:scene.name.clone(),change:move |name:String|{
+                    if let Some(scene)=project.write().scenes.iter_mut().find(|scene|scene.id==scene_id)
+                        && scene.name!=name {
+                        let previous=std::mem::replace(&mut scene.name,name.clone());
+                        history.write().record_name(scene_id,previous,name);
+                    }
+                }}
+                span {class:"form-help","{base.width} × {base.height} / {orientation.label()}"}
+                div {class:"row scene-actions",
+                    crate::scene_canvas::HistoryControls {project,history}
+                    SaveSceneButton {scene_id}
+                    button {disabled:(client.busy)() || (client.scoped_pending)() || scene_on_air(client,scene_id).is_some(),
+                        title:if scene_on_air(client,scene_id).is_some() {"Switch away from this scene or stop its format before deleting it."} else {"Delete scene"},
+                        onclick:move |_|client.remove_scene(scene_id),"Delete scene"}
+                }
+            }
+            crate::spatial_editor::SpatialEditor {project,scene_id,history,
+                PrimaryViewportEditor {project,scene_id,orientation,selected_layer,visible,history}
+            }
+        }
     }
 }
 
 #[component]
-fn Studio(mut project: Signal<Workspace>, visible: bool) -> Element {
+fn PrimaryViewportEditor(
+    project: Signal<Workspace>,
+    scene_id: u32,
+    orientation: Orientation,
+    mut selected_layer: Signal<Option<u64>>,
+    visible: bool,
+    history: Signal<crate::scene_canvas::SceneHistory>,
+) -> Element {
+    let target = crate::layer_editor::LayerTarget {
+        scene: scene_id,
+        viewport: None,
+    };
+    rsx! {
+        div {class:"panel-heading",h3 {"Primary viewport content"}}
+        Canvas {project,scene_id:Some(scene_id),orientation:orientation,editable:true,live_images:visible,selection:Some(selected_layer),history:Some(history)}
+        p {class:"form-help padded","Drag a corner to resize. Hold Shift for the layer ratio or Shift + Option/Alt for the source ratio. The 2D canvas snaps to its edges."}
+        div {class:"panel-heading",h3 {"Add a source layer"}}
+        div {class:"row padded",for source in project.read().sources.iter().filter(|s|!s.kind.is_audio_only()).cloned().collect::<Vec<_>>() {
+            button {onclick:move |_|{
+                if let Some(id)=crate::layer_editor::add_layer(project,target,source.id,history){selected_layer.set(Some(id));}
+            },"+ {source.name}"}
+        }if project.read().sources.is_empty(){p {"Add a video source or overlay in Live / Sources."}}}
+        div {class:"panel-heading",h3 {"Primary viewport layers"}}
+        LayerEditor {project,scene_id,selection:selected_layer,history:Some(history)}
+    }
+}
+
+#[component]
+fn Studio(project: Signal<Workspace>, visible: bool) -> Element {
     let client = use_context::<LiveClient>();
     let status = if client.owns() {
         client.status.read().clone()
     } else {
         None
     };
-    let has_scene = Orientation::ALL
-        .into_iter()
-        .any(|o| project.read().active(o).is_some());
+    let preview_selection = [use_signal(|| None), use_signal(|| None)];
+    let initial_scenes = std::array::from_fn(|index| {
+        let orientation = Orientation::ALL[index];
+        let workspace = project.read();
+        studio_scene(
+            &workspace,
+            orientation,
+            preview_selection[index](),
+            workspace.active(orientation),
+        )
+    });
+    let has_scene = initial_scenes.iter().any(Option::is_some);
     let running = client.running();
     let outputs = || {
         status
@@ -666,26 +801,28 @@ fn Studio(mut project: Signal<Workspace>, visible: bool) -> Element {
         outputs().any(|output| !output_is_active(output.state))
     } else {
         let workspace = project.read();
-        Orientation::ALL.into_iter().any(|o| {
-            workspace.active(o).is_some()
-                && workspace
-                    .stream(o)
-                    .outputs
-                    .iter()
-                    .any(|output| output.enabled)
-        })
+        Orientation::ALL
+            .into_iter()
+            .zip(initial_scenes)
+            .any(|(orientation, scene)| {
+                scene.is_some()
+                    && workspace
+                        .stream(orientation)
+                        .outputs
+                        .iter()
+                        .any(|output| output.enabled)
+            })
     };
     rsx! {
-        div {class:"page-heading",div {h1 {"Studio"}p {"Compose both formats and publish to your RTMP destinations."}}
+        div {class:"page-heading",div {h1 {"Studio"}p {"Compose both formats and publish to your RTMP and SRT destinations."}}
             div {class:"row",
-                button {disabled:(client.busy)(),onclick:move |_|client.command(Action::Apply),"Apply scene & sources"}
                 if running {
-                    button {class:"stop-button",disabled:(client.busy)(),onclick:move |_|client.command(Action::Stop),if publishing {"Stop live"}else{"Stop preview"}}
+                    button {class:"stop-button",disabled:(client.busy)(),onclick:move |_|client.command(Action::Stop),if publishing {"Stop live"}else{"Stop program preview"}}
                 } else {
-                    button {disabled:(client.busy)() || !has_scene,onclick:move |_|client.command(Action::StartPreview),"Start preview"}
+                    button {disabled:(client.busy)() || !has_scene,onclick:move |_|client.command(Action::Start {output:None,preview_only:true,scenes:initial_scenes}),"Start program preview"}
                 }
                 button {class:"primary",disabled:(client.busy)() || !can_start_all,
-                    onclick:move |_|client.command(if running {Action::Outputs(OutputAction::Start,None)} else {Action::Start(None)}),
+                    onclick:move |_|client.command(if running {Action::Outputs(OutputAction::Start,None)} else {Action::Start {output:None,preview_only:false,scenes:initial_scenes}}),
                     "Start all outputs"
                 }
                 if publishing {
@@ -693,47 +830,57 @@ fn Studio(mut project: Signal<Workspace>, visible: bool) -> Element {
                 }
             }
         }
+        if running {crate::video_preview::PreviewRate {compact:true}}
         if let Some(status)=status.as_ref() && !status.server_load.is_empty() {
             ServerLoad {samples:status.server_load.clone()}
         }
-        p {class:"studio-help form-help","Start preview opens the selected scenes. Use a destination’s Start button or Start all outputs to go live."}
-        div {class:"studio-grid",for o in Orientation::ALL {
-            section {key:"{o.label()}",class:"panel",div {class:"panel-heading",h2 {"{o.label()}"}
+        p {class:"studio-help form-help","Use Start program preview to run the server composition. Start an output to go live."}
+        div {class:"studio-grid",for (index,o) in Orientation::ALL.into_iter().enumerate() {
+            section {key:"{o.label()}-{project.read().id}-{project.read().server_url}",class:"panel",div {class:"panel-heading",h2 {"{o.label()}"}
                 span {class:"badge",if let Some(format)=status.as_ref().and_then(|s|s.formats.iter().find(|f|f.orientation==o)) {
                     if format.outputs.iter().any(|out|out.state==OutputState::Streaming){"Broadcasting"}else if format.outputs.iter().any(|out|out.reconnect_attempt.is_some()){"Reconnecting"}else if format.outputs.iter().any(|out|out.state==OutputState::Starting){"Starting"}else if format.outputs.iter().any(|out|out.state==OutputState::Failed){"Output failed"}else{"Preview only"}
                 }else{"Offline"}}
             }
-                div {class:"padded field",span {"Draft scene"}div {class:"row",
-                    button {class:if project.read().active(o).is_none(){"selected"}else{""},onclick:move |_|project.write().set_active(o,None),"No scene"}
-                    for scene in project.read().scenes.iter().filter(|s|s.orientation==o){button {class:if project.read().active(o)==Some(scene.id){"selected"}else{""},onclick:{let id=scene.id;move |_|project.write().set_active(o,Some(id))},"{scene.name}"}}
-                }}
                 if let Some(format)=status.as_ref().and_then(|s|s.formats.iter().find(|f|f.orientation==o)) {
+                    StudioSceneSelector {
+                        project, orientation:o, visible, running:true, selection:preview_selection[index],
+                        publishing:format.outputs.iter().any(|out|output_is_active(out.state)),
+                        program:format.applied_scene.as_ref().map(|scene|scene.id),
+                    }
                     if let Some(scene)=&format.applied_scene {
                         p {class:"padded form-help",
-                            if format.outputs.iter().any(|out|output_is_active(out.state)) {"Program scene · {scene.name}"}else{"Preview scene · {scene.name}"}
+                            if format.outputs.iter().any(|out|output_is_active(out.state)) {"Program scene · {scene.name}"}else{"Server scene · {scene.name}"}
                         }
                     }
-                    StudioPreview {orientation:o,base:project.read().stream(o).base.clone(),profiles:format.preview_profiles.clone(),visible}
+                    StudioPreview {orientation:o,base:project.read().stream(o).base.clone(),profiles:format.preview_profiles.clone(),render_fps:format.render_load.target_fps,visible}
                     div {class:"panel-note",SceneInputStatus {project,orientation:o}
                         if let Some(renderer)=format.renderer.as_ref(){p {"Renderer: {renderer}"}}
                         if let Some(error)=format.error.as_ref(){p {class:"field-error",role:"alert","{error}"}}
-                        span {"Rendered frames: {format.frames} · audio is mixed into RTMP outputs"}
+                        span {"Rendered frames: {format.frames} · audio is mixed into the outputs"}
                         if format.render_load.target_fps > 0 {
-                            div {class:"studio-format-load",
-                                span {"{format.render_load.observed_fps:.1} / {format.render_load.target_fps} FPS"}
-                                span {"Render p95 {format.render_load.p95_ms:.1} ms"}
-                                span {"{format.render_load.deadline_miss_percent:.1}% over frame budget"}
-                            }
+                            StudioRenderProfile {time_seconds:format.time_seconds,load:format.render_load.clone()}
                         }
                     }
 
                     for out in &format.outputs {
-                        div {key:"{out.index}",class:"output-status",strong {"{out.name}"}span {class:"badge",role:"status",if let Some(attempt)=out.reconnect_attempt {"Reconnecting · attempt {attempt}"}else{"{out.state:?}"}}span {"{out.frames} frames · {out.bitrate_kbps:.0} kbps"}
+                        div {key:"{out.index}",class:"output-status",strong {"{out.name}"}span {class:"badge","{out.protocol.label()}"}span {class:"badge",role:"status",if let Some(attempt)=out.reconnect_attempt {"Reconnecting · attempt {attempt}"}else{"{out.state:?}"}}span {"{out.frames} frames · {out.bitrate_kbps:.0} kbps"}
                             button {disabled:(client.busy)(),onclick:{
                                 let target=OutputTarget {orientation:o,index:out.index};
                                 let action=if output_is_active(out.state) {OutputAction::Restart} else {OutputAction::Start};
                                 move |_|client.command(Action::Outputs(action,Some(target)))
                             },if output_is_active(out.state) {"Restart output"} else {"Start output"}}
+                            if let Some(fps)=out.encoding_fps {span {"FFmpeg {fps:.1} FPS"}}
+                            if let Some(speed)=out.realtime_speed {span {"{speed:.2}× real time"}}
+                            if let Some(timing)=out.track_timing.as_ref() {
+                                for (name,track) in [("Video",timing.video.as_ref()),("Audio",timing.audio.as_ref())] {
+                                    if let Some(track)=track {
+                                        span {key:"{name}-timing","{name} FFmpeg p95 {track.pipeline_p95_ms:.2} ms"
+                                            if let Some(encode)=track.encode_p95_ms {" · encode stage {encode:.2} ms"}
+                                        }
+                                    }
+                                }
+                            }
+                            if out.restart_required {span {class:"badge","Saved profile · restart to apply"}}
                             if let Some(encoder)=out.encoder.as_ref(){span {"{encoder} · ",if out.hardware {"Hardware"}else{"Software"}}}
                             if let Some(bus)=out.audio_bus {span {"Audio: scene {out.audio_scene.unwrap_or(0)} → bus {bus}"}crate::audio_mixer::Meters {meter:out.audio_meter.clone()}}
                             if out.repeated_video_frames > 0 || out.inserted_audio_blocks > 0 || out.reconnects > 0 {
@@ -743,19 +890,227 @@ fn Studio(mut project: Signal<Workspace>, visible: bool) -> Element {
                         }
                     }
                 }else {
-                    Canvas {project,scene_id:project.read().active(o),orientation:o,live_images:visible}
-                    if project.read().active(o).is_some() {
+                    StudioSceneSelector {project,orientation:o,visible,selection:preview_selection[index]}
+                    if let Some(scene_id)=initial_scenes[index] {
+                        if visible {
+                            DraftPreviewInputs {project,scene_id}
+                        }
+                        Canvas {project,scene_id:Some(scene_id),orientation:o,live_images:visible}
+                    } else {
+                        Canvas {project,scene_id:None,orientation:o,live_images:false}
+                    }
+                    if initial_scenes[index].is_some() {
                         for (index,name) in project.read().stream(o).outputs.iter().enumerate()
                             .filter(|(_,output)|output.enabled).map(|(index,output)|(index,output.name.clone())).collect::<Vec<_>>() {
                             div {key:"{index}",class:"output-status",strong {"{name}"}
-                                button {disabled:running || (client.busy)(),onclick:move |_|client.command(Action::Start(Some(OutputTarget {orientation:o,index}))),"Start output"}
+                                button {disabled:running || (client.busy)(),onclick:move |_|client.command(Action::Start {output:Some(OutputTarget {orientation:o,index}),preview_only:false,scenes:initial_scenes}),"Start output"}
                             }
                         }
                     }
                 }
-                crate::studio_mixer::StudioMixer {project,orientation:o}
+                crate::studio_mixer::StudioMixer {project,orientation:o,preview_scene:Some(initial_scenes[index])}
             }
         }}
+    }
+}
+
+#[component]
+fn DraftPreviewInputs(project: Signal<Workspace>, scene_id: u32) -> Element {
+    use crate::source_settings::{
+        KeepSourcePreview, can_activate_preview, preview_source_registered,
+    };
+    let client = use_context::<LiveClient>();
+    let mut open = use_signal(|| false);
+    let can_request = client.owns()
+        && can_activate_preview(true)
+        && client
+            .status
+            .read()
+            .as_ref()
+            .is_some_and(|status| !status.activated);
+    use_effect(use_reactive((&can_request,), move |(allowed,)| {
+        if !allowed && open() {
+            open.set(false);
+        }
+    }));
+    if !can_request {
+        return rsx! {};
+    }
+    let workspace = project.read();
+    let Some(scene) = workspace.scenes.iter().find(|scene| scene.id == scene_id) else {
+        return rsx! {};
+    };
+    let ids = crate::scene_preview::draft_capture_sources(&workspace, scene);
+    let (available, missing): (Vec<_>, Vec<_>) = ids
+        .into_iter()
+        .partition(|id| preview_source_registered(*id));
+    let status = client.status.read();
+    let previewing = open();
+    rsx! {
+        if previewing || !available.is_empty() {
+            div {class:"row padded draft-preview-controls",
+                button {"aria-pressed":previewing.to_string(),onclick:move |_|open.set(!open()),
+                    if previewing {"Stop draft capture"} else {"Preview draft inputs"}
+                }
+            }
+        }
+        if !missing.is_empty() {
+            p {class:"form-help padded","Add the draft’s remaining sources to the server to preview them."}
+        }
+        if previewing {
+            for id in available {
+                {
+                    let input = status.as_ref().and_then(|status|status.sources.iter().find(|source|source.id==id));
+                    let name = workspace.sources.iter().find(|source|source.id==id).map(|source|source.name.clone());
+                    rsx! {
+                        KeepSourcePreview {key:"{id}",source_id:id,name,
+                            waiting:input.is_none_or(|input|!input.connected && input.error.is_none()),
+                            capture_error:input.and_then(|input|input.error.clone())}
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn studio_scene(
+    workspace: &Workspace,
+    orientation: Orientation,
+    selection: Option<Option<u32>>,
+    fallback: Option<u32>,
+) -> Option<u32> {
+    match selection {
+        Some(None) => None,
+        Some(Some(id))
+            if workspace
+                .scenes
+                .iter()
+                .any(|scene| scene.id == id && scene.orientation == orientation) =>
+        {
+            Some(id)
+        }
+        _ => fallback,
+    }
+}
+
+#[component]
+fn StudioSceneSelector(
+    project: Signal<Workspace>,
+    orientation: Orientation,
+    visible: bool,
+    mut selection: Signal<Option<Option<u32>>>,
+    #[props(default)] running: bool,
+    #[props(default)] publishing: bool,
+    #[props(default)] program: Option<u32>,
+) -> Element {
+    let client = use_context::<LiveClient>();
+    let sync = try_consume_context::<crate::workspace_sync::WorkspaceSync>();
+    let workspace = project.read();
+    let scenes: Vec<_> = workspace
+        .scenes
+        .iter()
+        .filter(|scene| scene.orientation == orientation)
+        .map(|scene| (scene.id, scene.name.clone()))
+        .collect();
+    let current = if running {
+        studio_scene(&workspace, orientation, selection(), program).or(program)
+    } else {
+        studio_scene(
+            &workspace,
+            orientation,
+            selection(),
+            workspace.active(orientation),
+        )
+    };
+    let changed = current
+        .and_then(|scene| sync?.scene_save_state(scene))
+        .is_some_and(|state| state.changed);
+    let draft = current.filter(|id| running && (Some(*id) != program || changed));
+    let switching = draft.is_some_and(|id| Some(id) != program);
+    let can_take = switching
+        && draft
+            .is_some_and(|scene| sync.is_some_and(|sync| sync.can_take_scene(orientation, scene)));
+    rsx! {
+        div {class:"padded field",
+            span {if running {"Preview scene"}else{"Scene for this format"}}
+            div {class:"row",
+                if !running {
+                    button {class:if current.is_none(){"selected"}else{""},onclick:move |_|selection.set(Some(None)),"No scene"}
+                }
+                for (id,name) in scenes {
+                    button {key:"{id}",class:if current==Some(id){"selected"}else{""},
+                        "aria-pressed":(current==Some(id)).to_string(),onclick:move |_|selection.set(Some(Some(id))),"{name}"
+                    }
+                }
+            }
+        }
+        if let Some(scene_id)=draft {
+            div {class:"studio-draft-preview",
+                div {class:"panel-heading",
+                    h3 {"Draft preview"}
+                    div {class:"row",
+                        if changed {SaveSceneButton {scene_id}}
+                        if switching {
+                            button {class:"primary",disabled:!can_take || (client.busy)() || (client.scoped_pending)(),
+                                onclick:move |_|client.take_scene(orientation,scene_id),
+                                if publishing {"Take live"}else{"Use scene"}
+                            }
+                        }
+                    }
+                }
+                if switching && !can_take {
+                    p {class:"padded form-help","Save this scene and its sources before taking it live."}
+                }
+                Canvas {project,scene_id:Some(scene_id),orientation,live_images:visible}
+            }
+        } else if !running && changed && let Some(scene_id)=current {
+            div {class:"padded",SaveSceneButton {scene_id}}
+        }
+    }
+}
+
+fn scene_on_air(client: LiveClient, scene_id: u32) -> Option<bool> {
+    if !client.owns() {
+        return None;
+    }
+    let status = client.status.read();
+    let format = status.as_ref()?.formats.iter().find(|format| {
+        format
+            .applied_scene
+            .as_ref()
+            .is_some_and(|scene| scene.id == scene_id)
+    })?;
+    Some(
+        format
+            .outputs
+            .iter()
+            .any(|output| output_is_active(output.state)),
+    )
+}
+
+#[component]
+fn SaveSceneButton(scene_id: u32) -> Element {
+    let client = use_context::<LiveClient>();
+    let save_state = try_consume_context::<crate::workspace_sync::WorkspaceSync>()
+        .and_then(|sync| sync.scene_save_state(scene_id));
+    let Some(state) = save_state.filter(|_| client.owns()) else {
+        return rsx! {span {class:"form-help","Local draft"}};
+    };
+    let label = if scene_on_air(client, scene_id) == Some(true) {
+        "Update on air"
+    } else if state.saved {
+        "Save scene"
+    } else {
+        "Add scene to server"
+    };
+    rsx! {
+        if !state.available {
+            span {class:"form-help","Save the scene’s sources and format settings first."}
+        }
+        button {
+            disabled:!state.available || (client.busy)() || (client.scoped_pending)(),
+            onclick:move |_|client.save_scene(scene_id),"{label}"
+        }
     }
 }
 
@@ -768,24 +1123,29 @@ fn StudioPreview(
     orientation: Orientation,
     base: Resolution,
     profiles: Vec<acheflow_media_api::live::OutputPreviewProfile>,
+    render_fps: u32,
     visible: bool,
 ) -> Element {
     let client = use_context::<LiveClient>();
     let mut selected = use_signal(|| None::<usize>);
-    let mut encoded = use_signal(|| true);
+    let mut encoded = use_signal(|| false);
     let mut notice = use_signal(|| Some("Starting encoded preview…"));
     let active = profiles
         .iter()
         .find(|profile| Some(profile.index) == selected());
     let size = active.map_or(&base, |profile| &profile.resolution);
     let show_encoded = active.is_some() && encoded();
-    let mode_query = if show_encoded { "&mode=encoded" } else { "" };
+    let mode_query = if show_encoded {
+        "&mode=encoded"
+    } else {
+        "&mode=lossless"
+    };
     let url = client.preview(&format!(
         "/api/live/preview/{}.jpg",
         orientation.label().to_lowercase()
     ));
     let url = active.map_or_else(
-        || url.clone(),
+        || format!("{url}{mode_query}"),
         |profile| format!("{url}&output={}{mode_query}", profile.index),
     );
     let path = active
@@ -813,7 +1173,7 @@ fn StudioPreview(
                 }}
                 if let Some(profile)=active {
                     p {class:"form-help",
-                        "{profile.resolution.width} × {profile.resolution.height} · {profile.fps} FPS · {profile.codec} · {profile.bitrate_mode.label()} {profile.bitrate_kbps} kbps"
+                        "{profile.protocol.label()} · {profile.resolution.width} × {profile.resolution.height} · {profile.fps} FPS · {profile.codec} · {profile.bitrate_mode.label()} {profile.bitrate_kbps} kbps"
                     }
                     div {class:"row",
                         button {class:if show_encoded {"selected"}else{""},"aria-pressed":show_encoded.to_string(),onclick:move |_| {
@@ -838,8 +1198,71 @@ fn StudioPreview(
         div {class:"canvas-wrap",div {
             class:if orientation==Orientation::Vertical{"live-preview-frame portrait"}else{"live-preview-frame"},
             style:format!("aspect-ratio: {} / {};",size.width,size.height),
-            if visible {VideoPreview {key:"{path}-{show_encoded}",url,notice:show_encoded.then_some(notice)}}
+            if visible {VideoPreview {key:"{path}-{show_encoded}",url,max_fps:Some(render_fps),notice:show_encoded.then_some(notice)}}
         }}
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RenderSample {
+    time_ms: u64,
+    target_fps: u32,
+    p95_ms: f64,
+}
+
+#[component]
+fn StudioRenderProfile(time_seconds: f64, load: acheflow_media_api::live::RenderLoad) -> Element {
+    let mut open = use_signal(|| false);
+    let mut history = use_signal(std::collections::VecDeque::<RenderSample>::new);
+    use_effect(use_reactive(
+        (&time_seconds, &load),
+        move |(time_seconds, load)| {
+            let sample = RenderSample {
+                time_ms: (time_seconds * 1000.) as u64,
+                target_fps: load.target_fps,
+                p95_ms: load.p95_ms,
+            };
+            if history.peek().back().is_some_and(|last| {
+                last.time_ms > sample.time_ms || last.target_fps != sample.target_fps
+            }) {
+                history.write().clear();
+            }
+            if history
+                .peek()
+                .back()
+                .is_some_and(|last| sample.time_ms - last.time_ms < 250)
+            {
+                return;
+            }
+            let mut history = history.write();
+            history.retain(|point| sample.time_ms - point.time_ms <= 60_000);
+            history.push_back(sample);
+        },
+    ));
+    let budget = 1000. / f64::from(load.target_fps.max(1));
+    rsx! {
+        div {class:"studio-format-load",
+            span {"{load.observed_fps:.1} / {load.target_fps} FPS"}
+            span {"Render p95 {load.p95_ms:.1} ms / {budget:.1} ms budget"}
+            span {"{load.deadline_miss_percent:.1}% over frame budget"}
+            button {"aria-expanded":open().to_string(),onclick:move |_|open.set(!open()),
+                if open() {"Hide render graph"} else {"Render graph"}
+            }
+        }
+        if open() {
+            {
+                let history = history.read();
+                let ceiling = history.iter().map(|point| point.p95_ms).fold(budget * 1.25, f64::max);
+                let path = history.back().map(|last| plot_path(
+                    history.iter().map(|point| (point.time_ms, Some(100. * point.p95_ms / ceiling))),
+                    last.time_ms,
+                )).unwrap_or_default();
+                rsx! {div {class:"studio-render-graph",
+                    span {class:"form-help","Render p95 · last 60 seconds · dashed line is the frame budget"}
+                    LoadPlot {path,tone:"render",label:"Frame render time over the last 60 seconds",threshold:Some(100. * budget / ceiling)}
+                }}
+            }
+        }
     }
 }
 
@@ -855,6 +1278,11 @@ pub(crate) fn ServerLoad(samples: Vec<acheflow_media_api::live::ServerLoadSample
         (sample.ram_total_bytes > 0)
             .then(|| 100. * sample.ram_used_bytes as f64 / sample.ram_total_bytes as f64)
     });
+    let current_gpu = samples
+        .iter()
+        .rev()
+        .take_while(|sample| latest.time_ms.saturating_sub(sample.time_ms) <= 2200)
+        .find(|sample| !sample.gpus.is_empty());
     rsx! {
         section {class:"panel studio-server-load",
             div {class:"panel-heading",h2 {"Server load"}span {class:"form-help","Last 60 seconds"}}
@@ -867,7 +1295,40 @@ pub(crate) fn ServerLoad(samples: Vec<acheflow_media_api::live::ServerLoadSample
                     span {"RAM {ram_gib:.1} / {total_gib:.1} GiB"}
                     LoadPlot {path:ram_path,tone:"ram",label:"Server memory usage over the last 60 seconds"}
                 }
-                if let Some(gpu)=latest.busiest_gpu_percent {
+                if let Some(sample)=current_gpu {
+                        for gpu in &sample.gpus {
+                            div {key:"{gpu.id}",class:"studio-gpu-load",
+                                strong {"{gpu.name}"}
+                                if let Some(utilization)=gpu.utilization_percent {
+                                    span {"Activity {utilization:.0}%"}
+                                    LoadPlot {path:gpu_load_path(&samples,&gpu.id,|gpu|gpu.utilization_percent.map(f64::from)),tone:"gpu",label:"GPU utilization over the last 60 seconds"}
+                                }
+                                if let Some(used)=gpu.memory_used_bytes {
+                                    {
+                                        let used = used as f64 / (1u64<<30) as f64;
+                                        rsx!{
+                                            if gpu.unified_memory {
+                                                span {"GPU shared RAM {used:.1} GiB"}
+                                            } else if let Some(total)=gpu.memory_total_bytes {
+                                                {let total = total as f64 / (1u64<<30) as f64;rsx!{span {"VRAM {used:.1} / {total:.1} GiB"}}}
+                                                LoadPlot {path:gpu_load_path(&samples,&gpu.id,|gpu|Some(100. * gpu.memory_used_bytes? as f64 / gpu.memory_total_bytes?.max(1) as f64)),tone:"ram",label:"Video memory usage over the last 60 seconds"}
+                                            } else {
+                                                span {"VRAM {used:.1} GiB"}
+                                            }
+                                        }
+                                    }
+                                }
+                                if let Some(encoder)=gpu.encoder_percent {
+                                    span {"Video encoder {encoder:.0}%"}
+                                    LoadPlot {path:gpu_load_path(&samples,&gpu.id,|gpu|gpu.encoder_percent.map(f64::from)),tone:"gpu",label:"Video encoder utilization over the last 60 seconds"}
+                                }
+                                if let Some(decoder)=gpu.decoder_percent {
+                                    span {"Video decoder {decoder:.0}%"}
+                                    LoadPlot {path:gpu_load_path(&samples,&gpu.id,|gpu|gpu.decoder_percent.map(f64::from)),tone:"gpu",label:"Video decoder utilization over the last 60 seconds"}
+                                }
+                            }
+                        }
+                } else if let Some(gpu)=latest.busiest_gpu_percent {
                     div {
                         span {"Busiest GPU {gpu:.0}%"}
                         LoadPlot {path:load_path(&samples,|sample|sample.busiest_gpu_percent.map(f64::from)),tone:"gpu",label:"Highest reported GPU usage over the last 60 seconds"}
@@ -879,41 +1340,80 @@ pub(crate) fn ServerLoad(samples: Vec<acheflow_media_api::live::ServerLoadSample
 }
 
 #[component]
-fn LoadPlot(path: String, tone: &'static str, label: &'static str) -> Element {
+fn LoadPlot(
+    path: String,
+    tone: &'static str,
+    label: &'static str,
+    #[props(default)] threshold: Option<f64>,
+) -> Element {
     rsx! {
         svg {class:"studio-load-plot",view_box:"0 0 240 60",preserve_aspect_ratio:"none",role:"img","aria-label":label,
             for y in [0, 30, 60] {line {x1:"0",x2:"240",y1:y.to_string(),y2:y.to_string(),stroke_width:"0.6"}}
+            if let Some(threshold)=threshold {
+                {let y=(60. * (1. - threshold / 100.)).to_string();rsx!{
+                    line {class:"frame-budget",x1:"0",x2:"240",y1:y.clone(),y2:y,stroke_dasharray:"4 3","aria-hidden":"true"}
+                }}
+            }
             path {class:tone,d:path,fill:"none",stroke_width:"1.5",vector_effect:"non-scaling-stroke"}
         }
     }
+}
+
+fn gpu_load_path(
+    samples: &[acheflow_media_api::live::ServerLoadSample],
+    id: &str,
+    value: impl Fn(&acheflow_media_api::live::GpuLoadSample) -> Option<f64>,
+) -> String {
+    let Some(last) = samples.last() else {
+        return String::new();
+    };
+    plot_path(
+        samples
+            .iter()
+            .filter(|sample| !sample.gpus.is_empty())
+            .map(|sample| {
+                (
+                    sample.time_ms,
+                    sample.gpus.iter().find(|gpu| gpu.id == id).and_then(&value),
+                )
+            }),
+        last.time_ms,
+    )
 }
 
 fn load_path(
     samples: &[acheflow_media_api::live::ServerLoadSample],
     value: impl Fn(&acheflow_media_api::live::ServerLoadSample) -> Option<f64>,
 ) -> String {
-    use std::fmt::Write;
     let Some(last) = samples.last() else {
         return String::new();
     };
+    plot_path(
+        samples.iter().map(|sample| (sample.time_ms, value(sample))),
+        last.time_ms,
+    )
+}
+
+fn plot_path(samples: impl IntoIterator<Item = (u64, Option<f64>)>, last_ms: u64) -> String {
+    use std::fmt::Write;
+
     let mut path = String::new();
     let mut previous = None;
-    for sample in samples {
-        let age = last.time_ms.saturating_sub(sample.time_ms);
+    for (time_ms, value) in samples {
+        let age = last_ms.saturating_sub(time_ms);
         if age > 60_000 {
             continue;
         }
-        if let Some(percent) = value(sample).filter(|percent| percent.is_finite()) {
-            let command =
-                if previous.is_some_and(|time| sample.time_ms.saturating_sub(time) <= 1500) {
-                    'L'
-                } else {
-                    'M'
-                };
+        if let Some(percent) = value.filter(|percent| percent.is_finite()) {
+            let command = if previous.is_some_and(|time| time_ms.saturating_sub(time) <= 1500) {
+                'L'
+            } else {
+                'M'
+            };
             let x = 240. * (1. - age as f64 / 60_000.);
             let y = 60. * (1. - percent.clamp(0., 100.) / 100.);
             let _ = write!(path, "{command}{x:.2},{y:.2} ");
-            previous = Some(sample.time_ms);
+            previous = Some(time_ms);
         } else {
             previous = None;
         }
@@ -977,6 +1477,50 @@ pub fn Field(
         }
         if secret {button {class:"key-toggle",onclick:move |_|revealed.set(!revealed()),if revealed(){"Hide key"}else{"Edit key"}}}
     }}
+}
+/// Commit after typing so a saved workspace snapshot cannot overwrite queued keys.
+#[component]
+pub(crate) fn CommittedName(
+    label: &'static str,
+    value: String,
+    change: EventHandler<String>,
+    #[props(default)] max_bytes: Option<usize>,
+) -> Element {
+    let mut draft = use_signal(|| value.clone());
+    let mut displayed = use_signal(|| value.clone());
+    let mut applied = use_signal(|| value.clone());
+    let mut reset = use_signal(|| 0u32);
+    let mut error = use_signal(|| false);
+    use_effect(use_reactive((&value,), move |(value,)| {
+        if *draft.peek() == *applied.peek() {
+            draft.set(value.clone());
+            displayed.set(value.clone());
+        }
+        applied.set(value);
+    }));
+    let commit = move || {
+        let text = draft.peek().trim().to_string();
+        let valid = !text.is_empty() && max_bytes.is_none_or(|limit| text.len() <= limit);
+        if valid {
+            draft.set(text.clone());
+            displayed.set(text.clone());
+            change.call(text);
+        } else {
+            draft.set(applied.peek().clone());
+            displayed.set(applied.peek().clone());
+            reset += 1;
+        }
+        error.set(!valid);
+    };
+    rsx! {div {class:"field",label {"{label}",input {key:"{reset}",r#type:"text","aria-label":label,value:{let _=displayed();draft.peek().clone()},"aria-invalid":error().to_string(),
+        oninput:move |e|{draft.set(e.value());},onblur:move |_|{let mut commit=commit;commit();},
+        onkeydown:move |e|{if e.key()==Key::Named(NamedKey::Enter){e.prevent_default();let mut commit=commit;commit();}}
+    }}if error(){
+        span {class:"field-error",role:"alert",
+            if let Some(limit)=max_bytes {"Use a name with 1–{limit} bytes. Kept the previous name."}
+            else {"Enter a name. Kept the previous name."}
+        }
+    }}}
 }
 #[component]
 pub(crate) fn NumberField(
@@ -1113,7 +1657,7 @@ mod camera_discovery_tests {
                 CameraChoices {project,open,inventory,refresh,on_add:|_|{}}
                 button {"Chat"}
             }
-            button {id:"apply-sources","Apply sources"}
+            button {id:"apply-sources","Activate workspace sources"}
         }
     }
 
@@ -1170,9 +1714,165 @@ mod camera_discovery_tests {
 }
 
 #[cfg(test)]
+mod studio_selection_tests {
+    use super::*;
+    use blitz_dom::{Document, DocumentConfig};
+    use blitz_traits::{
+        events::{
+            BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, PointerCoords,
+            UiEvent,
+        },
+        shell::Viewport,
+    };
+    use dioxus_native::DioxusDocument;
+    use std::{cell::Cell, rc::Rc};
+
+    struct Harness {
+        workspace: Workspace,
+        project: Cell<Option<Signal<Workspace>>>,
+    }
+
+    fn app() -> Element {
+        let harness = consume_context::<Rc<Harness>>();
+        let project = use_signal(|| harness.workspace.clone());
+        let selection = use_signal(|| None);
+        crate::live_client::use_live_client(project);
+        harness.project.set(Some(project));
+        rsx! {
+            style {{include_str!("dashboard.css")}}
+            StudioSceneSelector {
+                project, orientation:Orientation::Horizontal, selection, running:true, visible:false,
+                program:harness.workspace.active(Orientation::Horizontal),
+            }
+        }
+    }
+
+    fn settle(doc: &mut DioxusDocument) {
+        for _ in 0..30 {
+            if !doc.poll(None) {
+                doc.inner.borrow_mut().resolve(0.);
+                return;
+            }
+        }
+        panic!("Studio scene selector did not settle");
+    }
+
+    #[tokio::test]
+    async fn studio_preview_click_leaves_the_workspace_program_unchanged() {
+        let mut workspace = Workspace::default();
+        let program = workspace.add_scene(Orientation::Horizontal);
+        workspace.add_scene(Orientation::Horizontal);
+        let harness = Rc::new(Harness {
+            workspace,
+            project: Cell::new(None),
+        });
+        let mut doc = DioxusDocument::new(
+            VirtualDom::new(app).with_root_context(harness.clone()),
+            DocumentConfig {
+                font_ctx: Some(dioxus_native::build_single_font_ctx(include_bytes!(
+                    "../assets/DejaVuSans.woff2"
+                ))),
+                ..Default::default()
+            },
+        );
+        doc.initial_build();
+        doc.inner.borrow_mut().set_viewport(Viewport {
+            window_size: (1000, 800),
+            ..Default::default()
+        });
+        settle(&mut doc);
+        let point = {
+            let inner = doc.inner.borrow();
+            let id = inner
+                .query_selector("button:nth-of-type(2)")
+                .unwrap()
+                .unwrap();
+            inner.get_node(id).unwrap().absolute_position(4., 4.)
+        };
+        let pointer = |pressed| BlitzPointerEvent {
+            id: BlitzPointerId::Mouse,
+            is_primary: true,
+            coords: PointerCoords {
+                page_x: point.x,
+                page_y: point.y,
+                screen_x: point.x,
+                screen_y: point.y,
+                client_x: point.x,
+                client_y: point.y,
+            },
+            button: MouseEventButton::Main,
+            buttons: if pressed {
+                MouseEventButtons::Primary
+            } else {
+                MouseEventButtons::None
+            },
+            mods: Modifiers::empty(),
+            details: Default::default(),
+            element: Default::default(),
+            active_pointers: Default::default(),
+        };
+        doc.handle_ui_event(UiEvent::PointerMove(pointer(false)));
+        doc.handle_ui_event(UiEvent::PointerDown(pointer(true)));
+        doc.handle_ui_event(UiEvent::PointerUp(pointer(false)));
+        settle(&mut doc);
+        let inner = doc.inner.borrow();
+        assert!(
+            inner
+                .query_selector("button:nth-of-type(2)[aria-pressed='true']")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            inner
+                .query_selector(".studio-draft-preview")
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            harness
+                .project
+                .get()
+                .unwrap()
+                .read()
+                .active(Orientation::Horizontal),
+            Some(program)
+        );
+    }
+}
+
+#[cfg(test)]
 mod load_history_tests {
     use super::*;
     use acheflow_media_api::live::ServerLoadSample;
+
+    #[test]
+    fn gpu_history_keeps_sparse_samples_separate_per_device() {
+        let device = |id: &str, utilization_percent| acheflow_media_api::live::GpuLoadSample {
+            id: id.into(),
+            utilization_percent: Some(utilization_percent),
+            ..Default::default()
+        };
+        let sample = |time_ms, gpus| ServerLoadSample {
+            time_ms,
+            cpu_percent: 0.,
+            ram_used_bytes: 1,
+            ram_total_bytes: 2,
+            busiest_gpu_percent: None,
+            gpus,
+        };
+        let samples = [
+            sample(1000, vec![device("first", 20.), device("second", 90.)]),
+            sample(1250, vec![]),
+            sample(2000, vec![device("first", 40.), device("second", 80.)]),
+            sample(2250, vec![]),
+        ];
+        assert_eq!(
+            gpu_load_path(&samples, "first", |gpu| gpu
+                .utilization_percent
+                .map(f64::from)),
+            "M235.00,48.00 L239.00,36.00 "
+        );
+    }
 
     #[test]
     fn load_path_uses_elapsed_time_and_breaks_on_missing_measurements() {
@@ -1182,6 +1882,7 @@ mod load_history_tests {
             ram_used_bytes: 1,
             ram_total_bytes: 2,
             busiest_gpu_percent,
+            gpus: vec![],
         };
         let samples = [
             sample(0, Some(100.)),
@@ -1196,3 +1897,11 @@ mod load_history_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "scene_history_tests.rs"]
+mod scene_history_tests;
+
+#[cfg(test)]
+#[path = "draft_capture_tests.rs"]
+mod draft_capture_tests;

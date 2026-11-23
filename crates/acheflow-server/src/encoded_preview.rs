@@ -39,6 +39,7 @@ pub(crate) struct EncodedPreviews {
 }
 
 pub(crate) struct EncodedView {
+    cancel: CancellationToken,
     last_request: watch::Sender<Instant>,
     state: watch::Receiver<PreviewState>,
     png: Mutex<Option<(Weak<RgbImage>, Bytes)>>,
@@ -51,11 +52,17 @@ enum PreviewState {
 }
 
 impl EncodedPreviews {
+    pub(crate) fn invalidate(&mut self, index: usize) {
+        if let Some(view) = self.views.remove(&index) {
+            view.cancel.cancel();
+        }
+    }
+
     pub(crate) fn view(
         &mut self,
         index: usize,
         output: Output,
-        source: PreviewSource,
+        mut source: PreviewSource,
         capabilities: &MediaCapabilities,
     ) -> Result<Arc<EncodedView>, StatusCode> {
         self.views.retain(|_, view| {
@@ -81,7 +88,9 @@ impl EncodedPreviews {
         if !output.has_valid_video_profile()
             || u64::from(output.resolution.width) * u64::from(output.resolution.height)
                 > 3840 * 2160
-            || !capabilities.rtmp_codecs().contains(&output.codec)
+            || !capabilities
+                .output_codecs(output.protocol)
+                .contains(&output.codec)
         {
             return Err(StatusCode::UNPROCESSABLE_ENTITY);
         }
@@ -90,9 +99,11 @@ impl EncodedPreviews {
             .map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)?
             .name
             .clone();
+        source.cancel = source.cancel.child_token();
         let (last_request, lease) = watch::channel(Instant::now());
         let (state, receiver) = watch::channel(PreviewState::Starting);
         let view = Arc::new(EncodedView {
+            cancel: source.cancel.clone(),
             last_request,
             state: receiver,
             png: Mutex::new(None),
@@ -146,7 +157,7 @@ impl EncodedView {
     }
 }
 
-fn encode_png(image: &RgbImage) -> image::ImageResult<Bytes> {
+pub(crate) fn encode_png(image: &RgbImage) -> image::ImageResult<Bytes> {
     let mut bytes = Vec::new();
     image::codecs::png::PngEncoder::new_with_quality(
         &mut bytes,
@@ -177,16 +188,10 @@ async fn run(
     let mut command = output::video_input(&spec);
     command.args(["-map", "0:v:0", "-an"]);
     output::configure_video_output(&mut command, &output, encoder_name, spec.fps)?;
+    command.args(["-flush_packets", "1"]);
+    output::configure_muxer(&mut command, output.protocol);
     let mut encoder = command
-        .args([
-            "-flvflags",
-            "no_duration_filesize",
-            "-flush_packets",
-            "1",
-            "-f",
-            "flv",
-            "pipe:1",
-        ])
+        .arg("pipe:1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -213,7 +218,7 @@ async fn run(
             "-analyzeduration",
             "100000",
             "-f",
-            "flv",
+            output.protocol.muxer(),
             "-i",
             "pipe:0",
             "-map",
@@ -334,6 +339,7 @@ mod tests {
         let mut views = Vec::new();
         for (index, bitrate_kbps) in [100, 4000].into_iter().enumerate() {
             let output = Output {
+                protocol: Default::default(),
                 name: format!("Profile {index}"),
                 url: String::new(),
                 key: String::new(),

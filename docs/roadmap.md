@@ -41,23 +41,24 @@ supported features in user guides.
    compression for each configured destination. Verify the supported codecs
    and hardware encoders under load, and measure how concurrent previews affect
    broadcast frame timing and reconnects.
-2. **Undo and redo scene edits.** Extend the move, resize and layer order
-   history to crop, effects and other inspector edits.
-   Test keyboard shortcuts, redo after undo, and remote edits made between steps.
-3. **Activate preview separately from broadcast.** Extend Studio's preview-only
-   session with per-source and draft-scene preview. Activate only the necessary
-   inputs. Reuse capture
-   already held by the broadcast, release preview ownership when unused, and
-   test concurrent viewers, permissions and reconnects.
-4. **Qualify 30/60 FPS on real hardware.** Measure the effect of sharing JPEG
-   snapshots, compare preview freshness and A/V timing across output profiles, and test restart
-   and reconnect while horizontal and vertical output are active.
-5. **Make Studio the editing workspace.** Keep the draft scene, on-air scene,
+2. **Extend 30/60 FPS qualification to production scenes.** The
+   [mixed RTMP/SRT probe](development.md#mixed-output-preview-load-at-30-and-60-fps)
+   covers both orientations, raw and encoded previews, and an independent
+   output restart at 720p. Extend to higher resolutions and scenes with
+   effects, and measure browser-visible freshness and sustained A/V timing.
+3. **Make Studio the editing workspace.** Keep the draft scene, on-air scene,
    mixer and output state in view. Add per-source preview, independent audio
    monitoring and a focused inspector. Verify keyboard and phone workflows.
-6. **Reduce monitoring overhead.** Preserve peak audio values between updates
+4. **Reduce monitoring overhead.** Preserve peak audio values between updates
    and stream fresh meter and load samples separately from workspace state.
    Verify clipping visibility and reconnection without duplicating graph points.
+5. **Profile layer and neural effects.** Measure GPU work by render pass and
+   time model inference and missed frames for effects that dispatch to a
+   neural accelerator.
+6. **Replace whole-workspace Apply in production controls.** Mixer edits,
+   scene content, program switches, source cards and saved output profiles use
+   scoped updates. Extend scoped saves to format settings and destination
+   additions, removals and enablement.
 
 ## Shared server workspace
 

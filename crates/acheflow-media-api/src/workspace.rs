@@ -61,9 +61,43 @@ impl BitrateMode {
         }
     }
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputProtocol {
+    #[default]
+    Rtmp,
+    Srt,
+}
+impl OutputProtocol {
+    pub const ALL: [Self; 2] = [Self::Rtmp, Self::Srt];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Rtmp => "RTMP",
+            Self::Srt => "SRT",
+        }
+    }
+
+    pub fn video_codecs(self) -> &'static [&'static str] {
+        match self {
+            Self::Rtmp => &crate::RTMP_VIDEO_CODECS,
+            Self::Srt => &["h264", "hevc"],
+        }
+    }
+
+    pub fn muxer(self) -> &'static str {
+        match self {
+            Self::Rtmp => "flv",
+            Self::Srt => "mpegts",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Output {
+    #[serde(default)]
+    pub protocol: OutputProtocol,
     pub name: String,
     pub url: String,
     pub key: String,
@@ -82,9 +116,21 @@ pub struct Output {
     pub audio: crate::audio::OutputAudio,
 }
 impl Output {
+    pub fn same_encoder_config(&self, other: &Self) -> bool {
+        self.protocol == other.protocol
+            && self.url == other.url
+            && self.key == other.key
+            && self.resolution == other.resolution
+            && self.codec == other.codec
+            && self.encoder == other.encoder
+            && self.bitrate_kbps == other.bitrate_kbps
+            && self.bitrate_mode == other.bitrate_mode
+            && self.keyframe_interval_secs == other.keyframe_interval_secs
+    }
+
     pub fn has_valid_video_profile(&self) -> bool {
         valid_stream_size(&self.resolution)
-            && crate::RTMP_VIDEO_CODECS.contains(&self.codec.as_str())
+            && self.protocol.video_codecs().contains(&self.codec.as_str())
             && self
                 .encoder
                 .as_ref()
@@ -95,13 +141,21 @@ impl Output {
 
     pub fn validate(&self) -> Result<(), String> {
         if self.name.trim().is_empty()
-            || !self.url.starts_with("rtmp://")
-            || self.url.len() <= 7
-            || self.key.trim().is_empty()
             || !self.has_valid_video_profile()
             || !["Low", "Standard", "High", "Custom"].contains(&self.quality.as_str())
         {
-            return Err("Each output needs a name, rtmp:// URL, key, valid resolution, RTMP video codec/encoder bitrate (100–100000 kbps) and keyframe interval (1–20 seconds)".into());
+            return Err("Each output needs a name, valid resolution, compatible codec and encoder, bitrate (100–100000 kbps), and keyframe interval (1–20 seconds)".into());
+        }
+        match self.protocol {
+            OutputProtocol::Rtmp
+                if !self.url.starts_with("rtmp://") || self.key.trim().is_empty() =>
+            {
+                return Err("RTMP output requires an rtmp:// URL and a stream key".into());
+            }
+            OutputProtocol::Srt if !self.url.starts_with("srt://") => {
+                return Err("SRT output requires an srt://host:port URL".into());
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -1050,6 +1104,7 @@ mod tests {
         let scene = p.add_scene(Orientation::Horizontal);
         p.add_layer(scene, 1);
         p.horizontal.outputs.push(Output {
+            protocol: Default::default(),
             name: "Audio test".into(),
             url: "rtmp://example.com/live".into(),
             key: "test-key".into(),
@@ -1125,6 +1180,7 @@ mod tests {
         let id = p.add_scene(Orientation::Vertical);
         p.add_layer(id, 1);
         p.vertical.outputs.push(Output {
+            protocol: Default::default(),
             name: "Vertical channel".into(),
             url: "rtmp://example.com/live".into(),
             key: "test-key".into(),
@@ -1192,6 +1248,7 @@ mod tests {
         p.horizontal.fps = 60;
         p.vertical.fps = 24;
         p.horizontal.outputs.push(Output {
+            protocol: Default::default(),
             name: "Encoder test".into(),
             url: "rtmp://example.com/live".into(),
             key: "test-key".into(),

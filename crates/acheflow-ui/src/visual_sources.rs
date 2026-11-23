@@ -1,10 +1,13 @@
 use crate::{
     code_editor::{CodeEditor, CodeKind},
     control_client::ControlClient,
-    live::{Field, NumberField},
+    live::NumberField,
     project::Workspace,
 };
-use acheflow_media_api::visual::{ChatSource, ExtensionSource, SourceKind};
+use acheflow_media_api::{
+    live::SourceEdit,
+    visual::{ChatSource, ExtensionSource, SourceKind},
+};
 use dioxus_native::prelude::*;
 fn edit(
     mut project: Signal<Workspace>,
@@ -80,19 +83,20 @@ pub(crate) fn AddSourceOptions(
     }
 }
 #[component]
-pub(crate) fn VisualSources(mut project: Signal<Workspace>) -> Element {
+pub(crate) fn VisualSources(project: Signal<Workspace>) -> Element {
     let mut expanded = use_signal(std::collections::HashSet::<u32>::new);
     let control = use_context::<ControlClient>();
     let snapshot = control.state.read();
     rsx! {
         for source in project.read().sources.iter().filter(|s|!s.kind.is_media_input()).cloned().collect::<Vec<_>>() {
             section{key:"visual-{source.id}",class:"panel",
-                div{class:"panel-heading",button{id:"toggle-visual-{source.id}",class:"destination-toggle",onkeydown:move |event|{if activates(&event){event.prevent_default();let mut open=expanded.write();if !open.remove(&source.id){open.insert(source.id);}}},"aria-expanded":expanded.read().contains(&source.id).to_string(),onclick:move |_|{let mut open=expanded.write();if !open.remove(&source.id){open.insert(source.id);}},span{if expanded.read().contains(&source.id){"▾"}else{"▸"}}h2{"{source.name}"}}span{class:"badge",if matches!(source.kind,SourceKind::Chat(_)){"Chat overlay"}else{"Extension source"}}button{onclick:move |_|project.write().remove_source(source.id),"Remove"}}
+                div{class:"panel-heading",button{id:"toggle-visual-{source.id}",class:"destination-toggle",onkeydown:move |event|{if activates(&event){event.prevent_default();let mut open=expanded.write();if !open.remove(&source.id){open.insert(source.id);}}},"aria-expanded":expanded.read().contains(&source.id).to_string(),onclick:move |_|{let mut open=expanded.write();if !open.remove(&source.id){open.insert(source.id);}},span{if expanded.read().contains(&source.id){"▾"}else{"▸"}}h2{"{source.name}"}}span{class:"badge",if matches!(source.kind,SourceKind::Chat(_)){"Chat overlay"}else{"Extension source"}}crate::source_settings::RemoveSource {project,source_id:source.id}}
                 div{style:if expanded.read().contains(&source.id){"display:block"}else{"display:none"},
+                crate::source_settings::SourceCaptureActions {source:source.clone()}
                 div{class:"form-grid",
-                    Field{label:"Name",value:source.name.clone(),change:move|v|edit(project,source.id,|s|s.name=v)}
-                    NumberField{label:"Initial layer width",value:source.resolution.width,min:16,max:1920,step:2,change:move|v|edit(project,source.id,|s|s.resolution.width=v)}
-                    NumberField{label:"Initial layer height",value:source.resolution.height,min:16,max:1080,step:2,change:move|v|edit(project,source.id,|s|s.resolution.height=v)}
+                    crate::source_settings::SourceName {project,source_id:source.id,value:source.name.clone()}
+                    NumberField{label:"Initial layer width",value:source.resolution.width,min:16,max:1920,step:2,change:move|v|crate::source_settings::edit_source(project,source.id,SourceEdit::PreviewWidth(v))}
+                    NumberField{label:"Initial layer height",value:source.resolution.height,min:16,max:1080,step:2,change:move|v|crate::source_settings::edit_source(project,source.id,SourceEdit::PreviewHeight(v))}
                 }
                 match source.kind {
                     SourceKind::Chat(_)=>rsx!{
@@ -101,7 +105,7 @@ pub(crate) fn VisualSources(mut project: Signal<Workspace>) -> Element {
                     SourceKind::Extension(settings)=>{
                         let definition=snapshot.as_ref().and_then(|s|s.source_types.iter().find(|t|t.extension_id==settings.extension_id&&t.source_type.id==settings.type_id)).cloned();
                         rsx!{div{class:"padded",
-                            p{class:"form-help","This source receives visual documents from its enabled extension. Apply source changes to make them available to that instance."}
+                            p{class:"form-help","This source receives visual documents from its enabled extension. Save overlay settings to update that instance."}
                             if let Some(definition)=definition {
                                 for setting in definition.source_type.settings {
                                     {let key=setting.id.clone();let value=settings.settings.get(&key).cloned().unwrap_or_default();rsx!{div{class:"field",span{"{setting.label}"}input{"aria-label":setting.label,value,maxlength:setting.max_length,oninput:move|event|edit(project,source.id,|s|if let SourceKind::Extension(config)=&mut s.kind{config.settings.insert(key.clone(),event.value());})}}}}

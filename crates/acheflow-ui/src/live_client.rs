@@ -1,7 +1,10 @@
 use crate::project::{Orientation, Workspace};
+use acheflow_media_api::audio::{MAX_MIXER_EDITS, MixerAck, MixerEdit, MixerRequest};
 use acheflow_media_api::live::{
-    ApiError, ControlRequest, LiveStatus, ManageOutputsRequest, OutputAction, OutputTarget,
-    StartRequest,
+    ApiError, ControlRequest, LiveStatus, ManageOutputsRequest, OutputAction, OutputProfile,
+    OutputProfileAck, OutputProfileRequest, OutputTarget, SceneContent, SceneEdit,
+    SceneSettingsAck, SceneSettingsRequest, SourceEdit, SourcePreviewRequest, SourceSettingsAck,
+    SourceSettingsRequest, StartRequest, TakeSceneAck, TakeSceneRequest,
 };
 use dioxus_native::prelude::*;
 
@@ -16,13 +19,26 @@ pub struct LiveClient {
     pub error: Signal<Option<String>>,
     pub connection: Signal<Option<String>>,
     pub traffic: Signal<crate::traffic::History>,
+    pub(crate) scoped_pending: Signal<bool>,
+    scoped_edits: Signal<Vec<ScopedEdit>>,
+    after_scoped_edits: Signal<Option<Action>>,
     generation: Signal<u64>,
 }
+enum ScopedEdit {
+    Mixer(MixerEdit),
+    Source(u32, SourceEdit),
+    Scene(u32, SceneEdit),
+    Output(OutputTarget, OutputProfile, u64),
+}
+
 #[derive(Clone, Copy)]
 pub enum Action {
     Apply,
-    Start(Option<OutputTarget>),
-    StartPreview,
+    Start {
+        output: Option<OutputTarget>,
+        preview_only: bool,
+        scenes: [Option<u32>; 2],
+    },
     Outputs(OutputAction, Option<OutputTarget>),
     Stop,
     Deactivate,
@@ -38,6 +54,9 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
         error: use_signal(|| None),
         connection: use_signal(|| None),
         traffic: use_signal(crate::traffic::History::default),
+        scoped_pending: use_signal(|| false),
+        scoped_edits: use_signal(Vec::new),
+        after_scoped_edits: use_signal(|| None),
         generation: use_signal(|| 0),
     };
     use_context_provider(|| client);
@@ -62,6 +81,9 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
                 .connection
                 .set(Some("Connecting to workspace server…".into()));
             client.busy.set(false);
+            client.scoped_pending.set(false);
+            client.scoped_edits.write().clear();
+            client.after_scoped_edits.set(None);
             *client.generation.write() += 1;
         }
         async move {
@@ -71,8 +93,13 @@ pub fn use_live_client(project: Signal<Workspace>) -> LiveClient {
                 if !*client.busy.peek() {
                     let generation = *client.generation.peek();
                     let workspace = project.peek().clone();
-                    let response =
-                        request(&workspace, reqwest::Method::GET, "/api/live/status", None).await;
+                    let response = request_media::<LiveStatus>(
+                        &workspace,
+                        reqwest::Method::GET,
+                        "/api/live/status",
+                        None,
+                    )
+                    .await;
                     if owner == identity()
                         && generation == *client.generation.peek()
                         && !*client.busy.peek()
@@ -120,6 +147,319 @@ fn live_polling_delay(foreground_ms: Option<u32>, active: bool, failures: u8) ->
 }
 
 impl LiveClient {
+    pub(crate) fn save_output_profile(self, target: OutputTarget) {
+        let Some(sync) = try_consume_context::<crate::workspace_sync::WorkspaceSync>() else {
+            return;
+        };
+        if *self.busy.peek() || *self.scoped_pending.peek() {
+            return;
+        }
+        if let Some(profile) = sync.changed_output_profile(target) {
+            let revision = self.project.peek().edit_revision;
+            self.queue_edit(sync, ScopedEdit::Output(target, profile, revision));
+        }
+    }
+
+    pub(crate) fn save_scene(self, id: u32) {
+        if *self.busy.peek() || *self.scoped_pending.peek() || !self.owns() {
+            return;
+        }
+        let Some(sync) = try_consume_context::<crate::workspace_sync::WorkspaceSync>() else {
+            return;
+        };
+        let Some(state) = sync
+            .scene_save_state(id)
+            .filter(|state| state.available && state.changed)
+        else {
+            return;
+        };
+        let Some(scene) = self
+            .project
+            .peek()
+            .scenes
+            .iter()
+            .find(|scene| scene.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        let edit = if state.saved {
+            SceneEdit::Content(SceneContent::of(&scene))
+        } else {
+            SceneEdit::Register(scene)
+        };
+        self.queue_edit(sync, ScopedEdit::Scene(id, edit));
+    }
+
+    pub(crate) fn remove_scene(mut self, id: u32) {
+        if *self.busy.peek() || *self.scoped_pending.peek() {
+            return;
+        }
+        if let Some(sync) = try_consume_context::<crate::workspace_sync::WorkspaceSync>()
+            && self.owns()
+            && sync.scene_save_state(id).is_some_and(|state| state.saved)
+        {
+            self.queue_edit(sync, ScopedEdit::Scene(id, SceneEdit::Remove));
+        } else {
+            let _ = SceneEdit::Remove.apply(&mut self.project.write(), id);
+        }
+    }
+
+    pub(crate) fn take_scene(mut self, orientation: Orientation, scene_id: u32) {
+        if *self.busy.peek() || *self.scoped_pending.peek() {
+            return;
+        }
+        let Some(sync) = try_consume_context::<crate::workspace_sync::WorkspaceSync>()
+            .filter(|sync| sync.can_take_scene(orientation, scene_id))
+        else {
+            return;
+        };
+        let target = self.project.peek().clone();
+        let request = TakeSceneRequest {
+            workspace_id: target.id.clone(),
+            expected_revision: target.edit_revision,
+            orientation,
+            scene_id,
+        };
+        let identity = crate::server_access::identity();
+        self.busy.set(true);
+        self.error.set(None);
+        *self.generation.write() += 1;
+        let generation = *self.generation.peek();
+        spawn(async move {
+            let result: Result<TakeSceneAck, String> = match serde_json::to_value(&request) {
+                Ok(body) => {
+                    request_media(&target, reqwest::Method::POST, "/api/live/take", Some(body))
+                        .await
+                }
+                Err(error) => Err(error.to_string()),
+            };
+            if generation != *self.generation.peek()
+                || self.project.peek().id != target.id
+                || self.project.peek().server_url != target.server_url
+                || crate::server_access::identity() != identity
+            {
+                return;
+            }
+            match result {
+                Ok(ack) if sync.applied_program(&request, ack) => {}
+                Ok(_) => self.error.set(Some(
+                    "Program scene changed on the server. Refreshing workspace state.".into(),
+                )),
+                Err(error) => self.error.set(Some(error)),
+            }
+            self.busy.set(false);
+        });
+    }
+
+    pub(crate) fn mixer_edit(mut self, edit: MixerEdit) {
+        let changed = match edit.apply(&mut self.project.write()) {
+            Ok(changed) => changed,
+            Err(error) => {
+                self.error.set(Some(error));
+                return;
+            }
+        };
+        if !changed || !self.owns() {
+            return;
+        }
+        let Some(sync) = try_consume_context::<crate::workspace_sync::WorkspaceSync>()
+            .filter(|sync| sync.mixer_has_target(&edit))
+        else {
+            return;
+        };
+        self.queue_edit(sync, ScopedEdit::Mixer(edit));
+    }
+
+    pub(crate) fn source_edit(mut self, source_id: u32, edit: SourceEdit) {
+        let sync =
+            try_consume_context::<crate::workspace_sync::WorkspaceSync>().filter(|_| self.owns());
+        let saved = sync.and_then(|sync| sync.saved_source(source_id));
+        let local_removal = matches!(edit, SourceEdit::Remove) && saved.is_none();
+        if local_removal && *self.scoped_pending.peek() {
+            return;
+        }
+        if matches!(
+            edit,
+            SourceEdit::Name(_) | SourceEdit::PreviewWidth(_) | SourceEdit::PreviewHeight(_)
+        ) || local_removal
+        {
+            let changed = edit.apply(&mut self.project.write(), source_id);
+            match changed {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(error) => {
+                    self.error.set(Some(error));
+                    return;
+                }
+            }
+        }
+        let Some(sync) = sync else { return };
+        if matches!(edit, SourceEdit::Register(_)) {
+            if saved.is_some() || !sync.can_edit_workspace() {
+                return;
+            }
+        } else if saved.is_none() {
+            return;
+        }
+        self.queue_edit(sync, ScopedEdit::Source(source_id, edit));
+    }
+
+    fn queue_edit(mut self, sync: crate::workspace_sync::WorkspaceSync, edit: ScopedEdit) {
+        {
+            let mut edits = self.scoped_edits.write();
+            match (edits.last_mut(), edit) {
+                (Some(ScopedEdit::Mixer(previous)), ScopedEdit::Mixer(edit))
+                    if edit.replaces(previous) =>
+                {
+                    *previous = edit
+                }
+                (_, edit) => edits.push(edit),
+            }
+        }
+        if *self.scoped_pending.peek() {
+            return;
+        }
+        self.scoped_pending.set(true);
+        self.error.set(None);
+        let identity = crate::server_access::identity();
+        let owner = self.project.peek().id.clone();
+        let endpoint = self.project.peek().server_url.clone();
+        let same_workspace = move || {
+            let workspace = self.project.peek();
+            workspace.id == owner
+                && workspace.server_url == endpoint
+                && crate::server_access::identity() == identity
+        };
+        spawn(async move {
+            loop {
+                crate::scene_preview::pause(75).await;
+                if !same_workspace() {
+                    return;
+                }
+                if self.scoped_edits.peek().is_empty() {
+                    break;
+                }
+                if *self.busy.peek() {
+                    continue;
+                }
+                let workspace = self.project.peek().clone();
+                let edits = {
+                    let mut queue = self.scoped_edits.write();
+                    let count = if matches!(queue.first(), Some(ScopedEdit::Mixer(_))) {
+                        queue
+                            .iter()
+                            .take_while(|edit| matches!(edit, ScopedEdit::Mixer(_)))
+                            .take(MAX_MIXER_EDITS)
+                            .count()
+                    } else {
+                        1
+                    };
+                    queue.drain(..count).collect::<Vec<_>>()
+                };
+                let error = match &edits[..] {
+                    [ScopedEdit::Output(target, profile, revision)] => {
+                        let request = OutputProfileRequest {
+                            workspace_id: workspace.id.clone(),
+                            expected_revision: *revision,
+                            target: *target,
+                            profile: profile.clone(),
+                        };
+                        let result = match serde_json::to_value(&request) {
+                            Ok(body) => {
+                                request_media::<OutputProfileAck>(
+                                    &workspace,
+                                    reqwest::Method::POST,
+                                    "/api/live/output/profile",
+                                    Some(body),
+                                )
+                                .await
+                            }
+                            Err(error) => Err(error.to_string()),
+                        };
+                        if !same_workspace() {
+                            return;
+                        }
+                        match result {
+                            Ok(ack) if sync.applied_output_profile(&request, ack) => continue,
+                            Ok(_) => {
+                                "Workspace version changed while saving the output profile.".into()
+                            }
+                            Err(error) => error,
+                        }
+                    }
+                    [ScopedEdit::Scene(id, edit)] => {
+                        let request = SceneSettingsRequest {
+                            workspace_id: workspace.id.clone(),
+                            expected_revision: workspace.edit_revision,
+                            scene_id: *id,
+                            edit: edit.clone(),
+                        };
+                        let result = send_scene(&workspace, &request).await;
+                        if !same_workspace() {
+                            return;
+                        }
+                        match result {
+                            Ok(ack) if sync.applied_scene(&request, ack) => continue,
+                            Ok(_) => "Workspace version changed while saving the scene.".into(),
+                            Err(error) => error,
+                        }
+                    }
+                    [ScopedEdit::Source(id, edit)] => {
+                        let request = SourceSettingsRequest {
+                            workspace_id: workspace.id.clone(),
+                            expected_revision: workspace.edit_revision,
+                            source_id: *id,
+                            edit: edit.clone(),
+                        };
+                        let result = send_source(&workspace, &request).await;
+                        if !same_workspace() {
+                            return;
+                        }
+                        match result {
+                            Ok(ack) if sync.applied_source(&request, ack) => continue,
+                            Ok(_) => {
+                                "Workspace version changed while saving source settings.".into()
+                            }
+                            Err(error) => error,
+                        }
+                    }
+                    _ => {
+                        let request = MixerRequest {
+                            workspace_id: workspace.id.clone(),
+                            expected_revision: workspace.edit_revision,
+                            edits: edits
+                                .into_iter()
+                                .filter_map(|edit| match edit {
+                                    ScopedEdit::Mixer(edit) => Some(edit),
+                                    _ => None,
+                                })
+                                .collect(),
+                        };
+                        let result = send_mixer(&workspace, &request).await;
+                        if !same_workspace() {
+                            return;
+                        }
+                        match result {
+                            Ok(ack) if sync.applied_mixer(&request, ack) => continue,
+                            Ok(_) => "Workspace version changed while saving the mixer.".into(),
+                            Err(error) => error,
+                        }
+                    }
+                };
+                self.error
+                    .set(Some(format!("{error} Changes were kept in your draft.")));
+                self.scoped_edits.write().clear();
+                break;
+            }
+            self.scoped_pending.set(false);
+            let action = self.after_scoped_edits.write().take();
+            if let Some(action) = action {
+                self.command(action);
+            }
+        });
+    }
+
     pub fn owns(&self) -> bool {
         self.status
             .read()
@@ -138,23 +478,33 @@ impl LiveClient {
         if (self.busy)() {
             return;
         }
+        if *self.scoped_pending.peek() && matches!(action, Action::Apply | Action::Start { .. }) {
+            self.after_scoped_edits.set(Some(action));
+            return;
+        }
         crate::diagnostics::record(
             "info",
             "media",
             match action {
                 Action::Apply => "Applying workspace",
-                Action::Start(_) | Action::Outputs(OutputAction::Start, _) => "Starting outputs",
-                Action::StartPreview => "Starting preview",
+                Action::Start {
+                    preview_only: true, ..
+                } => "Starting preview",
+                Action::Start { .. } | Action::Outputs(OutputAction::Start, _) => {
+                    "Starting outputs"
+                }
                 Action::Outputs(OutputAction::Restart, _) => "Restarting outputs",
                 Action::Stop => "Stopping stream",
                 Action::Deactivate | Action::DeactivateActive => "Deactivating workspace",
             },
         );
-        let workspace = self.project.peek().clone();
-        let applies_workspace = matches!(
-            &action,
-            Action::Apply | Action::Start(_) | Action::StartPreview
-        );
+        let mut workspace = self.project.peek().clone();
+        if let Action::Start { scenes, .. } = action {
+            for (orientation, scene) in Orientation::ALL.into_iter().zip(scenes) {
+                workspace.set_active(orientation, scene);
+            }
+        }
+        let applies_workspace = matches!(&action, Action::Apply | Action::Start { .. });
         let target = workspace.clone();
         let identity = crate::server_access::identity();
         let sync = try_consume_context::<crate::workspace_sync::WorkspaceSync>();
@@ -169,7 +519,11 @@ impl LiveClient {
                     "/api/live/config",
                     serde_json::to_value(workspace.server_configuration()),
                 ),
-                Action::Start(_) | Action::StartPreview => {
+                Action::Start {
+                    output,
+                    preview_only,
+                    ..
+                } => {
                     let formats = Orientation::ALL
                         .into_iter()
                         .filter(|o| workspace.active(*o).is_some())
@@ -180,11 +534,8 @@ impl LiveClient {
                         serde_json::to_value(StartRequest {
                             workspace: workspace.server_configuration(),
                             formats,
-                            preview_only: matches!(action, Action::StartPreview),
-                            output: match action {
-                                Action::Start(output) => output,
-                                _ => None,
-                            },
+                            preview_only,
+                            output,
                         }),
                     )
                 }
@@ -224,8 +575,8 @@ impl LiveClient {
                     }),
                 ),
             };
-            let result = match body {
-                Ok(body) => request(&target, method, path, Some(body)).await,
+            let result: Result<LiveStatus, String> = match body {
+                Ok(body) => request_media(&target, method, path, Some(body)).await,
                 Err(e) => Err(e.to_string()),
             };
             if generation != *self.generation.peek()
@@ -240,6 +591,12 @@ impl LiveClient {
                     if applies_workspace
                         && status.workspace_id.as_deref() == Some(target.id.as_str())
                     {
+                        if let Action::Start { scenes, .. } = action {
+                            let mut project = self.project.write();
+                            for (orientation, scene) in Orientation::ALL.into_iter().zip(scenes) {
+                                project.set_active(orientation, scene);
+                            }
+                        }
                         if let Some(sync) = sync {
                             sync.applied(&target, status.edit_revision);
                         } else {
@@ -320,6 +677,63 @@ impl LiveClient {
     }
 }
 
+pub(crate) async fn renew_source_preview(
+    workspace: &Workspace,
+    source_id: u32,
+) -> Result<(), String> {
+    let body = serde_json::to_value(SourcePreviewRequest {
+        workspace_id: workspace.id.clone(),
+        source_id,
+    })
+    .map_err(|error| error.to_string())?;
+    request_media(
+        workspace,
+        reqwest::Method::POST,
+        "/api/live/source-preview",
+        Some(body),
+    )
+    .await
+}
+
+async fn send_scene(
+    workspace: &Workspace,
+    request: &SceneSettingsRequest,
+) -> Result<SceneSettingsAck, String> {
+    let body = serde_json::to_value(request).map_err(|error| error.to_string())?;
+    request_media(
+        workspace,
+        reqwest::Method::POST,
+        "/api/live/scenes",
+        Some(body),
+    )
+    .await
+}
+
+async fn send_source(
+    workspace: &Workspace,
+    request: &SourceSettingsRequest,
+) -> Result<SourceSettingsAck, String> {
+    let body = serde_json::to_value(request).map_err(|error| error.to_string())?;
+    request_media(
+        workspace,
+        reqwest::Method::POST,
+        "/api/live/sources",
+        Some(body),
+    )
+    .await
+}
+
+async fn send_mixer(workspace: &Workspace, request: &MixerRequest) -> Result<MixerAck, String> {
+    let body = serde_json::to_value(request).map_err(|error| error.to_string())?;
+    request_media(
+        workspace,
+        reqwest::Method::POST,
+        "/api/live/mixer",
+        Some(body),
+    )
+    .await
+}
+
 fn ingest_url(workspace: &Workspace, status: &LiveStatus) -> Result<String, String> {
     let port = status
         .rtmp_address
@@ -333,12 +747,12 @@ fn ingest_url(workspace: &Workspace, status: &LiveStatus) -> Result<String, Stri
     Ok(format!("{scheme}://{host}:{port}/live"))
 }
 
-async fn request(
+async fn request_media<T: serde::de::DeserializeOwned>(
     workspace: &Workspace,
     method: reqwest::Method,
     path: &str,
     body: Option<serde_json::Value>,
-) -> Result<LiveStatus, String> {
+) -> Result<T, String> {
     let mut request =
         crate::server_access::request(method, &crate::media::server_url(workspace, path)?)?
             .timeout(std::time::Duration::from_secs(15));
@@ -352,14 +766,20 @@ async fn request(
     if !response.status().is_success() {
         let status = response.status();
         let bytes = response.bytes().await.map_err(|e| e.to_string())?;
-        return Err(serde_json::from_slice::<ApiError>(&bytes)
-            .map(|e| e.error)
-            .unwrap_or_else(|_| format!("Media API rejected the request ({status})")));
+        if let Ok(error) = serde_json::from_slice::<ApiError>(&bytes) {
+            return Err(error.error);
+        }
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            && let Some(message) = value["error"]["message"].as_str()
+        {
+            return Err(message.to_owned());
+        }
+        return Err(format!("Media API rejected the request ({status})"));
     }
     response
         .json()
         .await
-        .map_err(|e| format!("Invalid live status: {e}"))
+        .map_err(|e| format!("Invalid media response: {e}"))
 }
 pub(crate) fn polling_delay(active: bool, failures: u8, active_ms: u32) -> u32 {
     if failures > 0 {

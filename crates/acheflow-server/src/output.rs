@@ -3,7 +3,7 @@ use acheflow_media_api::{
     MediaCapabilities,
     audio::AUDIO_SAMPLES,
     live::{OutputState, OutputStatus},
-    workspace::{BitrateMode, Output, Resolution},
+    workspace::{BitrateMode, Output, OutputProtocol, Resolution},
 };
 use image::RgbImage;
 use std::{
@@ -85,6 +85,9 @@ pub async fn start(
                     retries = 0;
                 }
                 output_status.bitrate_kbps = 0.;
+                output_status.encoding_fps = None;
+                output_status.realtime_speed = None;
+                output_status.track_timing = None;
                 if !failure.retryable || retries == RECONNECT_DELAYS.len() {
                     output_status.state = OutputState::Failed;
                     output_status.reconnect_attempt = None;
@@ -140,6 +143,9 @@ pub async fn start(
         status.reconnect_attempt = None;
         status.error = None;
         status.bitrate_kbps = 0.;
+        status.encoding_fps = None;
+        status.realtime_speed = None;
+        status.track_timing = None;
     }))
 }
 
@@ -199,6 +205,101 @@ pub(crate) fn configure_video_output(
     Ok(())
 }
 
+pub(crate) fn validate_video_config(
+    output: &Output,
+    fps: u32,
+    capabilities: &MediaCapabilities,
+) -> Result<(), String> {
+    let encoder = capabilities.resolve_video_encoder(&output.codec, output.encoder.as_deref())?;
+    stream_encoder_options(&encoder.name, &output.resolution, fps, output.bitrate_kbps)?;
+    Ok(())
+}
+
+pub(crate) fn destination_url(output: &Output) -> Result<String, String> {
+    let label = output.protocol.label();
+    let invalid = || format!("Invalid {label} output URL");
+    let mut url = url::Url::parse(&output.url).map_err(|_| invalid())?;
+    if url.host_str().is_none()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(invalid());
+    }
+    match output.protocol {
+        OutputProtocol::Rtmp => {
+            if url.scheme() != "rtmp" || url.query().is_some() {
+                return Err(invalid());
+            }
+            if output.key.len() > 256 || output.key.chars().any(char::is_control) {
+                return Err("Invalid RTMP output key".into());
+            }
+            Ok(format!(
+                "{}/{}",
+                output.url.trim_end_matches('/'),
+                output.key
+            ))
+        }
+        OutputProtocol::Srt => {
+            if url.scheme() != "srt"
+                || url.port().is_none_or(|port| port == 0)
+                || !matches!(url.path(), "" | "/")
+            {
+                return Err(invalid());
+            }
+            let mut seen = std::collections::HashSet::new();
+            for (name, value) in url.query_pairs() {
+                let valid = match name.as_ref() {
+                    "mode" => value == "caller",
+                    "transtype" => value == "live",
+                    "latency" => value.parse::<u64>().is_ok(),
+                    "streamid" => {
+                        !value.is_empty()
+                            && value.len() <= 512
+                            && !value.chars().any(char::is_control)
+                    }
+                    _ => false,
+                };
+                if !valid || !seen.insert(name) {
+                    return Err("SRT URL accepts caller mode, live transport, latency in microseconds and a stream ID".into());
+                }
+            }
+            let add_mode = !seen.contains("mode");
+            let add_transport = !seen.contains("transtype");
+            drop(seen);
+            let mut options = url.query_pairs_mut();
+            if add_mode {
+                options.append_pair("mode", "caller");
+            }
+            if add_transport {
+                options.append_pair("transtype", "live");
+            }
+            if !output.key.is_empty() {
+                if !(10..=79).contains(&output.key.len())
+                    || !output
+                        .key
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
+                {
+                    return Err("SRT output passphrase must have 10–79 URL-safe characters (letters, digits, _ or -)".into());
+                }
+                options
+                    .append_pair("passphrase", &output.key)
+                    .append_pair("pbkeylen", "16");
+            }
+            drop(options);
+            Ok(url.into())
+        }
+    }
+}
+
+pub(crate) fn configure_muxer(command: &mut tokio::process::Command, protocol: OutputProtocol) {
+    if protocol == OutputProtocol::Rtmp {
+        command.args(["-flvflags", "no_duration_filesize"]);
+    }
+    command.args(["-f", protocol.muxer()]);
+}
+
 async fn prepare_attempt(
     output: &Output,
     spec: &VideoSpec,
@@ -220,7 +321,7 @@ async fn prepare_attempt(
     );
     let destination = output.url.trim_end_matches('/').to_owned();
     let key = output.key.clone();
-    let url = format!("{destination}/{key}");
+    let url = destination_url(output)?;
     let mut command = video_input(spec);
     command
         .args([
@@ -237,28 +338,28 @@ async fn prepare_attempt(
         .arg(audio_url)
         .args(["-map", "0:v:0", "-map", "1:a:0"]);
     configure_video_output(&mut command, output, encoder, fps)?;
-    command
-        .args([
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            "-ar",
-            "48000",
-            "-ac",
-            "2",
-            "-flvflags",
-            "no_duration_filesize",
-            "-progress",
-            "pipe:1",
-            "-stats_period",
-            "0.5",
-            "-rw_timeout",
-            "3000000",
-            "-f",
-            "flv",
-        ])
-        .arg(&url);
+    command.args([
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "-progress",
+        "pipe:1",
+        "-stats_period",
+        "0.5",
+        "-rw_timeout",
+        "3000000",
+    ]);
+    let profile = std::env::var_os("ACHEFLOW_ENCODER_PROFILE").is_some_and(|value| value == "1");
+    if profile {
+        command.args(["-loglevel", "level+info", "-nostats", "-debug_ts"]);
+    }
+    configure_muxer(&mut command, output.protocol);
+    command.arg(&url);
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -272,7 +373,13 @@ async fn prepare_attempt(
     crate::diagnostics::record("info", "output", "Output encoder started");
     Ok(async move {
         let progress = report_progress(stdout, status.clone());
-        let errors = read_encoder_errors(stderr, &url, &destination, &key);
+        let errors = read_encoder_errors(
+            stderr,
+            &url,
+            &destination,
+            &key,
+            profile.then_some(status.clone()),
+        );
         let (epoch_tx, epoch_rx) = oneshot::channel();
         tokio::pin!(errors);
         let mut completed_errors = None;
@@ -501,22 +608,155 @@ struct EncoderDiagnostics {
     permanent: bool,
 }
 
+#[derive(Default)]
+struct TrackTimings {
+    audio: std::collections::VecDeque<(std::time::Instant, PacketTiming)>,
+    video: std::collections::VecDeque<(std::time::Instant, PacketTiming)>,
+}
+
+struct PacketTiming {
+    pipeline_ms: f32,
+    encode_ms: Option<f32>,
+}
+
+fn packet_timing(line: &str) -> Option<(bool, PacketTiming)> {
+    let video = if line.starts_with("[vost#") {
+        true
+    } else if line.starts_with("[aost#") {
+        false
+    } else {
+        return None;
+    };
+    let (_, latency) = line
+        .split_once("muxer <- ")?
+        .1
+        .split_once(" latency(total:")?;
+    let (pipeline, stages) = latency.split_once("ms")?;
+    let pipeline_ms = progress_number(pipeline)?;
+    let encode_ms = stages.split(',').find_map(|stage| {
+        // "encode-mux" includes more than encoding and cannot substitute for it.
+        let (value, _) = stage
+            .trim_start()
+            .strip_prefix("encode ")?
+            .split_once("ms/")?;
+        progress_number(value)
+    });
+    Some((
+        video,
+        PacketTiming {
+            pipeline_ms,
+            encode_ms,
+        },
+    ))
+}
+
+#[cfg(test)]
+#[test]
+fn packet_profile_separates_video_and_audio_and_rejects_combined_encode_mux() {
+    let (video, timing) = packet_timing(
+        "[vost#0:0/libx264 @ 0x1] [info] muxer <- pts:0 latency(total:12ms, encode 10ms/83%)",
+    )
+    .unwrap();
+    let (audio, combined) = packet_timing(
+        "[aost#0:1/aac @ 0x1] [info] muxer <- pts:0 latency(total:2ms, encode-mux: 2ms/100%)",
+    )
+    .unwrap();
+    assert!(video && !audio);
+    let now = std::time::Instant::now();
+    let mut timings = TrackTimings::default();
+    timings.record(video, now, timing);
+    timings.record(audio, now, combined);
+    let status = timings.status(now);
+    let video = status.video.unwrap();
+    let audio = status.audio.unwrap();
+    assert_eq!(video.pipeline_p95_ms, 12.);
+    assert_eq!(video.encode_p95_ms, Some(10.));
+    assert_eq!(audio.pipeline_p95_ms, 2.);
+    assert_eq!(audio.encode_p95_ms, None);
+    assert_eq!(
+        timings.status(now + Duration::from_secs(3)),
+        Default::default()
+    );
+}
+
+impl TrackTimings {
+    fn record(&mut self, video: bool, now: std::time::Instant, timing: PacketTiming) {
+        let points = if video {
+            &mut self.video
+        } else {
+            &mut self.audio
+        };
+        if points.len() == 256 {
+            points.pop_front();
+        }
+        points.push_back((now, timing));
+    }
+
+    fn status(&mut self, now: std::time::Instant) -> acheflow_media_api::live::OutputTrackTiming {
+        use acheflow_media_api::live::{OutputTrackTiming, TrackEncodeTiming};
+        let summarize =
+            |points: &mut std::collections::VecDeque<(std::time::Instant, PacketTiming)>| {
+                points.retain(|(at, _)| now.duration_since(*at) <= Duration::from_secs(2));
+                let p95 = |mut values: Vec<f32>| {
+                    values.sort_unstable_by(f32::total_cmp);
+                    values
+                        .len()
+                        .checked_sub(1)
+                        .map(|_| values[(values.len() * 95).div_ceil(100) - 1])
+                };
+                Some(TrackEncodeTiming {
+                    pipeline_p95_ms: p95(points
+                        .iter()
+                        .map(|(_, timing)| timing.pipeline_ms)
+                        .collect())?,
+                    encode_p95_ms: p95(points
+                        .iter()
+                        .filter_map(|(_, timing)| timing.encode_ms)
+                        .collect()),
+                })
+            };
+        OutputTrackTiming {
+            video: summarize(&mut self.video),
+            audio: summarize(&mut self.audio),
+        }
+    }
+}
+
 async fn read_encoder_errors(
     stderr: tokio::process::ChildStderr,
     url: &str,
     destination: &str,
     key: &str,
+    profile: Option<Arc<Mutex<OutputStatus>>>,
 ) -> EncoderDiagnostics {
     let mut lines = BufReader::new(stderr).lines();
     let mut diagnostics = EncoderDiagnostics::default();
+    let mut timings = TrackTimings::default();
+    let mut reported = std::time::Instant::now();
     while let Ok(Some(line)) = lines.next_line().await {
+        if let Some(status) = &profile
+            && line.contains("[info]")
+        {
+            if let Some((video, timing)) = packet_timing(&line) {
+                let now = std::time::Instant::now();
+                timings.record(video, now, timing);
+                if now.duration_since(reported) >= Duration::from_millis(500) {
+                    status.lock().unwrap().track_timing = Some(timings.status(now));
+                    reported = now;
+                }
+            }
+            // FFmpeg logs all packet tracing and the output URL at info level.
+            continue;
+        }
         if line.trim().is_empty() {
             continue;
         }
-        let line = line
-            .replace(url, "[RTMP destination]")
-            .replace(destination, "[RTMP destination]")
-            .replace(key, "[key]");
+        let mut line = line
+            .replace(url, "[destination]")
+            .replace(destination, "[destination]");
+        if !key.is_empty() {
+            line = line.replace(key, "[key]");
+        }
         crate::diagnostics::record("error", "output", &line);
         let message: String = line.chars().take(400).collect();
         let lower = line.to_ascii_lowercase();
@@ -540,6 +780,8 @@ async fn read_encoder_errors(
             && [
                 "connection refused",
                 "connection reset by peer",
+                "connection setup failure",
+                "connection was broken",
                 "connection timed out",
                 "operation timed out",
                 "network is unreachable",
@@ -652,6 +894,13 @@ async fn report_progress(
     let mut traffic = crate::traffic::Traffic::default();
     let mut previous_bytes = 0;
     while let Ok(Some(line)) = lines.next_line().await {
+        if let Some(value) = line.strip_prefix("fps=") {
+            status.lock().unwrap().encoding_fps = progress_number(value);
+        }
+        if let Some(value) = line.strip_prefix("speed=") {
+            status.lock().unwrap().realtime_speed =
+                value.trim().strip_suffix('x').and_then(progress_number);
+        }
         if let Some(bytes) = line
             .strip_prefix("total_size=")
             .and_then(|s| s.trim().parse::<u64>().ok())
@@ -676,6 +925,13 @@ async fn report_progress(
             }
         }
     }
+}
+
+fn progress_number(text: &str) -> Option<f32> {
+    text.trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|value| value.is_finite() && *value >= 0.)
 }
 
 // A GOP size is only an encoder limit. Also request keyframes on the media

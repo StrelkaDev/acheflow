@@ -161,14 +161,19 @@ async fn scan(executable: &std::path::Path) -> Result<MediaCapabilities, String>
         encoders,
         rtmp_output: has_protocol(&protocols, "Output:", "rtmp"),
         srt_input: has_protocol(&protocols, "Input:", "srt"),
-        flv_muxer: muxers.lines().any(|line| {
-            let mut parts = line.split_whitespace();
-            let flags = parts.next().unwrap_or("");
-            let formats = parts.next().unwrap_or("");
-            flags.contains('E') && formats.split(',').any(|f| f == "flv")
-        }),
+        srt_output: has_protocol(&protocols, "Output:", "srt") && has_muxer(&muxers, "mpegts"),
+        flv_muxer: has_muxer(&muxers, "flv"),
         enhanced_rtmp,
         error: None,
+    })
+}
+
+fn has_muxer(list: &str, muxer: &str) -> bool {
+    list.lines().any(|line| {
+        let mut parts = line.split_whitespace();
+        let flags = parts.next().unwrap_or("");
+        let formats = parts.next().unwrap_or("");
+        flags.contains('E') && formats.split(',').any(|format| format == muxer)
     })
 }
 

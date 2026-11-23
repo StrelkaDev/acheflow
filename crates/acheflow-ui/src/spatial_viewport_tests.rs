@@ -34,13 +34,14 @@ fn app() -> Element {
     crate::live_client::use_live_client(project);
     crate::control_client::use_control_client(project);
     let view = use_signal(|| EditorView::new(1080.));
+    let history = use_signal(crate::scene_canvas::SceneHistory::default);
     let preview = use_signal(|| false);
     state.project.set(Some(project));
     state.view.set(Some(view));
     state.preview.set(Some(preview));
     let id = project.read().scenes[0].id;
     const CSS: &str = "body{margin:0}.spatial-stage{position:relative;width:800px;height:420px}.scene-gpu-preview{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.spatial-drag-shield{position:fixed;inset:0;z-index:10000}";
-    rsx! {style{"{CSS}"}SpatialViewport{project,scene_id:id,orientation:crate::project::Orientation::Horizontal,view,camera_preview:preview()}}
+    rsx! {style{"{CSS}"}SpatialViewport{project,scene_id:id,orientation:crate::project::Orientation::Horizontal,view,camera_preview:preview(),history:Some(history)}}
 }
 fn settle(doc: &mut DioxusDocument) {
     for _ in 0..60 {
@@ -80,11 +81,11 @@ fn down(doc: &mut DioxusDocument, p: Vec2) {
     doc.handle_ui_event(UiEvent::PointerDown(pointer(p, true)));
     settle(doc);
 }
-fn escape(doc: &mut DioxusDocument) {
+fn key_down(doc: &mut DioxusDocument, key: Key, code: Code, modifiers: Modifiers) {
     doc.handle_ui_event(UiEvent::KeyDown(BlitzKeyEvent {
-        key: Key::Named(NamedKey::Escape),
-        code: Code::Escape,
-        modifiers: Modifiers::empty(),
+        key,
+        code,
+        modifiers,
         location: Location::Standard,
         is_auto_repeating: false,
         is_composing: false,
@@ -139,7 +140,12 @@ async fn actual_scene_view_selects_drags_cancels_and_protects_camera_preview() {
         project.peek().scenes[0].spatial.as_ref().unwrap().camera,
         original.camera
     );
-    escape(&mut doc);
+    key_down(
+        &mut doc,
+        Key::Named(NamedKey::Escape),
+        Code::Escape,
+        Modifiers::empty(),
+    );
     assert_eq!(
         project.peek().scenes[0].spatial.as_ref().unwrap(),
         &original
@@ -161,6 +167,20 @@ async fn actual_scene_view_selects_drags_cancels_and_protects_camera_preview() {
     let accepted = project.peek().scenes[0].spatial.clone();
     doc.handle_ui_event(UiEvent::PointerMove(pointer(start, false)));
     settle(&mut doc);
+    assert_eq!(project.peek().scenes[0].spatial, accepted);
+    key_down(
+        &mut doc,
+        Key::Character("z".into()),
+        Code::KeyZ,
+        Modifiers::CONTROL,
+    );
+    assert_eq!(project.peek().scenes[0].spatial.as_ref(), Some(&original));
+    key_down(
+        &mut doc,
+        Key::Character("Z".into()),
+        Code::KeyZ,
+        Modifiers::CONTROL | Modifiers::SHIFT,
+    );
     assert_eq!(project.peek().scenes[0].spatial, accepted);
     // Click geometry after deselection. Then camera preview rejects all manipulation.
     view.write().selected = None;

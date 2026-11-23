@@ -1,6 +1,5 @@
 use crate::{
-    audio_mixer::Meters,
-    live::{Choice, DeviceInventory, Field},
+    live::{Choice, DeviceInventory},
     project::Workspace,
 };
 use acheflow_media_api::{
@@ -81,6 +80,7 @@ pub(crate) fn MicrophoneSources(
     inventory: Inventory,
     mut refresh: Signal<u32>,
     status: Option<LiveStatus>,
+    #[props(default = true)] visible: bool,
 ) -> Element {
     let workspace = project.read();
     let snapshot = inventory.read();
@@ -110,14 +110,12 @@ pub(crate) fn MicrophoneSources(
                                 if track.is_some_and(|track|track.active) {"Receiving"}
                                 else if input.is_some_and(|input|input.error.is_some()) {"Source error"}
                                 else if input.is_some() {"Waiting for input"}
-                                else {"Apply to activate"}
+                                else {"Inactive"}
                             }
-                            button {onclick:move |_|project.write().remove_source(id),"Remove"}
+                            crate::source_settings::RemoveSource {project,source_id:id}
                         }
                         div {class:"form-grid",
-                            Field {label:"Name",value:source.name.clone(),change:move |value|{
-                                if let Some(source)=project.write().sources.iter_mut().find(|source|source.id==id) {source.name=value;}
-                            }}
+                            crate::source_settings::SourceName {project,source_id:id,value:source.name.clone()}
                             if pending {
                                 p {class:"form-help","Looking for server microphones…"}
                             } else if !options.is_empty() {
@@ -143,8 +141,11 @@ pub(crate) fn MicrophoneSources(
                             }
                             button {disabled:pending,onclick:move |_|*refresh.write()+=1,"Refresh microphones"}
                         }
+                        crate::source_settings::SourceCaptureActions {source:source.clone()}
                         if let Some(error)=input.and_then(|input|input.error.as_ref()){p {class:"field-error padded","{error}"}}
-                        if let Some(track)=track {div {class:"padded",Meters {meter:track.meter.clone()}}}
+                        if visible {
+                            crate::source_settings::SourcePreview {source_id:id,video:false,activated:status.as_ref().is_some_and(|status|status.activated),input:input.cloned()}
+                        }
                         p {class:"panel-note","Choose a scene in Live / Mixer and set this microphone’s send to Program or another bus."}
                     }}
                 }

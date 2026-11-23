@@ -64,6 +64,9 @@ pub struct MediaCapabilities {
     pub rtmp_output: bool,
     #[serde(default)]
     pub srt_input: bool,
+    /// SRT output protocol and MPEG-TS muxer on the encoder executable.
+    #[serde(default)]
+    pub srt_output: bool,
     pub flv_muxer: bool,
     /// Conservatively enabled on FFmpeg 7+; older builds retain H.264 only.
     pub enhanced_rtmp: bool,
@@ -115,13 +118,24 @@ impl MediaCapabilities {
     }
 
     pub fn rtmp_codecs(&self) -> Vec<String> {
-        if !self.available || !self.rtmp_output || !self.flv_muxer {
+        self.output_codecs(workspace::OutputProtocol::Rtmp)
+    }
+
+    pub fn output_codecs(&self, protocol: workspace::OutputProtocol) -> Vec<String> {
+        use workspace::OutputProtocol::{Rtmp, Srt};
+        let supported = match protocol {
+            Rtmp => self.rtmp_output && self.flv_muxer,
+            Srt => self.srt_output,
+        };
+        if !self.available || !supported {
             return vec![];
         }
-        RTMP_VIDEO_CODECS
-            .into_iter()
+        protocol
+            .video_codecs()
+            .iter()
+            .copied()
             .filter(|codec| {
-                (*codec == "h264" || self.enhanced_rtmp)
+                (protocol != Rtmp || *codec == "h264" || self.enhanced_rtmp)
                     && self.video_encoders(codec).next().is_some()
             })
             .map(str::to_owned)

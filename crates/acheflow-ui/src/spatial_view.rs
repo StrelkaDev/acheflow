@@ -97,6 +97,18 @@ pub fn selected_transform(scene: &SpatialScene, id: u64) -> Option<&Transform> {
             .map(|o| &o.transform)
     }
 }
+pub(crate) fn selected_transform_mut(scene: &mut SpatialScene, id: u64) -> Option<&mut Transform> {
+    if id == 0 {
+        Some(&mut scene.camera.transform)
+    } else {
+        scene
+            .objects
+            .iter_mut()
+            .find(|object| object.id == id)
+            .map(|object| &mut object.transform)
+    }
+}
+
 pub fn project(camera: &Camera, point: Vec3, size: Vec2) -> Option<Vec2> {
     let clip = camera_matrix(camera, size.x / size.y) * point.extend(1.);
     if clip.w <= 0. || clip.z < 0. || clip.z > clip.w {

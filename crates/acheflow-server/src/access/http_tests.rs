@@ -90,6 +90,30 @@ fn fixture() -> (Directory, Arc<Access>, Router, String) {
             post(crate::live::manage_outputs).with_state(access.host.runtime.clone()),
         )
         .route(
+            "/api/live/mixer",
+            post(crate::live::edit_mixer).with_state(access.host.runtime.clone()),
+        )
+        .route(
+            "/api/live/take",
+            post(crate::live::take_scene).with_state(access.host.runtime.clone()),
+        )
+        .route(
+            "/api/live/source-preview",
+            post(crate::live::renew_source_preview).with_state(access.host.runtime.clone()),
+        )
+        .route(
+            "/api/live/sources",
+            post(crate::live::save_source).with_state(access.host.runtime.clone()),
+        )
+        .route(
+            "/api/live/output/profile",
+            post(crate::live::save_output_profile).with_state(access.host.runtime.clone()),
+        )
+        .route(
+            "/api/live/scenes",
+            post(crate::live::save_scene).with_state(access.host.runtime.clone()),
+        )
+        .route(
             "/api/control/executor",
             post(crate::client_bridge::studio).with_state(access.host.clone()),
         )
@@ -153,6 +177,99 @@ async fn paired(app: &Router, owner: &str, permissions: &[P]) -> PairResponse {
 }
 
 #[tokio::test]
+async fn source_preview_requires_media_control_permission() {
+    let (_directory, access, app, owner) = fixture();
+    let mut workspace = acheflow_media_api::workspace::Workspace::default();
+    workspace.add_source();
+    let request = serde_json::json!({"workspace_id": workspace.id, "source_id": 1});
+    let runtime = &access.host.runtime;
+    runtime.install(workspace, false).await.unwrap();
+    let viewer = paired(&app, &owner, &[P::StudioView]).await;
+    let path = "/api/live/source-preview";
+    let refused = call(
+        &app,
+        "POST",
+        path,
+        viewer.token.as_deref(),
+        request.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    assert!(runtime.inputs.lock().unwrap().is_empty());
+    let allowed = call(&app, "POST", path, Some(&owner), request, None).await;
+    assert_eq!(allowed.status(), StatusCode::OK);
+    assert!(runtime.inputs.lock().unwrap().contains_key(&1));
+    runtime.close().await;
+}
+
+#[tokio::test]
+async fn saving_an_output_profile_returns_the_revision_acknowledgment() {
+    use acheflow_media_api::{
+        live::{OutputProfile, OutputProfileRequest, OutputTarget},
+        workspace::{Orientation, Workspace},
+    };
+    let (_directory, access, app, owner) = fixture();
+    let mut workspace = Workspace::default();
+    let profile: OutputProfile = serde_json::from_value(serde_json::json!({
+        "name": "Test destination", "url": "rtmp://127.0.0.1/live", "key": "fixture",
+        "resolution": {"width": 320, "height": 180}, "quality": "Standard",
+        "codec": "h264", "encoder": null, "bitrate_kbps": 1000,
+        "bitrate_mode": "vbr", "keyframe_interval_secs": 2
+    }))
+    .unwrap();
+    let mut output = serde_json::to_value(&profile).unwrap();
+    output["enabled"] = false.into();
+    workspace
+        .horizontal
+        .outputs
+        .push(serde_json::from_value(output).unwrap());
+    let runtime = &access.host.runtime;
+    let status = crate::live::configure(
+        axum::extract::State(runtime.clone()),
+        Json(workspace.clone()),
+    )
+    .await
+    .unwrap()
+    .0;
+    let request = OutputProfileRequest {
+        workspace_id: workspace.id,
+        expected_revision: status.edit_revision,
+        target: OutputTarget {
+            orientation: Orientation::Horizontal,
+            index: 0,
+        },
+        profile: OutputProfile {
+            name: "Renamed destination".into(),
+            ..profile
+        },
+    };
+    let body = serde_json::to_value(request).unwrap();
+    let viewer = paired(&app, &owner, &[P::StudioView]).await;
+    let route = "/api/live/output/profile";
+    let denied = call(
+        &app,
+        "POST",
+        route,
+        viewer.token.as_deref(),
+        body.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    let response = call(&app, "POST", route, Some(&owner), body, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        value(response).await,
+        serde_json::json!({"revision": status.edit_revision + 1})
+    );
+    let current = runtime.workspace.read().unwrap();
+    let saved = &current.as_ref().unwrap().horizontal.outputs[0];
+    assert_eq!(saved.name, "Renamed destination");
+    assert!(!saved.enabled);
+}
+
+#[tokio::test]
 async fn every_api_boundary_requires_authentication_even_with_loopback_proxy_headers() {
     let (_directory, _access, app, _owner) = fixture();
     for (method, path) in [
@@ -164,9 +281,15 @@ async fn every_api_boundary_requires_authentication_even_with_loopback_proxy_hea
         ("POST", "/api/live/start"),
         ("POST", "/api/live/stop"),
         ("POST", "/api/live/output/restart"),
+        ("POST", "/api/live/mixer"),
+        ("POST", "/api/live/take"),
+        ("POST", "/api/live/sources"),
+        ("POST", "/api/live/scenes"),
+        ("POST", "/api/live/output/profile"),
         ("POST", "/api/live/outputs"),
         ("GET", "/api/live/preview/horizontal.jpg"),
         ("GET", "/api/live/source/1"),
+        ("POST", "/api/live/source-preview"),
         ("POST", "/api/control/executor"),
         ("GET", "/api/access/devices"),
         ("POST", "/api/access/invitations"),
@@ -634,6 +757,7 @@ async fn saved_configuration_is_private_and_import_requires_all_apply_rights() {
         .horizontal
         .outputs
         .push(acheflow_media_api::workspace::Output {
+            protocol: Default::default(),
             name: "Fixture destination".into(),
             url: "rtmp://destination.example/live".into(),
             key: "fixture-output-secret".into(),

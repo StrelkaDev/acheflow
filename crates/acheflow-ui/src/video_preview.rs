@@ -41,20 +41,25 @@ pub(crate) async fn wait_for_next_snapshot(started: Instant, fps: u32, received:
 }
 
 #[component]
-pub(crate) fn PreviewRate() -> Element {
+pub(crate) fn PreviewRate(#[props(default)] compact: bool) -> Element {
     let Some(mut catalog) = try_consume_context::<PreviewPreferences>() else {
         return rsx! {};
     };
+    let slider = rsx! {
+        crate::slider::Slider {
+            label:"Preview FPS",unit:" FPS",value:catalog.read().preview_fps() as i32,
+            min:1,max:MAX_PREVIEW_FPS as i32,reset:Some(DEFAULT_PREVIEW_FPS as i32),
+            change:move |fps:i32| catalog.write().set_preview_fps(fps as u32),
+        }
+    };
+    if compact {
+        return rsx! {div {class:"padded", {slider}}};
+    }
     rsx! {
         section {class:"panel",
             div {class:"panel-heading",h2 {"Preview"}}
-            div {class:"padded",
-                crate::slider::Slider {
-                    label:"Preview FPS",unit:" FPS",value:catalog.read().preview_fps() as i32,
-                    min:1,max:MAX_PREVIEW_FPS as i32,reset:Some(DEFAULT_PREVIEW_FPS as i32),
-                    change:move |fps:i32| catalog.write().set_preview_fps(fps as u32),
-                }
-                p {class:"form-help","Target refresh rate for video previews. Actual FPS depends on the source, server and connection."}
+            div {class:"padded", {slider}
+                p {class:"form-help","Studio previews sample up to the format FPS. Actual refresh depends on the source, server and connection."}
             }
         }
     }
@@ -64,6 +69,7 @@ pub(crate) fn PreviewRate() -> Element {
 pub fn VideoPreview(
     url: String,
     #[props(default = "live-preview")] class: &'static str,
+    #[props(default)] max_fps: Option<u32>,
     #[props(default)] notice: Option<Signal<Option<&'static str>>>,
 ) -> Element {
     let preferences = try_consume_context::<PreviewPreferences>();
@@ -76,7 +82,7 @@ pub fn VideoPreview(
         })
     });
     let mut version = use_signal(|| 0u64);
-    use_resource(use_reactive((&url,), move |(url,)| {
+    use_resource(use_reactive((&url, &max_fps), move |(url, max_fps)| {
         let latest = latest.clone();
         async move {
             let client = crate::server_access::client();
@@ -104,7 +110,7 @@ pub fn VideoPreview(
                     })
                 });
                 version.set(sequence);
-                let fps = preview_fps(preferences);
+                let fps = preview_fps(preferences).min(max_fps.unwrap_or(MAX_PREVIEW_FPS).max(1));
                 let fps = if notice.is_some() {
                     fps.min(acheflow_media_api::live::ENCODED_PREVIEW_SNAPSHOT_FPS)
                 } else {

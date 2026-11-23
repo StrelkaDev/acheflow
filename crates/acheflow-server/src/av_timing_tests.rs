@@ -204,6 +204,7 @@ async fn finish_capture(child: Child, file: &Path) {
 
 fn output(name: &str, url: String, resolution: Resolution) -> Output {
     Output {
+        protocol: Default::default(),
         name: name.into(),
         url,
         key: new_token(),
@@ -483,3 +484,6 @@ async fn live_manual_av_trim() {
     finish_capture(receiver, &file).await;
     server.await.unwrap();
 }
+
+#[path = "preview_load_tests.rs"]
+mod preview_load;

@@ -24,7 +24,7 @@ brew install ffmpeg openssl@3 pkg-config
 
 The macOS camera crate uses `xcrun` to compile its AVFoundation adapter with the
 macOS SDK. Check the active toolchain with `xcrun --sdk macosx --find clang`.
-For SRT input, select an [SRT-enabled FFmpeg](ffmpeg.md#srt-input).
+For SRT input or output, select an [SRT-enabled FFmpeg](ffmpeg.md#srt-input-and-output).
 
 Run the following commands from the repository root. If necessary, first run
 `source "$HOME/.cargo/env"` so Cargo, rustup and installed Rust tools are on PATH.
@@ -143,9 +143,11 @@ MCP has a separate authenticated loopback listener; media CORS does not grant MC
 ## First broadcast
 
 1. Create/select a workspace and connect to its server.
-2. Add an input in **Live / Sources**, then apply sources. For an RTMP or SRT
+2. Add an input in **Live / Sources**, then select **Activate workspace sources**.
+   If the workspace is already active, select **Add to server** on the new card.
+   For an RTMP or SRT
    publisher, macOS camera or macOS microphone, follow [source setup](live-pipeline.md#source-setup).
-3. Create a scene and add the source. Adjust layout/crop/effects; apply the scene.
+3. Create a scene, add the source and adjust layout, crop and effects. Select **Add scene to server** to save the scene.
 4. Set the scene mix in Live / Mixer. Track zero starts on Program; additional
    tracks need explicit routing.
 5. Configure destinations, resolution, FPS, bitrate mode and an available encoder

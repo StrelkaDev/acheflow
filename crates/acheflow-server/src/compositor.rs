@@ -6,8 +6,8 @@ use crate::{
 };
 use acheflow_media_api::{
     MediaCapabilities,
-    live::{FormatStatus, OutputState, OutputStatus},
-    workspace::{Orientation, Scene},
+    live::{FormatStatus, OutputPreviewProfile, OutputState, OutputStatus},
+    workspace::{Orientation, Output, Scene},
 };
 use image::RgbImage;
 use std::{
@@ -30,12 +30,11 @@ pub struct RunningFormat {
     pub frame: watch::Receiver<Arc<RgbImage>>,
     pub frames: Arc<AtomicU64>,
     pub outputs: Vec<Arc<Mutex<OutputStatus>>>,
-    pub(crate) preview_profiles: Vec<acheflow_media_api::live::OutputPreviewProfile>,
     pub(crate) preview_cache: Arc<tokio::sync::Mutex<crate::live::PreviewCache>>,
     encoded_previews: crate::encoded_preview::EncodedPreviews,
     output_workers: Vec<OutputWorker>,
     encoder_frame: watch::Receiver<crate::output::RenderedVideo>,
-    spec: crate::output::VideoSpec,
+    pub(crate) spec: crate::output::VideoSpec,
     audio_buses: Arc<Mutex<Vec<acheflow_media_api::audio::AudioBusStatus>>>,
     sync: Arc<FormatSync>,
     render: Arc<Mutex<RenderMonitor>>,
@@ -46,7 +45,7 @@ pub struct RunningFormat {
 }
 struct OutputWorker {
     index: usize,
-    config: acheflow_media_api::workspace::Output,
+    config: Output,
     audio: broadcast::Sender<Arc<crate::audio_mixer::PcmBlock>>,
     status: Arc<Mutex<OutputStatus>>,
     cancel: CancellationToken,
@@ -73,6 +72,7 @@ impl OutputWorker {
         frame: &watch::Receiver<crate::output::RenderedVideo>,
         capabilities: &MediaCapabilities,
         restart: bool,
+        configured: &Output,
     ) -> Result<(), String> {
         if !restart
             && matches!(
@@ -82,13 +82,28 @@ impl OutputWorker {
         {
             return Ok(());
         }
-        self.stop().await;
+        if let Err(error) = crate::live::validate_destination(configured, capabilities)
+            .and_then(|()| crate::output::validate_video_config(configured, spec.fps, capabilities))
         {
             let mut status = self.status.lock().unwrap();
+            if !matches!(status.state, OutputState::Starting | OutputState::Streaming) {
+                status.state = OutputState::Failed;
+            }
+            status.error = Some(error.clone());
+            return Err(error);
+        }
+        self.stop().await;
+        self.config.clone_from(configured);
+        {
+            let mut status = self.status.lock().unwrap();
+            status.protocol = configured.protocol;
             status.state = OutputState::Starting;
             status.reconnect_attempt = None;
             status.error = None;
             status.frames = 0;
+            status.encoding_fps = None;
+            status.realtime_speed = None;
+            status.track_timing = None;
             status.sent_bytes = 0;
             status.bitrate_kbps = 0.;
             status.repeated_video_frames = 0;
@@ -98,21 +113,16 @@ impl OutputWorker {
             status.hardware = false;
         }
         self.cancel = format_cancel.child_token();
-        let result = match crate::live::validate_destination(&self.config, capabilities) {
-            Ok(()) => {
-                crate::output::start(
-                    self.config.clone(),
-                    spec.clone(),
-                    capabilities,
-                    frame.clone(),
-                    self.audio.clone(),
-                    self.status.clone(),
-                    self.cancel.clone(),
-                )
-                .await
-            }
-            Err(error) => Err(error),
-        };
+        let result = crate::output::start(
+            self.config.clone(),
+            spec.clone(),
+            capabilities,
+            frame.clone(),
+            self.audio.clone(),
+            self.status.clone(),
+            self.cancel.clone(),
+        )
+        .await;
         match result {
             Ok(task) => {
                 self.task = Some(task);
@@ -153,9 +163,14 @@ impl RunningFormat {
         )
     }
 
+    pub(crate) fn invalidate_output_preview(&mut self, index: usize) {
+        self.encoded_previews.invalidate(index);
+    }
+
     pub async fn restart_output(
         &mut self,
         index: usize,
+        configured: &Output,
         capabilities: &MediaCapabilities,
     ) -> Result<(), String> {
         let worker = self
@@ -170,6 +185,7 @@ impl RunningFormat {
                 &self.encoder_frame,
                 capabilities,
                 true,
+                configured,
             )
             .await
     }
@@ -177,6 +193,7 @@ impl RunningFormat {
     pub async fn run_outputs(
         &mut self,
         index: Option<usize>,
+        configured: &[Output],
         capabilities: &MediaCapabilities,
         restart: bool,
     ) -> Vec<Result<(), String>> {
@@ -186,13 +203,16 @@ impl RunningFormat {
         futures_util::future::join_all(
             self.output_workers
                 .iter_mut()
-                .filter(|worker| index.is_none_or(|index| worker.index == index))
-                .map(|worker| worker.start(cancel, spec, frame, capabilities, restart)),
+                .filter(|worker| index.is_none_or(|index| index == worker.index))
+                .filter_map(|worker| configured.get(worker.index).map(|output| (worker, output)))
+                .map(|(worker, output)| {
+                    worker.start(cancel, spec, frame, capabilities, restart, output)
+                }),
         )
         .await
     }
 
-    pub fn status(&self, scene: Option<&Scene>) -> FormatStatus {
+    pub fn status(&self, scene: Option<&Scene>, configured: &[Output]) -> FormatStatus {
         FormatStatus {
             applied_scene: scene.map(|scene| acheflow_media_api::live::AppliedScene {
                 id: scene.id,
@@ -210,11 +230,33 @@ impl RunningFormat {
             error: self.error.lock().unwrap().clone(),
             orientation: self.orientation,
             frames: self.frames.load(Ordering::Relaxed),
-            preview_profiles: self.preview_profiles.clone(),
-            outputs: self
-                .outputs
+            preview_profiles: configured
                 .iter()
-                .map(|o| o.lock().unwrap().clone())
+                .enumerate()
+                .map(|(index, output)| OutputPreviewProfile {
+                    index,
+                    protocol: output.protocol,
+                    name: output.name.clone(),
+                    resolution: output.resolution.clone(),
+                    codec: output.codec.clone(),
+                    bitrate_kbps: output.bitrate_kbps,
+                    bitrate_mode: output.bitrate_mode,
+                    fps: self.spec.fps,
+                })
+                .collect(),
+            outputs: self
+                .output_workers
+                .iter()
+                .map(|worker| {
+                    let mut status = worker.status.lock().unwrap().clone();
+                    if let Some(saved) = configured.get(worker.index) {
+                        status.name.clone_from(&saved.name);
+                        status.restart_required =
+                            matches!(status.state, OutputState::Starting | OutputState::Streaming)
+                                && !saved.same_encoder_config(&worker.config);
+                    }
+                    status
+                })
                 .collect(),
         }
     }
@@ -365,22 +407,6 @@ pub async fn start(
         encoder_frame,
         frames,
         outputs: vec![],
-        preview_profiles: stream
-            .outputs
-            .iter()
-            .enumerate()
-            .map(
-                |(index, output)| acheflow_media_api::live::OutputPreviewProfile {
-                    index,
-                    name: output.name.clone(),
-                    resolution: output.resolution.clone(),
-                    codec: output.codec.clone(),
-                    bitrate_kbps: output.bitrate_kbps,
-                    bitrate_mode: output.bitrate_mode,
-                    fps,
-                },
-            )
-            .collect(),
         output_workers: vec![],
         preview_cache: Default::default(),
         encoded_previews: Default::default(),
@@ -401,12 +427,14 @@ pub async fn start(
     let mut destinations = vec![];
     for (index, output) in stream
         .outputs
-        .into_iter()
+        .iter()
+        .cloned()
         .enumerate()
         .filter(|(_, o)| o.enabled)
     {
         let (audio_tx, _) = broadcast::channel(8);
         let status = Arc::new(Mutex::new(OutputStatus {
+            protocol: output.protocol,
             index,
             sent_bytes: 0,
             bitrate_kbps: 0.,
@@ -417,11 +445,15 @@ pub async fn start(
             audio_bus: None,
             audio_meter: Default::default(),
             state: OutputState::Stopped,
+            restart_required: false,
             reconnect_attempt: None,
             repeated_video_frames: 0,
             inserted_audio_blocks: 0,
             reconnects: 0,
             frames: 0,
+            encoding_fps: None,
+            realtime_speed: None,
+            track_timing: None,
             error: None,
         }));
         destinations.push(crate::audio_mixer::Destination {
@@ -439,17 +471,16 @@ pub async fn start(
             task: None,
         });
     }
-    if !preview_only {
-        if let Some(error) = running
-            .run_outputs(None, capabilities, false)
+    if !preview_only
+        && let Some(error) = running
+            .run_outputs(None, &stream.outputs, capabilities, false)
             .await
             .into_iter()
             .find_map(Result::err)
-        {
-            running.cancel.cancel();
-            running.join().await;
-            return Err(error);
-        }
+    {
+        running.cancel.cancel();
+        running.join().await;
+        return Err(error);
     }
     running.tasks.push(tokio::spawn(crate::audio_mixer::run(
         runtime,

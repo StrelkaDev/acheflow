@@ -19,7 +19,7 @@ implemented features in the [roadmap](docs/roadmap.md).
 - Add merged chat and extension visual sources, with message CSS and entry/exit animations.
 - Mix audio from multiple sources and tracks with scene buses, stereo controls
   and per-track sync modes.
-- Broadcast horizontal and vertical formats to independent RTMP destinations,
+- Broadcast horizontal and vertical formats to independent RTMP and SRT destinations,
   with CBR/VBR profiles, encoder selection and per-output restart and reconnect.
 - Manage local or remote servers, saved workspaces, previews and traffic status.
 - Author client integrations and server logic as sandboxed Rust/WASM extensions.
@@ -55,7 +55,7 @@ cargo run -p acheflow --release --locked
 
 A working GPU backend is required for composition. If Cargo is missing from PATH,
 load the rustup environment with `source "$HOME/.cargo/env"`.
-For SRT sources, use an [FFmpeg build with SRT input](docs/ffmpeg.md#srt-input).
+For SRT sources or outputs, use an [SRT-enabled FFmpeg build](docs/ffmpeg.md#srt-input-and-output).
 
 To build and launch a complete macOS release app with `acheflow://` link
 registration, install Trunk and run from the repository root:

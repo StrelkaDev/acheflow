@@ -305,7 +305,13 @@ async fn authorize(
             principal.allows(P::ChatSend)
         }
         (&Method::GET, "/api/workspace") => true,
-        (&Method::POST, "/api/workspace/import") => principal.workspace_management(),
+        (&Method::POST, "/api/workspace/import" | "/api/live/output/profile") => {
+            principal.workspace_management()
+        }
+        (
+            &Method::POST,
+            "/api/live/mixer" | "/api/live/take" | "/api/live/sources" | "/api/live/scenes",
+        ) => principal.workspace_management(),
         (&Method::GET, "/api/access/session" | "/api/access/my-devices")
         | (&Method::POST, "/api/access/logout" | "/api/access/link-invitations")
         | (&Method::PUT, "/api/access/profile") => true,
@@ -327,6 +333,7 @@ async fn authorize(
             &Method::POST,
             "/api/media/capabilities"
             | "/api/live/stop"
+            | "/api/live/source-preview"
             | "/api/live/output/restart"
             | "/api/live/outputs",
         ) => principal.allows(P::MediaManage),

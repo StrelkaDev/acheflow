@@ -107,6 +107,62 @@ pub(super) async fn until(mut predicate: impl FnMut() -> bool) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires FFmpeg with libx264 and loopback TCP"]
+async fn real_rtmp_source_preview_activates_only_one_source_and_expires() {
+    use acheflow_media_api::live::SourcePreviewRequest;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let url = format!("rtmp://{address}/live");
+    let runtime = Runtime::new(Default::default(), address.to_string());
+    let _shutdown = runtime.shutdown.clone().drop_guard();
+    let mut workspace = Workspace::default();
+    workspace.add_source();
+    workspace.add_source();
+    for source in &mut workspace.sources {
+        source.url.clone_from(&url);
+    }
+    let key = workspace.sources[0].key.clone();
+    let request = SourcePreviewRequest {
+        workspace_id: workspace.id.clone(),
+        source_id: workspace.sources[0].id,
+    };
+    runtime.install(workspace, false).await.unwrap();
+    let revision = runtime.saved_state().0;
+    let server_runtime = runtime.clone();
+    let server =
+        tokio::spawn(async move { rtmp::serve(listener, server_runtime, None).await.unwrap() });
+    let renew = || live::renew_source_preview(State(runtime.clone()), Json(request.clone()));
+    let _ = renew().await.unwrap();
+    let input = runtime.inputs.lock().unwrap()[&1].clone();
+    let mut publisher = publisher(&url, &key, "red", 440);
+    until(|| input.status().width == Some(160)).await;
+    let _ = renew().await.unwrap();
+    assert!(Arc::ptr_eq(&input, &runtime.inputs.lock().unwrap()[&1]));
+    let preview = live::source_preview(
+        State(runtime.clone()),
+        axum::extract::Path(1),
+        axum::extract::Query(std::collections::HashMap::from([(
+            "workspace".into(),
+            request.workspace_id,
+        )])),
+    )
+    .await;
+    assert_eq!(preview.status(), axum::http::StatusCode::OK);
+    assert_eq!(preview.headers()["x-frame-width"], "160");
+    let status = runtime.status().await;
+    assert_eq!(status.sources.len(), 1);
+    assert!(!status.activated);
+    assert!(status.formats.is_empty());
+    until(|| runtime.inputs.lock().unwrap().is_empty()).await;
+    assert_eq!(runtime.saved_state().0, revision);
+    until(|| !input.connected.load(Ordering::Acquire)).await;
+    let _ = publisher.kill().await;
+    runtime.close().await;
+    server.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires FFmpeg with libx264 and local TCP; run explicitly"]
 async fn incoming_frames_keep_native_size_across_reconnects() {
     let mut workspace = Workspace::default();
@@ -181,6 +237,140 @@ async fn real_rtmp_tokens_scene_audio_reposition_reconnect_and_independent_outpu
 #[ignore = "requires FFmpeg, VideoToolbox hardware, Metal and local TCP; run explicitly"]
 async fn real_rtmp_videotoolbox_output_reports_hardware_and_delivers_media() {
     output_pipeline("h264_videotoolbox").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires FFmpeg with libx264 and SRT, loopback TCP and UDP"]
+async fn real_srt_output_delivers_encrypted_mpeg_ts_and_has_encoded_preview() {
+    use acheflow_media_api::{live::OutputState, visual::SourceKind, workspace::OutputProtocol};
+
+    let capabilities = crate::ffmpeg::discover().await;
+    assert!(capabilities.srt_output && capabilities.srt_input);
+    let capabilities = Arc::new(tokio::sync::Mutex::new(capabilities));
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let address = socket.local_addr().unwrap();
+    drop(socket);
+
+    let mut sink_workspace = Workspace::default();
+    sink_workspace.add_source();
+    sink_workspace.sources[0].kind = SourceKind::Srt {
+        port: address.port(),
+    };
+    let key = sink_workspace.sources[0].key.clone();
+    let sink = Runtime::new(capabilities.clone(), "127.0.0.1:0".into());
+    let _sink_guard = sink.shutdown.clone().drop_guard();
+    let _ = live::configure(State(sink.clone()), Json(sink_workspace))
+        .await
+        .unwrap();
+    let sink_input = sink.inputs.lock().unwrap()[&1].clone();
+
+    let mut workspace = Workspace::default();
+    workspace.add_source();
+    let scene_id = workspace.add_scene(Orientation::Horizontal);
+    workspace.add_layer(scene_id, workspace.sources[0].id);
+    workspace.resize_base(
+        Orientation::Horizontal,
+        Resolution {
+            width: 320,
+            height: 180,
+        },
+    );
+    workspace.horizontal.fps = 20;
+    workspace.horizontal.outputs.push(Output {
+        protocol: OutputProtocol::Srt,
+        name: "SRT sink".into(),
+        url: format!("srt://{address}?latency=120000"),
+        key,
+        resolution: Resolution {
+            width: 320,
+            height: 180,
+        },
+        quality: "Custom".into(),
+        codec: "h264".into(),
+        encoder: Some("libx264".into()),
+        bitrate_kbps: 500,
+        bitrate_mode: Default::default(),
+        keyframe_interval_secs: 1,
+        enabled: true,
+        audio: Default::default(),
+    });
+    let (runtime, task, url) = server(workspace, capabilities).await;
+    let _runtime_guard = runtime.shutdown.clone().drop_guard();
+    let saved = runtime.workspace.read().unwrap().clone().unwrap();
+    let mut input = publisher(&url, &saved.sources[0].key, "red", 440);
+    let Json(status) = live::start(
+        State(runtime.clone()),
+        Json(StartRequest {
+            workspace: saved,
+            formats: vec![Orientation::Horizontal],
+            preview_only: false,
+            output: None,
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status.formats[0].outputs[0].protocol, OutputProtocol::Srt);
+    let output = runtime.formats.lock().await[0].outputs[0].clone();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let status = sink_input.status();
+            if status.width == Some(320)
+                && status.height == Some(180)
+                && status.audio
+                && output.lock().unwrap().state == OutputState::Streaming
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "SRT destination: {:?}, receiver: {:?}",
+            output.lock().unwrap(),
+            sink_input.status()
+        )
+    });
+    assert!(output.lock().unwrap().sent_bytes > 0);
+    if std::env::var_os("ACHEFLOW_ENCODER_PROFILE").is_some_and(|value| value == "1") {
+        until(|| {
+            let status = output.lock().unwrap();
+            status.encoding_fps.is_some_and(|fps| fps > 0.)
+                && status.realtime_speed.is_some_and(|speed| speed > 0.)
+                && status
+                    .track_timing
+                    .as_ref()
+                    .is_some_and(|timing| timing.video.is_some() && timing.audio.is_some())
+        })
+        .await;
+    }
+
+    let response = tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            let response = live::preview(
+                State(runtime.clone()),
+                axum::extract::Path("horizontal.jpg".into()),
+                axum::extract::Query(std::collections::HashMap::from([
+                    ("output".into(), "0".into()),
+                    ("mode".into(), "encoded".into()),
+                ])),
+            )
+            .await;
+            if response.status() != axum::http::StatusCode::ACCEPTED {
+                break response;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(response.headers()["x-frame-width"], "320");
+    let _ = input.kill().await;
+    runtime.close().await;
+    task.await.unwrap();
+    sink.close().await;
 }
 
 async fn restart_failed_output(
@@ -343,6 +533,7 @@ async fn output_pipeline(encoder: &str) {
         },
     ];
     workspace.horizontal.outputs.push(Output {
+        protocol: Default::default(),
         name: "Working sink".into(),
         url: sink_url.clone(),
         key: sink_token,
@@ -552,6 +743,33 @@ async fn output_pipeline(encoder: &str) {
         "source audio did not survive RTMP encode/decode"
     );
     let before = runtime.formats.lock().await[0].frames.clone();
+    use acheflow_media_api::live::{SceneContent, SceneEdit, SceneSettingsRequest};
+    let scene_request = |edit| SceneSettingsRequest {
+        workspace_id: workspace.id.clone(),
+        expected_revision: runtime.saved_state().0,
+        scene_id: scene,
+        edit,
+    };
+    let denied = live::save_scene(
+        State(runtime.clone()),
+        Json(scene_request(SceneEdit::Remove)),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(denied.0, axum::http::StatusCode::CONFLICT);
+    let save_content = |config: &Workspace| {
+        let content = SceneContent::of(
+            config
+                .scenes
+                .iter()
+                .find(|entry| entry.id == scene)
+                .unwrap(),
+        );
+        live::save_scene(
+            State(runtime.clone()),
+            Json(scene_request(SceneEdit::Content(content))),
+        )
+    };
     workspace
         .scenes
         .iter_mut()
@@ -560,15 +778,13 @@ async fn output_pipeline(encoder: &str) {
         .layers[0]
         .x = 160;
     workspace.scenes[0].layers[1].x = 0;
-    let _ = configure_current(State(runtime.clone()), Json(workspace.clone()))
-        .await
-        .unwrap();
+    let Json(_) = save_content(&workspace).await.unwrap();
     until(|| colors(&sink, "blue", "red")).await;
     assert!(Arc::ptr_eq(
         &before,
         &runtime.formats.lock().await[0].frames
     ));
-    // Apply crop, alpha blending and z-order edits without restarting encoders.
+    // Save crop, alpha blending and z-order edits without restarting encoders.
     let mut edited = workspace.clone();
     for layer in &mut edited.scenes[0].layers {
         layer.x = 0;
@@ -585,9 +801,7 @@ async fn output_pipeline(encoder: &str) {
             amount: 50,
             enabled: true,
         });
-    let _ = configure_current(State(runtime.clone()), Json(edited.clone()))
-        .await
-        .unwrap();
+    let Json(_) = save_content(&edited).await.unwrap();
     until(|| {
         let inputs = sink.inputs.lock().unwrap();
         let input = &inputs[&1];
@@ -599,13 +813,9 @@ async fn output_pipeline(encoder: &str) {
     })
     .await;
     edited.move_layer(scene, 0, 1);
-    let _ = configure_current(State(runtime.clone()), Json(edited))
-        .await
-        .unwrap();
+    let Json(_) = save_content(&edited).await.unwrap();
     until(|| colors(&sink, "red", "red")).await;
-    let _ = configure_current(State(runtime.clone()), Json(workspace.clone()))
-        .await
-        .unwrap();
+    let Json(_) = save_content(&workspace).await.unwrap();
     until(|| colors(&sink, "blue", "red")).await;
     assert!(Arc::ptr_eq(
         &before,
@@ -685,6 +895,84 @@ async fn output_pipeline(encoder: &str) {
     .0;
     assert_eq!(restarted.formats[0].outputs[1].reconnect_attempt, None);
     until(|| colors(&recovered, "blue", "red")).await;
+    use acheflow_media_api::live::{OutputProfile, OutputProfileRequest};
+    let previous = runtime.status().await;
+    let other_before = previous.formats[0].outputs[1].frames;
+    let output_before = previous.formats[0].outputs[0].frames;
+    let compositor_frames = runtime.formats.lock().await[0].frames.clone();
+    let mut profile = OutputProfile::of(&workspace.horizontal.outputs[0]);
+    profile.bitrate_kbps += 100;
+    profile.keyframe_interval_secs = 3;
+    profile.resolution = Resolution {
+        width: 352,
+        height: 198,
+    };
+    let target = OutputTarget {
+        orientation: Orientation::Horizontal,
+        index: 0,
+    };
+    let save = |expected_revision| {
+        live::save_output_profile(
+            State(runtime.clone()),
+            Json(OutputProfileRequest {
+                workspace_id: workspace.id.clone(),
+                expected_revision,
+                target,
+                profile: profile.clone(),
+            }),
+        )
+    };
+    let saved = save(previous.edit_revision).await.unwrap().0;
+    assert_eq!(saved.revision, previous.edit_revision + 1);
+    assert_eq!(
+        save(previous.edit_revision).await.unwrap_err().0,
+        axum::http::StatusCode::CONFLICT
+    );
+    let pending = runtime.status().await;
+    assert_eq!(
+        pending.formats[0].preview_profiles[0].bitrate_kbps,
+        profile.bitrate_kbps
+    );
+    assert_eq!(pending.formats[0].outputs[0].state, OutputState::Streaming);
+    assert!(pending.formats[0].outputs[0].frames >= output_before);
+    assert!(pending.formats[0].outputs[0].restart_required);
+    assert!(!pending.formats[0].outputs[1].restart_required);
+    let preview = live::preview(
+        State(runtime.clone()),
+        axum::extract::Path("horizontal.jpg".into()),
+        axum::extract::Query(std::collections::HashMap::from([(
+            "output".into(),
+            "0".into(),
+        )])),
+    )
+    .await;
+    assert_eq!(preview.status(), axum::http::StatusCode::OK);
+    let jpeg = axum::body::to_bytes(preview.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    assert_eq!(image::load_from_memory(&jpeg).unwrap().width(), 352);
+    let sink_input = sink.inputs.lock().unwrap()[&1].clone();
+    assert_eq!(sink_input.status().width, Some(320));
+    let restarted = live::manage_outputs(
+        State(runtime.clone()),
+        Json(ManageOutputsRequest {
+            workspace_id: workspace.id.clone(),
+            action: OutputAction::Restart,
+            output: Some(target),
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert!(!restarted.formats[0].outputs[0].restart_required);
+    assert!(restarted.formats[0].outputs[1].frames >= other_before);
+    until(|| healthy_output.lock().unwrap().state == OutputState::Streaming).await;
+    until(|| sink_input.status().width == Some(352)).await;
+    until(|| colors(&sink, "blue", "red")).await;
+    assert!(Arc::ptr_eq(
+        &compositor_frames,
+        &runtime.formats.lock().await[0].frames
+    ));
     let mut changed_profile = workspace.clone();
     changed_profile.horizontal.fps = 30;
     assert!(
@@ -697,11 +985,41 @@ async fn output_pipeline(encoder: &str) {
     until(|| colors(&sink, "black", "red")).await;
     blue = publisher(&url, &workspace.sources[1].key, "blue", 880);
     until(|| colors(&sink, "blue", "red")).await;
+    use acheflow_media_api::live::{SourceCapture, SourceEdit, SourceSettingsRequest};
+    let (red_input, blue_input) = {
+        let inputs = runtime.inputs.lock().unwrap();
+        (inputs[&1].clone(), inputs[&2].clone())
+    };
+    let source_request = |edit| SourceSettingsRequest {
+        workspace_id: workspace.id.clone(),
+        expected_revision: runtime.saved_state().0,
+        source_id: 2,
+        edit,
+    };
+    let Json(_) = live::save_source(
+        State(runtime.clone()),
+        Json(source_request(SourceEdit::Name("Renamed input".into()))),
+    )
+    .await
+    .unwrap();
+    assert!(Arc::ptr_eq(
+        &blue_input,
+        &runtime.inputs.lock().unwrap()[&2]
+    ));
+    assert!(blue_input.connected.load(Ordering::Relaxed));
     let old_token = workspace.sources[1].key.clone();
-    workspace.sources[1].key = acheflow_media_api::workspace::new_token();
-    let _ = configure_current(State(runtime.clone()), Json(workspace.clone()))
-        .await
-        .unwrap();
+    let mut capture = SourceCapture::of(&workspace.sources[1]);
+    capture.key = acheflow_media_api::workspace::new_token();
+    let Json(_) = live::save_source(
+        State(runtime.clone()),
+        Json(source_request(SourceEdit::Capture(capture.clone()))),
+    )
+    .await
+    .unwrap();
+    workspace.sources[1].key = capture.key;
+    let input = runtime.inputs.lock().unwrap()[&1].clone();
+    assert!(Arc::ptr_eq(&red_input, &input));
+    assert!(input.connected.load(Ordering::Relaxed));
     until(|| colors(&sink, "black", "red")).await;
     assert!(
         runtime

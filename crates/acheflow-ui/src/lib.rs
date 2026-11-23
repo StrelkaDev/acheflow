@@ -35,6 +35,7 @@ mod server_workspace;
 mod slider;
 #[cfg(test)]
 mod slider_tests;
+mod source_settings;
 mod sparks;
 mod spatial_editor;
 mod spatial_overlay;

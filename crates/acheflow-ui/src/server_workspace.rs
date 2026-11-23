@@ -105,7 +105,7 @@ pub(crate) fn SavedWorkspace(mut project: Signal<Workspace>, open: Signal<bool>)
                             Ok(saved)=>{
                                 if let Some(sync)=try_consume_context::<crate::workspace_sync::WorkspaceSync>() {sync.applied(&review.workspace,saved.revision);}
                                 if project.peek().id==review.workspace.id && acheflow_media_api::server_workspace::fingerprint(&project.peek()).ok()==acheflow_media_api::server_workspace::fingerprint(&review.workspace).ok(){project.write().edit_revision=saved.revision;}
-                                state.set(Some(saved));notice.set("Workspace saved on the server. Apply sources when you are ready to activate it.".into());
+                                state.set(Some(saved));notice.set("Workspace saved on the server. Activate workspace sources when ready.".into());
                             },
                             Err(e)=>{error.set(e);*refresh.write()+=1;}
                         }

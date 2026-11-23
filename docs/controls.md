@@ -109,7 +109,16 @@ Live / Scenes has two view modes:
 Drag empty space or Alt + drag to orbit; Shift + drag pans, and the wheel zooms.
 `F` / Frame focuses the selection; Front / Right / Top choose orthographic working
 views. Navigating the editor never changes the broadcast camera or serialized scene.
-Edits stay in the workspace draft until **Apply scene** publishes them.
+Edits stay in the workspace draft until **Save scene** or **Update on air** publishes them.
+
+**Undo** and **Redo** in the scene header share a history across the 2D canvas,
+secondary viewport layers, and the 3D editor. They cover layer creation,
+removal, stacking, CSS and effects, scene renames, camera and object inspector
+edits, and transforms. Dragging an axis creates a single undo step on release.
+With a viewport focused, use **Cmd/Ctrl+Z** and **Cmd/Ctrl+Shift+Z**, or
+**Ctrl+Y** for redo. Text fields keep their own text undo. Each scene retains
+its history when switching scenes within the open workspace. A conflicting
+change can disable an undo or redo step.
 
 The primary viewport's **Edit viewport content** opens its flat layer canvas and
 CSS/crop/effect inspectors. These editors remain mounted while switching objects
@@ -120,6 +129,9 @@ primary viewport. Object scale controls world dimensions; canvas dimensions cont
 content resolution.
 
 **+ Chat** adds an independent chat object backed by a viewport with one chat layer.
+Undo removes both the object and its source from the draft. Redo restores their
+original IDs and settings. An edited source or a source used outside that object
+blocks its removal through history.
 Select it to edit its transform and chat settings in the scene inspector. Chat
 settings belong to the source and affect all layers referencing it. **Show test
 messages** toggles local preview examples (roles, long text, line breaks and Unicode)

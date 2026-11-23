@@ -87,6 +87,7 @@ pub fn FfmpegStatus(capabilities: Capabilities, mut refresh: Signal<u32>) -> Ele
                     strong {{caps.version.as_deref().unwrap_or("FFmpeg")}}
                     p {"{caps.encoders.iter().filter(|e|e.media_type==MediaType::Video).count()} video encoders · {caps.encoders.iter().filter(|e|e.media_type==MediaType::Audio).count()} audio encoders"}
                     p {if caps.rtmp_output && caps.flv_muxer {"RTMP output / FLV muxer detected"}else{"This FFmpeg build cannot publish RTMP / FLV"}}
+                    p {if caps.srt_output {"SRT output / MPEG-TS muxer detected"}else{"This FFmpeg build cannot publish SRT / MPEG-TS"}}
                     p {class:"form-help","Software / Hardware types are reported by FFmpeg. Hardware availability is checked when encoding starts."}
                     if inventory() {div {class:"encoder-inventory",role:"table","aria-label":"FFmpeg encoders",
                         for encoder in caps.encoders.iter() {div {class:"encoder-inventory-row",role:"row",
@@ -118,7 +119,7 @@ pub fn EncoderPicker(
     };
     let offered = capabilities
         .as_ref()
-        .map(|caps| caps.rtmp_codecs())
+        .map(|caps| caps.output_codecs(output.protocol))
         .unwrap_or_default();
     let encoders = capabilities
         .as_ref()
@@ -174,8 +175,8 @@ pub fn EncoderPicker(
             }
             if let Some(encoder)=selected.as_ref(){span {class:"form-help","Selected: {encoder.name} · ",if encoder.hardware {"Hardware"}else{"Software"},if output.encoder.is_none(){" (automatic default)"}}}
             if !encoders.iter().any(|e|e.hardware){span {class:"form-help","No hardware encoder detected for this codec."}}
-            if output.codec!="h264" {span {class:"form-help","Enhanced RTMP · destination must support this codec"}}
-        }else {span {class:"field-error",role:"status","Saved codec: {codec_label(&output.codec)}. No matching RTMP encoder detected on this server."}}
+            if output.protocol==crate::project::OutputProtocol::Rtmp && output.codec!="h264" {span {class:"form-help","Enhanced RTMP · destination must support this codec"}}
+        }else {span {class:"field-error",role:"status","Saved codec: {codec_label(&output.codec)}. No matching {output.protocol.label()} encoder detected on this server."}}
         if !encoder_available {span {class:"field-error",role:"status","Saved encoder is unavailable on this server. Choose another encoder."}}
     }}
 }

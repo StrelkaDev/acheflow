@@ -187,6 +187,14 @@ async fn serve(
         .with_state(settings);
     let live_routes = Router::new()
         .route("/api/live/status", get(live::status))
+        .route("/api/live/mixer", axum::routing::post(live::edit_mixer))
+        .route("/api/live/sources", axum::routing::post(live::save_source))
+        .route(
+            "/api/live/output/profile",
+            axum::routing::post(live::save_output_profile),
+        )
+        .route("/api/live/scenes", axum::routing::post(live::save_scene))
+        .route("/api/live/take", axum::routing::post(live::take_scene))
         .route("/api/live/stop", axum::routing::post(live::stop))
         .route(
             "/api/live/output/restart",
@@ -197,6 +205,10 @@ async fn serve(
             axum::routing::post(live::manage_outputs),
         )
         .route("/api/live/preview/{format}", get(live::preview))
+        .route(
+            "/api/live/source-preview",
+            axum::routing::post(live::renew_source_preview),
+        )
         .route("/api/live/source/{id}", get(live::source_preview))
         .with_state(runtime.clone());
     let app = Router::new()

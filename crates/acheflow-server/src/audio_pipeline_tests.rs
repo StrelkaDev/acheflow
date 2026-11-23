@@ -4,7 +4,11 @@ use crate::{
     live,
     pipeline_tests::{configure_current, server, until},
 };
-use acheflow_media_api::{audio::*, live::StartRequest, workspace::*};
+use acheflow_media_api::{
+    audio::*,
+    live::{StartRequest, TakeSceneRequest},
+    workspace::*,
+};
 use axum::{Json, extract::State};
 use std::{
     collections::BTreeMap,
@@ -17,7 +21,7 @@ use tokio::{
     sync::broadcast,
 };
 
-fn publish(url: &str, key: &str, tones: &[[u32; 2]]) -> Child {
+fn publish(url: &str, key: &str, color: &str, tones: &[[u32; 2]]) -> Child {
     let mut c = Command::new(crate::ffmpeg::executable());
     c.args([
         "-hide_banner",
@@ -28,8 +32,8 @@ fn publish(url: &str, key: &str, tones: &[[u32; 2]]) -> Child {
         "-f",
         "lavfi",
         "-i",
-        "color=c=red:s=160x90:r=10",
     ]);
+    c.arg(format!("color=c={color}:s=160x90:r=10"));
     for [left, right] in tones {
         c.args(["-f", "lavfi", "-i"]).arg(format!(
             "aevalsrc=0.12*sin(2*PI*{left}*t)|0.12*sin(2*PI*{right}*t):s=48000"
@@ -181,6 +185,7 @@ async fn real_scene_mixer_multitrack_sources_and_live_destination_routes() {
     });
     for (index, source) in sink_sources.iter().enumerate() {
         w.horizontal.outputs.push(Output {
+            protocol: Default::default(),
             name: format!("Sink {index}"),
             url: sink_url.clone(),
             key: source.key.clone(),
@@ -201,8 +206,8 @@ async fn real_scene_mixer_multitrack_sources_and_live_destination_routes() {
     let (runtime, task, url) = server(w, caps).await;
     let _shutdown = runtime.shutdown.clone().drop_guard();
     let mut w = runtime.workspace.read().unwrap().clone().unwrap();
-    let mut multi = publish(&url, &w.sources[0].key, &[[440, 660], [880, 1100]]);
-    let mut single = publish(&url, &w.sources[1].key, &[[1320, 1540]]);
+    let mut multi = publish(&url, &w.sources[0].key, "red", &[[440, 660], [880, 1100]]);
+    let mut single = publish(&url, &w.sources[1].key, "blue", &[[1320, 1540]]);
     until(|| {
         let inputs = runtime.inputs.lock().unwrap();
         inputs[&1].audio_tracks.lock().unwrap().len() == 2
@@ -220,6 +225,21 @@ async fn real_scene_mixer_multitrack_sources_and_live_destination_routes() {
     )
     .await
     .unwrap();
+    let video_is = |channel: usize| {
+        sink.inputs.lock().unwrap()[&1]
+            .frame
+            .read()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|frame| {
+                let pixel = frame
+                    .image
+                    .get_pixel(frame.image.width() / 2, frame.image.height() / 2)
+                    .0;
+                pixel[channel] > 160 && pixel[2 - channel] < 50
+            })
+    };
+    until(|| video_is(0)).await;
     signal(&mut first_audio, [Some(440.), Some(660.)], &[880., 1100.]).await;
     signal(
         &mut second_audio,
@@ -231,6 +251,41 @@ async fn real_scene_mixer_multitrack_sources_and_live_destination_routes() {
     signal(&mut first_audio, [Some(1320.), Some(1540.)], &[880., 1100.]).await;
     let frames = runtime.formats.lock().await[0].frames.clone();
     let before = frames.load(Ordering::Relaxed);
+    for muted in [true, false] {
+        let Json(ack) = live::edit_mixer(
+            State(runtime.clone()),
+            Json(MixerRequest {
+                workspace_id: w.id.clone(),
+                expected_revision: runtime.saved_state().0,
+                edits: vec![MixerEdit::Bus {
+                    scene,
+                    bus: 2,
+                    change: BusChange::Mute(muted),
+                }],
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(runtime.saved_state().0, ack.revision);
+        let tones = if muted {
+            [None, None]
+        } else {
+            [Some(880.), Some(1100.)]
+        };
+        signal(&mut second_audio, tones, &[440., 660., 1320., 1540.]).await;
+        signal(&mut first_audio, [Some(440.), Some(660.)], &[880., 1100.]).await;
+        assert_eq!(
+            runtime.status().await.formats[0]
+                .applied_scene
+                .as_ref()
+                .map(|scene| scene.id),
+            Some(scene)
+        );
+        assert!(Arc::ptr_eq(
+            &frames,
+            &runtime.formats.lock().await[0].frames
+        ));
+    }
     w.horizontal.outputs[0].audio.scene_buses.insert(scene, 2);
     let _ = configure_current(State(runtime.clone()), Json(w.clone()))
         .await
@@ -257,10 +312,40 @@ async fn real_scene_mixer_multitrack_sources_and_live_destination_routes() {
     )
     .await;
     w.horizontal.outputs[0].audio.muted = false;
-    w.set_active(Orientation::Horizontal, Some(other));
     let _ = configure_current(State(runtime.clone()), Json(w.clone()))
         .await
         .unwrap();
+    let revision = runtime.saved_state().0;
+    let take = |orientation, scene_id, expected_revision| TakeSceneRequest {
+        workspace_id: w.id.clone(),
+        orientation,
+        scene_id,
+        expected_revision,
+    };
+    let rejected = live::take_scene(
+        State(runtime.clone()),
+        Json(take(Orientation::Horizontal, u32::MAX, revision)),
+    )
+    .await;
+    assert!(rejected.is_err());
+    let Json(ack) = live::take_scene(
+        State(runtime.clone()),
+        Json(take(Orientation::Horizontal, other, revision)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(ack.revision, revision + 1);
+    let rejected = live::take_scene(
+        State(runtime.clone()),
+        Json(take(Orientation::Horizontal, scene, revision)),
+    )
+    .await;
+    assert_eq!(rejected.unwrap_err().0, axum::http::StatusCode::CONFLICT);
+    assert!(Arc::ptr_eq(
+        &frames,
+        &runtime.formats.lock().await[0].frames
+    ));
+    until(|| video_is(2)).await;
     signal(
         &mut first_audio,
         [None, Some(1540.)],
@@ -281,7 +366,7 @@ async fn real_scene_mixer_multitrack_sources_and_live_destination_routes() {
             .load(Ordering::Acquire)
     })
     .await;
-    single = publish(&url, &w.sources[1].key, &[[1320, 1540]]);
+    single = publish(&url, &w.sources[1].key, "blue", &[[1320, 1540]]);
     signal(
         &mut first_audio,
         [None, Some(1540.)],

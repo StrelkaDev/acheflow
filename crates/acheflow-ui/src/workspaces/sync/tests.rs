@@ -18,6 +18,174 @@ fn remote(revision: u64) -> Workspace {
         ..Default::default()
     }
 }
+
+#[test]
+fn mixer_ack_keeps_scene_selection_and_newer_fader_edits_local() {
+    use acheflow_media_api::{
+        audio::{BusChange, MixerEdit},
+        workspace::Orientation,
+    };
+    let mut server = remote(1);
+    let program = server.add_scene(Orientation::Horizontal);
+    let preview = server.add_scene(Orientation::Horizontal);
+    server.set_active(Orientation::Horizontal, Some(program));
+    let mut catalog = Catalog::default();
+    let original = catalog.current().clone();
+    let mut local = catalog
+        .sync_server(&original, &state(server.clone(), true))
+        .unwrap()
+        .unwrap()
+        .project;
+    local.set_active(Orientation::Horizontal, Some(preview));
+    local.scenes[0].audio.buses[0].gain = 122;
+    local.scenes[0].name = "Unsaved scene rename".into();
+    let edit = MixerEdit::Bus {
+        scene: program,
+        bus: 1,
+        change: BusChange::Gain(113),
+    };
+    edit.apply(&mut server).unwrap();
+    server.edit_revision = 2;
+    let request = MixerRequest {
+        workspace_id: local.id.clone(),
+        expected_revision: 1,
+        edits: vec![edit],
+    };
+    assert!(catalog.applied_mixer(&local, &request, MixerAck { revision: 2 }, "fixture"));
+    local.edit_revision = 2;
+    let update = catalog
+        .sync_server(&local, &state(server, true))
+        .unwrap()
+        .unwrap();
+    assert!(!update.conflict);
+    assert_eq!(
+        update.project.active(Orientation::Horizontal),
+        Some(preview)
+    );
+    assert_eq!(update.project.scenes[0].audio.buses[0].gain, 122);
+    assert_eq!(update.project.scenes[0].name, "Unsaved scene rename");
+}
+
+#[test]
+fn take_ack_saves_only_that_formats_scene_selection() {
+    use acheflow_media_api::{live::TakeSceneRequest, workspace::Orientation};
+    let mut server = remote(1);
+    let first = server.add_scene(Orientation::Horizontal);
+    let second = server.add_scene(Orientation::Horizontal);
+    let vertical = server.add_scene(Orientation::Vertical);
+    let mut catalog = Catalog::default();
+    let original = catalog.current().clone();
+    let mut local = catalog
+        .sync_server(&original, &state(server.clone(), true))
+        .unwrap()
+        .unwrap()
+        .project;
+    assert!(catalog.can_take_scene(&local, Orientation::Horizontal, second));
+    assert!(!catalog.can_take_scene(&local, Orientation::Horizontal, vertical));
+    local
+        .scenes
+        .iter_mut()
+        .find(|scene| scene.id == second)
+        .unwrap()
+        .name = "Local scene edits".into();
+    assert!(!catalog.can_take_scene(&local, Orientation::Horizontal, second));
+    let request = TakeSceneRequest {
+        workspace_id: local.id.clone(),
+        expected_revision: 1,
+        orientation: Orientation::Horizontal,
+        scene_id: second,
+    };
+    assert_eq!(server.active(Orientation::Horizontal), Some(first));
+    assert!(catalog.applied_delta(&local, 1, 2, "fixture", |base| request.apply(base)));
+    request.apply(&mut server).unwrap();
+    server.edit_revision = 2;
+    request.apply(&mut local).unwrap();
+    local.edit_revision = 2;
+    let update = catalog
+        .sync_server(&local, &state(server, true))
+        .unwrap()
+        .unwrap();
+    assert!(!update.conflict);
+    assert_eq!(update.project.active(Orientation::Horizontal), Some(second));
+    assert_eq!(update.project.active(Orientation::Vertical), Some(vertical));
+    assert_eq!(
+        update
+            .project
+            .scenes
+            .iter()
+            .find(|scene| scene.id == second)
+            .unwrap()
+            .name,
+        "Local scene edits"
+    );
+}
+
+#[test]
+fn saving_source_name_does_not_acknowledge_a_draft_capture_change() {
+    use acheflow_media_api::live::SourceEdit;
+    let mut server = remote(1);
+    server.add_source();
+    let mut catalog = Catalog::default();
+    let original = catalog.current().clone();
+    let mut local = catalog
+        .sync_server(&original, &state(server.clone(), true))
+        .unwrap()
+        .unwrap()
+        .project;
+    let saved_key = server.sources[0].key.clone();
+    local.sources[0].key = "pending-configuration".into();
+    let edit = SourceEdit::Name("Renamed".into());
+    edit.apply(&mut local, 1).unwrap();
+    edit.apply(&mut server, 1).unwrap();
+    server.edit_revision = 2;
+    assert!(catalog.applied_delta(&local, 1, 2, "fixture", |base| {
+        edit.apply(base, 1).map(|_| ())
+    }));
+    assert_eq!(
+        catalog.editable_base(&local).unwrap().sources[0].key,
+        saved_key
+    );
+    local.edit_revision = 2;
+    let update = catalog
+        .sync_server(&local, &state(server, true))
+        .unwrap()
+        .unwrap();
+    assert!(!update.conflict);
+    assert_eq!(update.project.sources[0].name, "Renamed");
+    assert_eq!(update.project.sources[0].key, "pending-configuration");
+}
+
+#[test]
+fn accepting_scene_content_preserves_newer_edits_and_the_local_mixer() {
+    use acheflow_media_api::{
+        live::{SceneContent, SceneEdit},
+        workspace::Orientation,
+    };
+    let mut server = remote(1);
+    let scene = server.add_scene(Orientation::Horizontal);
+    let mut catalog = Catalog::default();
+    let original = catalog.current().clone();
+    let mut local = catalog
+        .sync_server(&original, &state(server.clone(), true))
+        .unwrap()
+        .unwrap()
+        .project;
+    local.scenes[0].name = "Sent scene name".into();
+    let edit = SceneEdit::Content(SceneContent::of(&local.scenes[0]));
+    local.scenes[0].name = "Edited after save".into();
+    local.scenes[0].audio.buses[0].gain = 83;
+    assert!(catalog.applied_delta(&local, 1, 2, "fixture", |base| edit.apply(base, scene)));
+    edit.apply(&mut server, scene).unwrap();
+    server.edit_revision = 2;
+    local.edit_revision = 2;
+    let update = catalog
+        .sync_server(&local, &state(server, true))
+        .unwrap()
+        .unwrap();
+    assert!(!update.conflict);
+    assert_eq!(update.project.scenes[0].name, "Edited after save");
+    assert_eq!(update.project.scenes[0].audio.buses[0].gain, 83);
+}
 #[test]
 fn two_independent_catalogs_attach_without_destroying_their_local_drafts() {
     let server = state(remote(1), true);

@@ -50,6 +50,7 @@ fn app() -> Element {
         error: use_signal(String::new),
     };
     use_context_provider(|| access);
+    crate::live_client::use_live_client(project);
     let control = crate::control_client::use_control_client(project);
     let sync = provide(project, catalog, control);
     harness.sync.set(Some(sync));

@@ -4,9 +4,12 @@ use crate::{
 };
 use acheflow_media_api::{
     MediaCapabilities,
+    audio::{MAX_MIXER_EDITS, MixerAck, MixerRequest},
     live::{
-        ApiError, ControlRequest, LiveStatus, ManageOutputsRequest, OutputAction,
-        RestartOutputRequest, StartRequest,
+        ApiError, ControlRequest, LiveStatus, ManageOutputsRequest, OutputAction, OutputProfileAck,
+        OutputProfileRequest, RestartOutputRequest, SceneEdit, SceneSettingsAck,
+        SceneSettingsRequest, SourceCapture, SourcePreviewRequest, SourceSettingsAck,
+        SourceSettingsRequest, StartRequest, TakeSceneAck, TakeSceneRequest,
     },
     workspace::{Output, Resolution, Workspace},
 };
@@ -27,6 +30,7 @@ use tokio_util::sync::CancellationToken;
 pub type RuntimeState = Arc<Runtime>;
 pub type ApiResult = Result<Json<LiveStatus>, (StatusCode, Json<ApiError>)>;
 type InputWorker = tokio::task::JoinHandle<()>;
+const SOURCE_PREVIEW_IDLE: std::time::Duration = std::time::Duration::from_secs(7);
 
 struct InputChanges {
     retired: Vec<InputWorker>,
@@ -38,6 +42,7 @@ pub struct Runtime {
     pub control_revision: std::sync::atomic::AtomicU64,
     pub workspace: RwLock<Option<Workspace>>,
     pub inputs: Mutex<HashMap<u32, Arc<Input>>>,
+    source_previews: Mutex<HashMap<u32, tokio::time::Instant>>,
     pub formats: AsyncMutex<Vec<RunningFormat>>,
     pub control: AsyncMutex<()>,
     pub capabilities: crate::ffmpeg::CapabilityState,
@@ -56,6 +61,7 @@ impl Runtime {
             control_revision: std::sync::atomic::AtomicU64::new(0),
             workspace: RwLock::new(None),
             inputs: Mutex::new(HashMap::new()),
+            source_previews: Mutex::new(HashMap::new()),
             formats: AsyncMutex::new(vec![]),
             control: AsyncMutex::new(()),
             capabilities,
@@ -87,7 +93,10 @@ impl Runtime {
                     let id = workspace.active(format.orientation)?;
                     workspace.scenes.iter().find(|scene| scene.id == id)
                 });
-                format.status(scene)
+                let outputs = workspace
+                    .map(|w| w.stream(format.orientation).outputs.as_slice())
+                    .unwrap_or_default();
+                format.status(scene, outputs)
             })
             .collect();
         LiveStatus {
@@ -156,7 +165,22 @@ impl Runtime {
         owner: &str,
         update: impl FnOnce(&mut Workspace) -> Result<(), String>,
     ) -> Result<(), String> {
+        self.update_workspace_checked(owner, None, update)
+            .map(|_| ())
+    }
+
+    fn update_workspace_checked(
+        &self,
+        owner: &str,
+        expected: Option<u64>,
+        update: impl FnOnce(&mut Workspace) -> Result<(), String>,
+    ) -> Result<u64, String> {
         let mut current = self.workspace.write().unwrap();
+        if expected.is_some_and(|revision| revision != self.revision_for(&current)) {
+            return Err(
+                "conflict: Workspace changed on the server. Refresh before retrying.".into(),
+            );
+        }
         let mut next = current
             .as_ref()
             .filter(|w| w.id == owner)
@@ -164,7 +188,8 @@ impl Runtime {
             .ok_or("conflict: workspace changed")?;
         update(&mut next)?;
         validate(&next)?;
-        self.commit(&mut current, Some(next))
+        self.commit(&mut current, Some(next))?;
+        Ok(self.revision_for(&current))
     }
     pub(crate) async fn install(
         &self,
@@ -181,33 +206,175 @@ impl Runtime {
             let _ = worker.await;
         }
         for input in managed {
-            use acheflow_media_api::visual::SourceKind;
-            match &input.config.kind {
-                SourceKind::Srt { port } => match self.rtmp_address.parse::<std::net::SocketAddr>()
-                {
-                    Ok(mut address) if srt_available => {
-                        address.set_port(*port);
-                        crate::srt_input::start(&input, address, &self.shutdown);
-                    }
-                    _ => {
-                        let worker = input.stop_managed();
-                        if let Some(worker) = worker {
-                            let _ = worker.await;
-                        }
-                        *input.error.lock().unwrap() =
-                            Some("SRT listener is unavailable on this server".into());
-                    }
-                },
-                SourceKind::Camera { .. } => {
-                    crate::camera_input::start(&input, &self.shutdown);
-                }
-                SourceKind::Microphone { .. } => {
-                    crate::microphone_input::start(&input, &self.shutdown);
-                }
-                _ => {}
-            }
+            self.start_input(&input, srt_available).await;
         }
         Ok(())
+    }
+
+    async fn start_input(&self, input: &Arc<Input>, srt_available: bool) {
+        use acheflow_media_api::visual::SourceKind;
+        match &input.config.kind {
+            SourceKind::Srt { port } => match self.rtmp_address.parse::<std::net::SocketAddr>() {
+                Ok(mut address) if srt_available => {
+                    address.set_port(*port);
+                    crate::srt_input::start(input, address, &self.shutdown);
+                }
+                _ => {
+                    let worker = input.stop_managed();
+                    if let Some(worker) = worker {
+                        let _ = worker.await;
+                    }
+                    *input.error.lock().unwrap() =
+                        Some("SRT listener is unavailable on this server".into());
+                }
+            },
+            SourceKind::Camera { .. } => {
+                crate::camera_input::start(input, &self.shutdown);
+            }
+            SourceKind::Microphone { .. } => {
+                crate::microphone_input::start(input, &self.shutdown);
+            }
+            _ => {}
+        }
+    }
+
+    async fn remove_input(&self, id: u32) {
+        let input = self.inputs.lock().unwrap().remove(&id);
+        if let Some(input) = input {
+            input.disconnect();
+            if let Some(worker) = input.stop_managed() {
+                let _ = worker.await;
+            }
+        }
+    }
+
+    async fn renew_source_preview(
+        self: &Arc<Self>,
+        request: SourcePreviewRequest,
+    ) -> Result<(), String> {
+        let _control = self.control.lock().await;
+        if self.shutdown.is_cancelled() {
+            return Err("Media server is shutting down".into());
+        }
+        let id = request.source_id;
+        let source = {
+            let workspace = self.workspace.read().unwrap();
+            let workspace = workspace
+                .as_ref()
+                .filter(|workspace| workspace.id == request.workspace_id)
+                .ok_or(
+                    "conflict: Workspace must be saved on this server before previewing a source",
+                )?;
+            workspace
+                .sources
+                .iter()
+                .find(|source| source.id == id && source.kind.is_media_input())
+                .cloned()
+                .ok_or("Save the media source before previewing it")?
+        };
+        if self.activated.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let deadline = tokio::time::Instant::now() + SOURCE_PREVIEW_IDLE;
+        {
+            let mut previews = self.source_previews.lock().unwrap();
+            if let Some(current) = previews.get_mut(&id) {
+                *current = deadline;
+                return Ok(());
+            }
+        }
+        let srt_available = self.capabilities.lock().await.srt_input;
+        let input = Arc::new(Input::new(source));
+        self.source_previews.lock().unwrap().insert(id, deadline);
+        self.inputs.lock().unwrap().insert(id, input.clone());
+        tokio::spawn(self.clone().expire_source_preview(input.clone()));
+        self.start_input(&input, srt_available).await;
+        Ok(())
+    }
+
+    async fn expire_source_preview(self: Arc<Self>, input: Arc<Input>) {
+        let id = input.config.id;
+        loop {
+            let deadline = self.source_previews.lock().unwrap().get(&id).copied();
+            let Some(deadline) = deadline else {
+                return;
+            };
+            tokio::select! {
+                _ = self.shutdown.cancelled() => return,
+                _ = tokio::time::sleep_until(deadline) => {}
+            }
+            let _control = self.control.lock().await;
+            if self
+                .inputs
+                .lock()
+                .unwrap()
+                .get(&id)
+                .is_none_or(|current| !Arc::ptr_eq(current, &input))
+            {
+                return;
+            }
+            let expired = {
+                let mut previews = self.source_previews.lock().unwrap();
+                match previews.get(&id) {
+                    None => return,
+                    Some(deadline) if *deadline <= tokio::time::Instant::now() => {
+                        previews.remove(&id);
+                        true
+                    }
+                    Some(_) => false,
+                }
+            };
+            if expired {
+                self.remove_input(id).await;
+                return;
+            }
+        }
+    }
+
+    async fn refresh_source_capture(&self, id: u32) {
+        if !self.activated.load(Ordering::Acquire) {
+            if self.source_previews.lock().unwrap().remove(&id).is_some() {
+                self.remove_input(id).await;
+            }
+            return;
+        }
+        let source = self
+            .workspace
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|workspace| {
+                workspace
+                    .sources
+                    .iter()
+                    .find(|source| source.id == id && source.kind.is_media_input())
+                    .cloned()
+            });
+        let Some(source) = source else {
+            self.remove_input(id).await;
+            return;
+        };
+        let (input, retired) = {
+            let mut inputs = self.inputs.lock().unwrap();
+            let capture = SourceCapture::of(&source);
+            if inputs
+                .get(&id)
+                .is_some_and(|input| capture.matches(&input.config))
+            {
+                return;
+            }
+            let input = Arc::new(Input::new(source));
+            let retired = inputs.insert(id, input.clone()).and_then(|old| {
+                old.disconnect();
+                old.stop_managed()
+            });
+            (input, retired)
+        };
+        if let Some(worker) = retired {
+            let _ = worker.await;
+        }
+        let srt_available = self.capabilities.lock().await.srt_input;
+        self.start_input(&input, srt_available).await;
     }
 
     fn install_inputs(
@@ -238,6 +405,7 @@ impl Runtime {
         let mut inputs = self.inputs.lock().unwrap();
         let switching = current.as_ref().is_some_and(|old| old.id != workspace.id);
         if (!activate || switching)
+            && self.activated.load(Ordering::Acquire)
             && inputs
                 .values()
                 .any(|input| input.connected.load(Ordering::Acquire))
@@ -249,6 +417,9 @@ impl Runtime {
         }
         // Publish neither the new configuration nor input cancellations until saving succeeds.
         self.commit(&mut current, Some(workspace))?;
+        // Matching inputs are promoted in place. Their preview expiry tasks
+        // no longer own them after activation or workspace replacement.
+        self.source_previews.lock().unwrap().clear();
         let workspace = current.as_ref().unwrap();
         let mut retired = Vec::new();
         inputs.retain(|id, input| {
@@ -327,6 +498,7 @@ impl Runtime {
     }
     pub async fn close(&self) {
         self.shutdown.cancel();
+        let _control = self.control.lock().await;
         self.stop().await;
         for worker in self.clear_inputs() {
             let _ = worker.await;
@@ -334,6 +506,7 @@ impl Runtime {
     }
 
     fn clear_inputs(&self) -> Vec<InputWorker> {
+        self.source_previews.lock().unwrap().clear();
         self.inputs
             .lock()
             .unwrap()
@@ -394,29 +567,30 @@ pub(crate) fn validate_destination(
     output: &Output,
     capabilities: &MediaCapabilities,
 ) -> Result<(), String> {
-    output.validate()?;
-    let url = url::Url::parse(&output.url).map_err(|_| "Invalid output RTMP URL")?;
-    if url.scheme() != "rtmp"
-        || url.host_str().is_none()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || !url.username().is_empty()
-    {
-        return Err("Invalid output RTMP URL".into());
-    }
-    if output.key.len() > 256 || output.key.chars().any(char::is_control) {
-        return Err("Invalid output key".into());
-    }
-    if u64::from(output.resolution.width) * u64::from(output.resolution.height) > 3840 * 2160 {
-        return Err("Output resolution exceeds 3840 × 2160 pixels".into());
-    }
+    validate_destination_settings(output)?;
     if !capabilities.available {
         return Err("FFmpeg is unavailable".into());
     }
-    if !capabilities.rtmp_codecs().contains(&output.codec) {
-        return Err(format!("No RTMP encoder for {}", output.codec));
+    if !capabilities
+        .output_codecs(output.protocol)
+        .contains(&output.codec)
+    {
+        return Err(format!(
+            "No {} output encoder for {}",
+            output.protocol.label(),
+            output.codec
+        ));
     }
     capabilities.resolve_video_encoder(&output.codec, output.encoder.as_deref())?;
+    Ok(())
+}
+
+fn validate_destination_settings(output: &Output) -> Result<(), String> {
+    output.validate()?;
+    crate::output::destination_url(output)?;
+    if u64::from(output.resolution.width) * u64::from(output.resolution.height) > 3840 * 2160 {
+        return Err("Output resolution exceeds 3840 × 2160 pixels".into());
+    }
     Ok(())
 }
 
@@ -436,6 +610,145 @@ fn invalid(error: String) -> (StatusCode, Json<ApiError>) {
 pub async fn status(State(runtime): State<RuntimeState>) -> Json<LiveStatus> {
     Json(runtime.status().await)
 }
+
+pub async fn edit_mixer(
+    State(runtime): State<RuntimeState>,
+    Json(request): Json<MixerRequest>,
+) -> Result<Json<MixerAck>, (StatusCode, Json<ApiError>)> {
+    if request.edits.is_empty() || request.edits.len() > MAX_MIXER_EDITS {
+        return Err(invalid("Invalid number of mixer edits".into()));
+    }
+    let _guard = runtime.control.lock().await;
+    let revision = runtime
+        .update_workspace_checked(
+            &request.workspace_id,
+            Some(request.expected_revision),
+            |workspace| {
+                for edit in &request.edits {
+                    edit.apply(workspace)?;
+                }
+                Ok(())
+            },
+        )
+        .map_err(invalid)?;
+    Ok(Json(MixerAck { revision }))
+}
+
+pub async fn save_source(
+    State(runtime): State<RuntimeState>,
+    Json(request): Json<SourceSettingsRequest>,
+) -> Result<Json<SourceSettingsAck>, (StatusCode, Json<ApiError>)> {
+    let _guard = runtime.control.lock().await;
+    let revision = runtime
+        .update_workspace_checked(
+            &request.workspace_id,
+            Some(request.expected_revision),
+            |workspace| request.edit.apply(workspace, request.source_id).map(|_| ()),
+        )
+        .map_err(invalid)?;
+    if request.edit.renews_capture() {
+        runtime.refresh_source_capture(request.source_id).await;
+    }
+    Ok(Json(SourceSettingsAck { revision }))
+}
+
+pub async fn save_scene(
+    State(runtime): State<RuntimeState>,
+    Json(request): Json<SceneSettingsRequest>,
+) -> Result<Json<SceneSettingsAck>, (StatusCode, Json<ApiError>)> {
+    let _guard = runtime.control.lock().await;
+    let running = runtime
+        .formats
+        .lock()
+        .await
+        .iter()
+        .map(|format| format.orientation)
+        .collect::<Vec<_>>();
+    let revision = runtime.update_workspace_checked(
+        &request.workspace_id, Some(request.expected_revision), |workspace| {
+            if matches!(request.edit, SceneEdit::Remove)
+                && running.iter().any(|orientation| workspace.active(*orientation) == Some(request.scene_id))
+            {
+                return Err("conflict: Switch to another scene or stop this format before removing its program scene.".into());
+            }
+            request.edit.apply(workspace, request.scene_id)
+        },
+    ).map_err(invalid)?;
+    Ok(Json(SceneSettingsAck { revision }))
+}
+
+pub async fn save_output_profile(
+    State(runtime): State<RuntimeState>,
+    Json(request): Json<OutputProfileRequest>,
+) -> Result<Json<OutputProfileAck>, (StatusCode, Json<ApiError>)> {
+    let _guard = runtime.control.lock().await;
+    let capabilities = runtime.capabilities.lock().await.clone();
+    let mut formats = runtime.formats.lock().await;
+    let target = request.target;
+    let running = formats
+        .iter_mut()
+        .find(|format| format.orientation == target.orientation);
+    let mut encoder_changed = false;
+    let revision = runtime
+        .update_workspace_checked(
+            &request.workspace_id,
+            Some(request.expected_revision),
+            |workspace| {
+                let previous = workspace
+                    .stream(target.orientation)
+                    .outputs
+                    .get(target.index)
+                    .cloned()
+                    .ok_or("Output must be saved before editing its profile")?;
+                request.apply(workspace)?;
+                let stream = workspace.stream(target.orientation);
+                let output = &stream.outputs[target.index];
+                validate_destination_settings(output)?;
+                encoder_changed = !output.same_encoder_config(&previous);
+                if encoder_changed && capabilities.available {
+                    validate_destination(output, &capabilities)?;
+                    let fps = running
+                        .as_ref()
+                        .map_or(stream.fps, |format| format.spec.fps);
+                    crate::output::validate_video_config(output, fps, &capabilities)?;
+                }
+                Ok(())
+            },
+        )
+        .map_err(invalid)?;
+    if encoder_changed && let Some(format) = running {
+        format.invalidate_output_preview(target.index);
+    }
+    Ok(Json(OutputProfileAck { revision }))
+}
+
+pub async fn take_scene(
+    State(runtime): State<RuntimeState>,
+    Json(request): Json<TakeSceneRequest>,
+) -> Result<Json<TakeSceneAck>, (StatusCode, Json<ApiError>)> {
+    let _guard = runtime.control.lock().await;
+    check_owner(&runtime, &request.workspace_id)?;
+    if !runtime
+        .formats
+        .lock()
+        .await
+        .iter()
+        .any(|format| format.orientation == request.orientation)
+    {
+        return Err(invalid(
+            "Start this format before switching its program scene".into(),
+        ));
+    }
+    let revision = runtime
+        .update_workspace_checked(
+            &request.workspace_id,
+            Some(request.expected_revision),
+            |workspace| request.apply(workspace),
+        )
+        .map_err(invalid)?;
+    Ok(Json(TakeSceneAck { revision }))
+}
+
 pub async fn configure(
     State(runtime): State<RuntimeState>,
     Json(workspace): Json<Workspace>,
@@ -507,6 +820,7 @@ pub async fn start(
         }
     }
     if let Some(target) = request.output {
+        let outputs = current_outputs(&runtime, target.orientation);
         let mut formats = runtime.formats.lock().await;
         if let Some(format) = formats
             .iter_mut()
@@ -514,7 +828,7 @@ pub async fn start(
         {
             // The destination status owns encoder errors so the preview remains available.
             format
-                .run_outputs(Some(target.index), &capabilities, false)
+                .run_outputs(Some(target.index), &outputs, &capabilities, false)
                 .await;
         }
     }
@@ -547,6 +861,19 @@ pub async fn stop(
     runtime.stop().await;
     Ok(Json(runtime.status().await))
 }
+fn current_outputs(
+    runtime: &Runtime,
+    orientation: acheflow_media_api::workspace::Orientation,
+) -> Vec<Output> {
+    runtime
+        .workspace
+        .read()
+        .unwrap()
+        .as_ref()
+        .map(|workspace| workspace.stream(orientation).outputs.clone())
+        .unwrap_or_default()
+}
+
 pub async fn restart_output(
     State(runtime): State<RuntimeState>,
     Json(request): Json<RestartOutputRequest>,
@@ -560,8 +887,12 @@ pub async fn restart_output(
             .iter_mut()
             .find(|f| f.orientation == request.orientation)
             .ok_or_else(|| invalid("This format is not running".into()))?;
+        let outputs = current_outputs(&runtime, request.orientation);
+        let output = outputs
+            .get(request.index)
+            .ok_or_else(|| invalid("This destination is unavailable or disabled".into()))?;
         format
-            .restart_output(request.index, &capabilities)
+            .restart_output(request.index, output, &capabilities)
             .await
             .map_err(invalid)?;
     }
@@ -590,14 +921,23 @@ pub async fn manage_outputs(
                 })
                 .ok_or_else(|| invalid("This destination is unavailable or disabled".into()))?;
             format
-                .run_outputs(Some(target.index), &capabilities, restart)
+                .run_outputs(
+                    Some(target.index),
+                    &current_outputs(&runtime, target.orientation),
+                    &capabilities,
+                    restart,
+                )
                 .await;
         } else {
-            futures_util::future::join_all(
-                formats
-                    .iter_mut()
-                    .map(|format| format.run_outputs(None, &capabilities, restart)),
-            )
+            futures_util::future::join_all(formats.iter_mut().map(|format| {
+                let outputs = current_outputs(&runtime, format.orientation);
+                let capabilities = &capabilities;
+                async move {
+                    format
+                        .run_outputs(None, &outputs, capabilities, restart)
+                        .await
+                }
+            }))
             .await;
         }
     }
@@ -637,14 +977,18 @@ pub async fn preview(
         Ok(output) => output,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
-    let mode = match query.get("mode").map(String::as_str) {
-        Some("encoded") if output.is_some() => Some(runtime.capabilities.lock().await.clone()),
-        Some(_) => return StatusCode::BAD_REQUEST.into_response(),
-        None => None,
+    let (encoded, snapshot_format) = match query.get("mode").map(String::as_str) {
+        Some("encoded") if output.is_some() => (
+            Some(runtime.capabilities.lock().await.clone()),
+            SnapshotFormat::Jpeg,
+        ),
+        Some("lossless") => (None, SnapshotFormat::Png),
+        None => (None, SnapshotFormat::Jpeg),
+        _ => return StatusCode::BAD_REQUEST.into_response(),
     };
     let (frames, resolution, cache) = {
         let mut formats = runtime.formats.lock().await;
-        let encoded_profile = {
+        let profile = {
             let workspace = runtime.workspace.read().unwrap();
             let workspace = workspace.as_ref();
             if query
@@ -653,14 +997,13 @@ pub async fn preview(
             {
                 return StatusCode::NOT_FOUND.into_response();
             }
-            mode.as_ref()
-                .and_then(|_| workspace?.stream(orientation).outputs.get(output?).cloned())
+            output.and_then(|index| workspace?.stream(orientation).outputs.get(index).cloned())
         };
         let Some(format) = formats.iter_mut().find(|f| f.orientation == orientation) else {
             return StatusCode::NOT_FOUND.into_response();
         };
-        if let (Some(index), Some(capabilities)) = (output, mode.as_ref()) {
-            let Some(profile) = encoded_profile else {
+        if let (Some(index), Some(capabilities)) = (output, encoded.as_ref()) {
+            let Some(profile) = profile else {
                 return StatusCode::NOT_FOUND.into_response();
             };
             let view = format.encoded_view(index, profile, capabilities);
@@ -671,12 +1014,8 @@ pub async fn preview(
                 Err(status) => status.into_response(),
             };
         }
-        let resolution = if let Some(index) = output {
-            let Some(profile) = format
-                .preview_profiles
-                .iter()
-                .find(|profile| profile.index == index)
-            else {
+        let resolution = if output.is_some() {
+            let Some(profile) = profile else {
                 return StatusCode::NOT_FOUND.into_response();
             };
             let Some(size) = preview_size(&profile.resolution) else {
@@ -692,7 +1031,11 @@ pub async fn preview(
             format.preview_cache.clone(),
         )
     };
-    cache.lock().await.response(&frames, resolution).await
+    cache
+        .lock()
+        .await
+        .response(&frames, resolution, snapshot_format)
+        .await
 }
 
 fn preview_size(size: &Resolution) -> Option<Resolution> {
@@ -706,33 +1049,43 @@ fn preview_size(size: &Resolution) -> Option<Resolution> {
         height: (f64::from(size.height) * scale).floor().max(1.) as u32,
     })
 }
+pub async fn renew_source_preview(
+    State(runtime): State<RuntimeState>,
+    Json(request): Json<SourcePreviewRequest>,
+) -> Result<Json<()>, (StatusCode, Json<ApiError>)> {
+    runtime
+        .renew_source_preview(request)
+        .await
+        .map_err(invalid)?;
+    Ok(Json(()))
+}
+
 pub async fn source_preview(
     State(runtime): State<RuntimeState>,
     Path(id): Path<u32>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
-    if query.get("workspace").is_some_and(|id| {
-        runtime
-            .workspace
-            .read()
-            .unwrap()
-            .as_ref()
-            .is_none_or(|w| &w.id != id)
-    }) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let frame = runtime.inputs.lock().unwrap().get(&id).and_then(|input| {
-        if !input.connected.load(std::sync::atomic::Ordering::Acquire) {
-            return None;
+    let frame = {
+        let workspace = runtime.workspace.read().unwrap();
+        if query
+            .get("workspace")
+            .is_some_and(|id| workspace.as_ref().is_none_or(|w| &w.id != id))
+        {
+            return StatusCode::NOT_FOUND.into_response();
         }
-        input
-            .frame
-            .read()
-            .unwrap()
-            .as_ref()
-            .filter(|f| f.received.elapsed() < std::time::Duration::from_secs(2))
-            .map(|f| f.image.clone())
-    });
+        runtime.inputs.lock().unwrap().get(&id).and_then(|input| {
+            if !input.connected.load(std::sync::atomic::Ordering::Acquire) {
+                return None;
+            }
+            input
+                .frame
+                .read()
+                .unwrap()
+                .as_ref()
+                .filter(|f| f.received.elapsed() < std::time::Duration::from_secs(2))
+                .map(|f| f.image.clone())
+        })
+    };
     image_response(frame, None).await
 }
 async fn image_response(
@@ -742,13 +1095,20 @@ async fn image_response(
     let Some(frame) = frame else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    match encode_preview(frame, resolution).await {
+    match encode_preview(frame, resolution, SnapshotFormat::Jpeg).await {
         Some(snapshot) => snapshot.response(),
         None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SnapshotFormat {
+    Jpeg,
+    Png,
+}
+
 struct PreviewSnapshot {
+    format: SnapshotFormat,
     bytes: axum::body::Bytes,
     width: u32,
     height: u32,
@@ -758,7 +1118,13 @@ impl PreviewSnapshot {
     fn response(&self) -> Response {
         let mut response = (
             [
-                (header::CONTENT_TYPE, "image/jpeg"),
+                (
+                    header::CONTENT_TYPE,
+                    match self.format {
+                        SnapshotFormat::Jpeg => "image/jpeg",
+                        SnapshotFormat::Png => "image/png",
+                    },
+                ),
                 (header::CACHE_CONTROL, "no-store"),
             ],
             self.bytes.clone(),
@@ -785,10 +1151,20 @@ impl PreviewCache {
         &mut self,
         frames: &tokio::sync::watch::Receiver<Arc<image::RgbImage>>,
         resolution: Option<Resolution>,
+        format: SnapshotFormat,
     ) -> Response {
         // Read the current frame after waiting for an in-progress encode. Slow
         // clients then skip old frames instead of building up an encode backlog.
         let frame = frames.borrow().clone();
+        let resolution = resolution.or_else(|| {
+            if format != SnapshotFormat::Png {
+                return None;
+            }
+            preview_size(&Resolution {
+                width: frame.width(),
+                height: frame.height(),
+            })
+        });
         let dimensions = resolution
             .as_ref()
             .map_or_else(|| frame.dimensions(), |size| (size.width, size.height));
@@ -797,14 +1173,12 @@ impl PreviewCache {
             self.snapshots.clear();
             self.frame = identity;
         }
-        if let Some(snapshot) = self
-            .snapshots
-            .iter()
-            .find(|snapshot| (snapshot.width, snapshot.height) == dimensions)
-        {
+        if let Some(snapshot) = self.snapshots.iter().find(|snapshot| {
+            snapshot.format == format && (snapshot.width, snapshot.height) == dimensions
+        }) {
             return snapshot.response();
         }
-        let Some(snapshot) = encode_preview(frame, resolution).await else {
+        let Some(snapshot) = encode_preview(frame, resolution, format).await else {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         };
         let response = snapshot.response();
@@ -819,6 +1193,7 @@ impl PreviewCache {
 async fn encode_preview(
     frame: Arc<image::RgbImage>,
     resolution: Option<Resolution>,
+    format: SnapshotFormat,
 ) -> Option<PreviewSnapshot> {
     tokio::task::spawn_blocking(move || {
         let resized = resolution
@@ -832,14 +1207,21 @@ async fn encode_preview(
                 )
             });
         let frame = resized.as_ref().unwrap_or(frame.as_ref());
-        let mut bytes = Vec::new();
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 95)
-            .encode_image(frame)
-            .map(|()| PreviewSnapshot {
-                bytes: bytes.into(),
-                width: frame.width(),
-                height: frame.height(),
-            })
+        let bytes = match format {
+            SnapshotFormat::Jpeg => {
+                let mut bytes = Vec::new();
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 95)
+                    .encode_image(frame)?;
+                bytes.into()
+            }
+            SnapshotFormat::Png => crate::encoded_preview::encode_png(frame)?,
+        };
+        Ok::<_, image::ImageError>(PreviewSnapshot {
+            format,
+            bytes,
+            width: frame.width(),
+            height: frame.height(),
+        })
     })
     .await
     .ok()?
@@ -849,6 +1231,233 @@ async fn encode_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn scoped_scene_save_keeps_program_sources_and_existing_mixer() {
+        use acheflow_media_api::{live::SceneContent, workspace::Orientation};
+        let runtime = Runtime::new(
+            Arc::new(AsyncMutex::new(MediaCapabilities::default())),
+            "127.0.0.1:0".into(),
+        );
+        let mut workspace = Workspace::default();
+        workspace.add_source();
+        let program = workspace.add_scene(Orientation::Horizontal);
+        let other = workspace.add_scene(Orientation::Horizontal);
+        workspace.add_layer(other, workspace.sources[0].id);
+        workspace.scenes[1].layers[0].width = 640;
+        workspace.scenes[1].audio.buses[0].gain = 81;
+        runtime.apply(workspace.clone()).await.unwrap();
+        let mut draft = workspace.clone();
+        draft.set_active(Orientation::Horizontal, Some(other));
+        draft.sources[0].name = "A source edit kept in the draft".into();
+        draft.scenes[0].name = "A different scene edit".into();
+        draft.scenes[1].layers[0].x = 55;
+        draft.scenes[1].audio.buses[0].gain = 33;
+
+        let Json(ack) = save_scene(
+            State(runtime.clone()),
+            Json(SceneSettingsRequest {
+                workspace_id: workspace.id.clone(),
+                expected_revision: runtime.saved_state().0,
+                scene_id: other,
+                edit: SceneEdit::Content(SceneContent::of(&draft.scenes[1])),
+            }),
+        )
+        .await
+        .unwrap();
+        let (revision, stored) = runtime.saved_state();
+        let stored = stored.unwrap();
+        assert_eq!(revision, ack.revision);
+        assert_eq!(stored.active(Orientation::Horizontal), Some(program));
+        assert_eq!(stored.sources, workspace.sources);
+        assert_eq!(stored.scenes[0].name, workspace.scenes[0].name);
+        assert_eq!(stored.scenes[1].layers[0].x, 55);
+        assert_eq!(stored.scenes[1].audio.buses[0].gain, 81);
+
+        let new_scene = draft.add_scene(Orientation::Horizontal);
+        let Json(_) = save_scene(
+            State(runtime.clone()),
+            Json(SceneSettingsRequest {
+                workspace_id: workspace.id,
+                expected_revision: ack.revision,
+                scene_id: new_scene,
+                edit: SceneEdit::Register(draft.scenes.pop().unwrap()),
+            }),
+        )
+        .await
+        .unwrap();
+        let stored = runtime.saved_state().1.unwrap();
+        assert_eq!(stored.active(Orientation::Horizontal), Some(program));
+        assert!(stored.scenes.iter().any(|scene| scene.id == new_scene));
+    }
+    #[tokio::test]
+    async fn scoped_source_settings_preserve_unrelated_inputs_and_program() {
+        use acheflow_media_api::{live::SourceEdit, workspace::Orientation};
+        let runtime = Runtime::new(
+            Arc::new(AsyncMutex::new(MediaCapabilities::default())),
+            "127.0.0.1:0".into(),
+        );
+        let mut workspace = Workspace::default();
+        workspace.add_source();
+        workspace.add_source();
+        let scene = workspace.add_scene(Orientation::Horizontal);
+        workspace.add_layer(scene, 2);
+        runtime.apply(workspace.clone()).await.unwrap();
+        let first = runtime.inputs.lock().unwrap()[&1].clone();
+        let second = runtime.inputs.lock().unwrap()[&2].clone();
+        let first_connection = CancellationToken::new();
+        let second_connection = CancellationToken::new();
+        *first.cancel.lock().unwrap() = Some(first_connection.clone());
+        *second.cancel.lock().unwrap() = Some(second_connection.clone());
+        let request = |source_id, edit| SourceSettingsRequest {
+            workspace_id: workspace.id.clone(),
+            expected_revision: runtime.saved_state().0,
+            source_id,
+            edit,
+        };
+
+        let Json(_) = save_source(
+            State(runtime.clone()),
+            Json(request(2, SourceEdit::Name("Renamed".into()))),
+        )
+        .await
+        .unwrap();
+        assert!(Arc::ptr_eq(&second, &runtime.inputs.lock().unwrap()[&2]));
+        assert!(!second_connection.is_cancelled());
+
+        let mut capture = SourceCapture::of(&workspace.sources[1]);
+        capture.key = acheflow_media_api::workspace::new_token();
+        let Json(_) = save_source(
+            State(runtime.clone()),
+            Json(request(2, SourceEdit::Capture(capture.clone()))),
+        )
+        .await
+        .unwrap();
+        assert!(second_connection.is_cancelled());
+        assert!(capture.matches(&runtime.inputs.lock().unwrap()[&2].config));
+        assert!(Arc::ptr_eq(&first, &runtime.inputs.lock().unwrap()[&1]));
+        assert!(!first_connection.is_cancelled());
+
+        let Json(_) = save_source(State(runtime.clone()), Json(request(2, SourceEdit::Remove)))
+            .await
+            .unwrap();
+        assert!(!runtime.inputs.lock().unwrap().contains_key(&2));
+        let saved = runtime.saved_state().1.unwrap();
+        assert_eq!(saved.active(Orientation::Horizontal), Some(scene));
+        assert!(saved.scenes[0].layers.is_empty());
+        assert!(!first_connection.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn adding_a_source_does_not_activate_an_inactive_workspace() {
+        use acheflow_media_api::live::SourceEdit;
+        let runtime = Runtime::new(
+            Arc::new(AsyncMutex::new(MediaCapabilities::default())),
+            "127.0.0.1:0".into(),
+        );
+        let mut workspace = Workspace::default();
+        runtime.install(workspace.clone(), false).await.unwrap();
+        workspace.add_source();
+        let Json(_) = save_source(
+            State(runtime.clone()),
+            Json(SourceSettingsRequest {
+                workspace_id: workspace.id,
+                expected_revision: runtime.saved_state().0,
+                source_id: 1,
+                edit: SourceEdit::Register(workspace.sources.remove(0)),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(runtime.saved_state().1.unwrap().sources.len(), 1);
+        assert!(!runtime.activated.load(Ordering::Acquire));
+        assert!(runtime.inputs.lock().unwrap().is_empty());
+    }
+    #[tokio::test]
+    async fn mixer_updates_are_scoped_to_audio_and_validate_the_whole_batch() {
+        use acheflow_media_api::{
+            audio::{BusChange, MixerEdit, StripChange, TrackKey},
+            workspace::Orientation,
+        };
+        let runtime = Runtime::new(
+            Arc::new(AsyncMutex::new(MediaCapabilities::default())),
+            "127.0.0.1:0".into(),
+        );
+        let mut workspace = Workspace::default();
+        workspace.add_source();
+        let program = workspace.add_scene(Orientation::Horizontal);
+        let draft = workspace.add_scene(Orientation::Horizontal);
+        workspace.set_active(Orientation::Horizontal, Some(program));
+        runtime.apply(workspace.clone()).await.unwrap();
+        let revision = runtime.saved_state().0;
+        let gain = MixerEdit::Strip {
+            scene: program,
+            key: TrackKey {
+                source_id: workspace.sources[0].id,
+                track_id: 0,
+            },
+            change: StripChange::Gain(137),
+        };
+        let request = |expected_revision, edits| MixerRequest {
+            workspace_id: workspace.id.clone(),
+            expected_revision,
+            edits,
+        };
+        let Json(ack) = edit_mixer(
+            State(runtime.clone()),
+            Json(request(revision, vec![gain.clone()])),
+        )
+        .await
+        .unwrap();
+        let mix = runtime.saved_state().1.unwrap();
+        assert_eq!(mix.active(Orientation::Horizontal), Some(program));
+        assert_eq!(
+            mix.scenes
+                .iter()
+                .find(|s| s.id == program)
+                .unwrap()
+                .audio
+                .strips[0]
+                .gain,
+            137
+        );
+        assert!(
+            mix.scenes
+                .iter()
+                .find(|s| s.id == draft)
+                .unwrap()
+                .audio
+                .strips
+                .is_empty()
+        );
+        assert_eq!(
+            edit_mixer(State(runtime.clone()), Json(request(revision, vec![gain])))
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::CONFLICT
+        );
+        let rejected = edit_mixer(
+            State(runtime.clone()),
+            Json(request(
+                ack.revision,
+                vec![
+                    MixerEdit::Bus {
+                        scene: program,
+                        bus: 1,
+                        change: BusChange::Mute(true),
+                    },
+                    MixerEdit::Bus {
+                        scene: draft,
+                        bus: 1,
+                        change: BusChange::Gain(300),
+                    },
+                ],
+            )),
+        )
+        .await;
+        assert_eq!(rejected.unwrap_err().0, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(runtime.saved_state(), (ack.revision, Some(mix)));
+    }
     #[tokio::test]
     async fn preview_session_keeps_enabled_destination_without_starting_encoder() {
         use acheflow_media_api::workspace::{Orientation, Output, Resolution};
@@ -865,6 +1474,7 @@ mod tests {
         let scene = workspace.add_scene(Orientation::Horizontal);
         workspace.set_active(Orientation::Horizontal, Some(scene));
         workspace.horizontal.outputs.push(Output {
+            protocol: Default::default(),
             name: "Preview test".into(),
             url: "rtmp://127.0.0.1:1/live".into(),
             key: "preview-test".into(),
@@ -968,9 +1578,15 @@ mod tests {
     async fn format_snapshot_cache_reuses_the_frame_and_expires_on_publish() {
         let (tx, rx) = tokio::sync::watch::channel(Arc::new(image::RgbImage::new(32, 24)));
         let mut cache = PreviewCache::default();
-        assert_eq!(cache.response(&rx, None).await.status(), StatusCode::OK);
+        assert_eq!(
+            cache
+                .response(&rx, None, SnapshotFormat::Jpeg)
+                .await
+                .status(),
+            StatusCode::OK
+        );
         let previous = cache.snapshots[0].bytes.clone();
-        let response = cache.response(&rx, None).await;
+        let response = cache.response(&rx, None, SnapshotFormat::Jpeg).await;
         let reused = axum::body::to_bytes(response.into_body(), 16 * 1024)
             .await
             .unwrap();
@@ -980,10 +1596,35 @@ mod tests {
             24,
             image::Rgb([255, 255, 255]),
         )));
-        assert_eq!(cache.response(&rx, None).await.status(), StatusCode::OK);
+        assert_eq!(
+            cache
+                .response(&rx, None, SnapshotFormat::Jpeg)
+                .await
+                .status(),
+            StatusCode::OK
+        );
         assert_ne!(previous, cache.snapshots[0].bytes);
         assert_eq!(cache.snapshots.len(), 1);
     }
+    #[tokio::test]
+    async fn lossless_preview_preserves_every_rgb_pixel_with_a_separate_cache_entry() {
+        let image = Arc::new(image::RgbImage::from_fn(64, 32, |x, y| {
+            image::Rgb([(x * 3) as u8, (y * 7) as u8, (x * y) as u8])
+        }));
+        let (_tx, rx) = tokio::sync::watch::channel(image.clone());
+        let mut cache = PreviewCache::default();
+        let jpeg = cache.response(&rx, None, SnapshotFormat::Jpeg).await;
+        assert_eq!(jpeg.headers()["content-type"], "image/jpeg");
+        let png = cache.response(&rx, None, SnapshotFormat::Png).await;
+        assert_eq!(png.headers()["content-type"], "image/png");
+        let bytes = axum::body::to_bytes(png.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let decoded = image::load_from_memory(&bytes).unwrap().to_rgb8();
+        assert_eq!(decoded, *image);
+        assert_eq!(cache.snapshots.len(), 2);
+    }
+
     #[tokio::test]
     async fn jpeg_preview_preserves_native_detail_and_never_upscales() {
         for (width, height) in [(1920, 1080), (1080, 1920), (64, 32)] {
@@ -1037,6 +1678,28 @@ mod tests {
         runtime.apply(workspace).await.unwrap();
         assert!(Arc::ptr_eq(&input, &runtime.inputs.lock().unwrap()[&1]));
     }
+    #[tokio::test]
+    async fn activating_sources_promotes_the_preview_input_without_disconnect() {
+        let runtime = Runtime::new(Default::default(), "127.0.0.1:0".into());
+        let mut workspace = Workspace::default();
+        workspace.add_source();
+        runtime.install(workspace.clone(), false).await.unwrap();
+        let request = SourcePreviewRequest {
+            workspace_id: workspace.id.clone(),
+            source_id: 1,
+        };
+        runtime.renew_source_preview(request).await.unwrap();
+        let input = runtime.inputs.lock().unwrap()[&1].clone();
+
+        workspace.edit_revision = runtime.saved_state().0;
+        runtime.install(workspace, true).await.unwrap();
+        assert!(runtime.source_previews.lock().unwrap().is_empty());
+        runtime.clone().expire_source_preview(input.clone()).await;
+        assert!(Arc::ptr_eq(&input, &runtime.inputs.lock().unwrap()[&1]));
+        assert!(runtime.activated.load(Ordering::Acquire));
+        runtime.close().await;
+    }
+
     #[tokio::test]
     async fn source_snapshots_disappear_on_disconnect_and_stall_and_return_on_reconnect() {
         let runtime = Runtime::new(

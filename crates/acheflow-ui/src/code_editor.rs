@@ -66,7 +66,7 @@ pub fn CodeEditor(
                     }
                 }
             });},"Load file"}
-            span {class:"form-help","Update applies to the editor; Apply scene & sources updates the server."}
+            span {class:"form-help","Update puts the code in the local draft."}
         }
         if let Some(error)=error.read().as_ref(){pre {class:"code-error",role:"alert","{error}"}}
     }}

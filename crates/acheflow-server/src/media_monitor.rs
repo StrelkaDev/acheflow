@@ -1,4 +1,7 @@
 use acheflow_media_api::live::{RenderLoad, ServerLoadSample};
+
+#[path = "gpu_monitor.rs"]
+mod gpu_monitor;
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex, OnceLock},
@@ -18,19 +21,21 @@ impl ServerMonitor {
     pub fn samples(&self) -> Vec<ServerLoadSample> {
         self.started.get_or_init(|| {
             let history = Arc::downgrade(&self.history);
+            let gpu = gpu_monitor::start(history.clone());
             tokio::spawn(async move {
                 let interval = LOAD_INTERVAL.max(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
                 let mut ticker = tokio::time::interval(interval);
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 let mut system = sysinfo::System::new().ok();
                 let mut primed = false;
+                let mut legacy_gpu = None;
                 while let Some(history) = history.upgrade() {
                     ticker.tick().await;
                     let Some(mut current) = system.take() else {
                         break;
                     };
                     // System calls stay off the renderer and the async workers.
-                    let Ok((updated, sample)) = tokio::task::spawn_blocking(move || {
+                    let Ok((updated, mut sample)) = tokio::task::spawn_blocking(move || {
                         current.refresh_cpu_usage();
                         current.refresh_memory_specifics(
                             sysinfo::MemoryRefreshKind::nothing().with_ram(),
@@ -40,7 +45,8 @@ impl ServerMonitor {
                             cpu_percent: current.global_cpu_usage().clamp(0., 100.),
                             ram_used_bytes: current.used_memory(),
                             ram_total_bytes: current.total_memory(),
-                            busiest_gpu_percent: busiest_gpu_percent(),
+                            busiest_gpu_percent: None,
+                            gpus: Vec::new(),
                         };
                         (current, sample)
                     })
@@ -50,6 +56,18 @@ impl ServerMonitor {
                     };
                     system = Some(updated);
                     if primed && sample.ram_total_bytes > 0 && sample.cpu_percent.is_finite() {
+                        sample.gpus = std::mem::take(&mut *gpu.lock().unwrap());
+                        if !sample.gpus.is_empty() {
+                            legacy_gpu = sample
+                                .gpus
+                                .iter()
+                                .filter_map(|gpu| gpu.utilization_percent)
+                                .max_by(f32::total_cmp)
+                                .map(|percent| (sample.time_ms, percent));
+                        }
+                        sample.busiest_gpu_percent = legacy_gpu
+                            .filter(|(at, _)| sample.time_ms.saturating_sub(*at) <= 2200)
+                            .map(|(_, percent)| percent);
                         let mut history = history.lock().unwrap();
                         history.push_back(sample);
                         if history.len() > MAX_LOAD_SAMPLES {
@@ -63,39 +81,6 @@ impl ServerMonitor {
         });
         self.history.lock().unwrap().iter().cloned().collect()
     }
-}
-
-#[cfg(target_os = "linux")]
-fn busiest_gpu_percent() -> Option<f32> {
-    std::fs::read_dir("/sys/class/drm")
-        .ok()?
-        .flatten()
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .and_then(|name| name.strip_prefix("card"))
-                .is_some_and(|index| {
-                    !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
-                })
-        })
-        .filter_map(|entry| {
-            std::fs::read_to_string(entry.path().join("device/gpu_busy_percent")).ok()
-        })
-        .filter_map(|value| {
-            value
-                .trim()
-                .parse::<u8>()
-                .ok()
-                .filter(|&value| value <= 100)
-        })
-        .max()
-        .map(f32::from)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn busiest_gpu_percent() -> Option<f32> {
-    None
 }
 
 #[derive(Default)]

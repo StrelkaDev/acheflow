@@ -1,5 +1,6 @@
 use crate::{
     project::{Orientation, Workspace},
+    scene_canvas::{SceneHistory, history_shortcut, step_history},
     spatial_editor::edit_transform,
     spatial_view::{self, AxisHandle, EditorView, Tool},
 };
@@ -15,6 +16,7 @@ enum Gesture {
     Object {
         id: u64,
         start: Transform,
+        last: Transform,
         axis: AxisHandle,
         tool: Tool,
     },
@@ -33,6 +35,7 @@ pub fn SpatialViewport(
     orientation: Orientation,
     mut view: Signal<EditorView>,
     camera_preview: bool,
+    #[props(default)] history: Option<Signal<SceneHistory>>,
 ) -> Element {
     let mut handle = use_signal(|| None::<NodeHandle>);
     let mut drag = use_signal(|| None::<Drag>);
@@ -43,8 +46,10 @@ pub fn SpatialViewport(
         generation += 1;
         if let Some(start) = drag.peek().as_ref() {
             match &start.gesture {
-                Gesture::Object { id, start, .. } => {
-                    edit_transform(project, scene_id, *id, start.clone())
+                Gesture::Object {
+                    id, start, last, ..
+                } => {
+                    edit_transform(project, scene_id, *id, last, start.clone());
                 }
                 _ => view.set(start.view.clone()),
             }
@@ -74,7 +79,7 @@ pub fn SpatialViewport(
                 let gesture=if navigate {if pan{Gesture::Pan}else{Gesture::Orbit}}
                     else if let Some(axis)=spatial_view::pick_axis(&snapshot,scene,local,size) {
                         let Some(id)=snapshot.selected else{return;};let Some(start)=spatial_view::selected_transform(scene,id)else{return;};
-                        Gesture::Object{id,start:start.clone(),axis,tool:snapshot.tool}
+                        Gesture::Object{id,start:start.clone(),last:start.clone(),axis,tool:snapshot.tool}
                     }else{
                         let picked=spatial_view::pick(&snapshot,scene,local,size);
                         view.write().selected=picked;
@@ -90,11 +95,24 @@ pub fn SpatialViewport(
             match start.gesture {
                 Gesture::Orbit=>{let mut next=start.view;next.orbit(delta);view.set(next);},
                 Gesture::Pan=>{let mut next=start.view;next.pan(delta,start.size.y);view.set(next);},
-                Gesture::Object{id,start,axis,tool}=>edit_transform(project,scene_id,id,spatial_view::manipulate(&start,tool,axis,delta,e.modifiers().contains(Modifiers::SHIFT))),
+                Gesture::Object{id,start,last,axis,tool}=>{
+                    let next=spatial_view::manipulate(&start,tool,axis,delta,e.modifiers().contains(Modifiers::SHIFT));
+                    if edit_transform(project,scene_id,id,&last,next.clone()) {
+                        if let Some(Drag{gesture:Gesture::Object{last,..},..})=drag.write().as_mut(){*last=next;}
+                    } else {
+                        drag.set(None);
+                        pressed.set(false);
+                    }
+                },
             }
         },
         onpointerup:move|_|{
-            pressed.set(false);drag.set(None);
+            pressed.set(false);
+            if let Some(Drag{gesture:Gesture::Object{id,start,last,..},..})=drag.write().take()
+                && let Some(mut history)=history
+                && edit_transform(project,scene_id,id,&last,last.clone()) {
+                history.write().record_transform(scene_id,id,start,last);
+            }
             if !camera_preview {spawn(async move {if let Some(h)=handle.peek().as_ref(){h.doc_mut().set_focus_to(h.node_id());}});}
         },
         onpointercancel:move|_|{let mut cancel=cancel;cancel();},
@@ -107,6 +125,13 @@ pub fn SpatialViewport(
         },
         onkeydown:move|e|{
             if camera_preview{return;}
+            if let Some(redo)=history_shortcut(&e) {
+                if drag.peek().is_none() && let Some(history)=history {
+                    e.prevent_default();
+                    step_history(project,history,redo);
+                }
+                return;
+            }
             let key=e.key();
             match key {
                 Key::Named(NamedKey::Escape)=>{e.prevent_default();let mut cancel=cancel;cancel();},

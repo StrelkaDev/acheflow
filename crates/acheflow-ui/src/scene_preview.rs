@@ -1,6 +1,6 @@
 use crate::{
     live_client::LiveClient,
-    project::{Orientation, Workspace},
+    project::{Layer, Orientation, Scene as SceneConfig, Workspace},
 };
 use acheflow_composition::gpu::{GpuScene, LayerBox, SceneFrame, SourceFrame};
 use anyrender::{PaintScene, RenderContext, Scene};
@@ -8,10 +8,52 @@ use blitz_dom::{Widget, node::ComputedStyles};
 use dioxus_native::{CustomWidgetAttr, prelude::*};
 use peniko::kurbo::Affine;
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     sync::{Arc, Mutex},
 };
 use web_time::Instant;
+
+fn rendered_layers(scene: &SceneConfig) -> impl Iterator<Item = &Layer> {
+    use acheflow_media_api::spatial::ObjectKind;
+    scene
+        .layers
+        .iter()
+        .filter(|_| scene.spatial.is_none())
+        .chain(
+            scene
+                .spatial
+                .iter()
+                .flat_map(|spatial| &spatial.objects)
+                .filter(|object| object.visible)
+                .flat_map(|object| match &object.kind {
+                    ObjectKind::Viewport { primary: true, .. } => scene.layers.as_slice(),
+                    ObjectKind::Viewport { layers, .. } => layers.as_slice(),
+                    _ => &[],
+                }),
+        )
+}
+
+pub(crate) fn draft_capture_sources(workspace: &Workspace, scene: &SceneConfig) -> BTreeSet<u32> {
+    let visible = rendered_layers(scene)
+        .map(|layer| layer.source_id)
+        .collect::<BTreeSet<_>>();
+    let routed = scene
+        .audio
+        .strips
+        .iter()
+        .filter(|strip| strip.sends.values().any(|gain| *gain != 0))
+        .map(|strip| strip.source_id)
+        .collect::<BTreeSet<_>>();
+    workspace
+        .sources
+        .iter()
+        .filter_map(|source| {
+            ((source.kind.is_video_input() && visible.contains(&source.id))
+                || (source.kind.has_audio_input() && routed.contains(&source.id)))
+            .then_some(source.id)
+        })
+        .collect()
+}
 
 struct Snapshot {
     visual_epoch_ms: u64,
@@ -192,10 +234,9 @@ pub fn ScenePreview(
                         (
                             state.owner.clone(),
                             state.server.clone(),
-                            f.scene
-                                .visual_layers()
-                                .map(|l| l.source_id)
-                                .collect::<std::collections::BTreeSet<_>>(),
+                            rendered_layers(&f.scene)
+                                .map(|layer| layer.source_id)
+                                .collect::<BTreeSet<_>>(),
                         )
                     })
                 };
@@ -473,5 +514,80 @@ fn visual_now_ms() -> u64 {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64
+    }
+}
+
+#[cfg(test)]
+mod draft_capture_tests {
+    use super::*;
+    use acheflow_media_api::{
+        audio::{AudioStrip, TrackKey},
+        spatial::{ObjectKind, SceneObject},
+        visual::SourceKind,
+    };
+
+    #[test]
+    fn draft_capture_uses_rendered_viewports_and_routed_audio_only() {
+        let mut workspace = Workspace::default();
+        let scene_id = workspace.add_scene(Orientation::Horizontal);
+        for _ in 0..6 {
+            workspace.add_source();
+        }
+        for (index, device) in [(3, "routed"), (4, "unrouted")] {
+            workspace.sources[index].kind = SourceKind::Microphone {
+                device_id: device.into(),
+                mode: None,
+            };
+        }
+        workspace.sources[5].kind = SourceKind::Chat(Default::default());
+        workspace.add_layer(scene_id, 1);
+        workspace.add_layer(scene_id, 6);
+        assert_eq!(
+            draft_capture_sources(&workspace, &workspace.scenes[0]),
+            BTreeSet::from([1])
+        );
+        workspace.migrate_spatial();
+        let scene = &mut workspace.scenes[0];
+        for (id, visible) in [(2, true), (3, false)] {
+            scene.spatial.as_mut().unwrap().objects.push(SceneObject {
+                id: u64::from(id),
+                name: format!("Viewport {id}"),
+                visible,
+                transform: Default::default(),
+                kind: ObjectKind::Viewport {
+                    primary: false,
+                    canvas: workspace.horizontal.base.clone(),
+                    layers: vec![Layer {
+                        source_id: id,
+                        ..Default::default()
+                    }],
+                },
+            });
+        }
+        scene.audio.strips.extend([
+            AudioStrip::new(
+                TrackKey {
+                    source_id: 4,
+                    track_id: 0,
+                },
+                true,
+            ),
+            AudioStrip::new(
+                TrackKey {
+                    source_id: 5,
+                    track_id: 0,
+                },
+                false,
+            ),
+        ]);
+        assert_eq!(
+            draft_capture_sources(&workspace, &workspace.scenes[0]),
+            BTreeSet::from([1, 2, 4])
+        );
+        workspace.scenes[0].spatial.as_mut().unwrap().objects[0].visible = false;
+        assert_eq!(
+            draft_capture_sources(&workspace, &workspace.scenes[0]),
+            BTreeSet::from([2, 4])
+        );
     }
 }
