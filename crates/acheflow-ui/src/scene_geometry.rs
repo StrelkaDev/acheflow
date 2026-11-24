@@ -59,8 +59,6 @@ pub fn transform(
 ) -> Bounds {
     let x = f64::from(start.x);
     let y = f64::from(start.y);
-    let right = x + f64::from(start.width);
-    let bottom = y + f64::from(start.height);
     let (cw, ch) = (f64::from(canvas.0), f64::from(canvas.1));
     let (snap_x, snap_y) = constraints.snap;
     match kind {
@@ -70,6 +68,10 @@ pub fn transform(
             ..start
         },
         DragKind::Resize(corner) => {
+            let width = f64::from(start.width.max(1));
+            let height = f64::from(start.height.max(1));
+            let right = x + width;
+            let bottom = y + height;
             let left_edge = matches!(corner, Corner::TopLeft | Corner::BottomLeft);
             let top_edge = matches!(corner, Corner::TopLeft | Corner::TopRight);
             if let Some(ratio) = constraints.aspect.filter(|r| r.is_finite() && *r > 0.) {
@@ -82,8 +84,8 @@ pub fn transform(
                     if top_edge { anchor.1 } else { ch - anchor.1 },
                 );
                 let intended = (
-                    f64::from(start.width) + if left_edge { -dx } else { dx },
-                    f64::from(start.height) + if top_edge { -dy } else { dy },
+                    width + if left_edge { -dx } else { dx },
+                    height + if top_edge { -dy } else { dy },
                 );
                 let max_height = (limit.0 / ratio).min(limit.1);
                 if max_height > 0. {
@@ -224,6 +226,31 @@ mod tests {
                 y: 100,
                 ..start
             }
+        );
+    }
+
+    #[test]
+    fn resizing_a_zero_sized_layer_at_the_origin_recovers_to_one_pixel() {
+        assert_eq!(
+            transform(
+                Bounds {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                },
+                DragKind::Resize(Corner::TopLeft),
+                0.,
+                0.,
+                (200, 100),
+                DragConstraints::default(),
+            ),
+            Bounds {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
         );
     }
 

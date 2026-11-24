@@ -17,6 +17,47 @@ pub(crate) fn edit_source(mut project: Signal<Workspace>, id: u32, edit: SourceE
     }
 }
 
+pub(crate) fn change_camera_settings(
+    mut project: Signal<Workspace>,
+    source_id: u32,
+    expected_device: &str,
+    change: impl FnOnce(&mut Option<acheflow_media_api::visual::CameraMode>, &mut bool),
+) {
+    let (capture, changed) = {
+        let mut workspace = project.write();
+        let Some(source) = workspace
+            .sources
+            .iter_mut()
+            .find(|source| source.id == source_id)
+        else {
+            return;
+        };
+        let SourceKind::Camera {
+            device_id,
+            mode,
+            mirrored,
+        } = &mut source.kind
+        else {
+            return;
+        };
+        if device_id != expected_device {
+            return;
+        }
+        let previous = (*mode, *mirrored);
+        change(mode, mirrored);
+        let changed = previous != (*mode, *mirrored);
+        (SourceCapture::of(source), changed)
+    };
+    if let Some(client) = try_consume_context::<LiveClient>()
+        && let Some(saved) = try_consume_context::<crate::workspace_sync::WorkspaceSync>()
+            .and_then(|sync| sync.saved_source(source_id))
+        && matches!(&saved.kind, SourceKind::Camera { device_id, .. } if device_id == expected_device)
+        && (changed || !capture.matches(&saved))
+    {
+        client.source_edit(source_id, SourceEdit::Capture(capture));
+    }
+}
+
 #[component]
 pub(crate) fn SourceName(project: Signal<Workspace>, source_id: u32, value: String) -> Element {
     rsx! {CommittedName {label:"Name",value,change:move |value|edit_source(project,source_id,SourceEdit::Name(value))}}

@@ -128,8 +128,7 @@ fn state(revision: u64) -> WorkspaceState {
     }
 }
 
-#[tokio::test]
-async fn removing_a_saved_camera_reenables_remove_for_remaining_sources() {
+async fn camera_document() -> (DioxusDocument, Rc<Harness>, tokio::task::JoinHandle<()>) {
     use acheflow_media_api::{live::LiveStatus, visual::SourceKind};
 
     let mut initial = state(1);
@@ -186,6 +185,54 @@ async fn removing_a_saved_camera_reenables_remove_for_remaining_sources() {
     sync.resolve(true);
     settle(&mut doc);
     assert!(sync.saved_source(1).is_some());
+    (doc, harness, server)
+}
+
+#[tokio::test]
+async fn camera_mirror_and_mode_apply_when_changed_together() {
+    use acheflow_media_api::visual::{CameraMode, SourceKind};
+
+    let (mut doc, harness, server) = camera_document().await;
+    let live = harness.live.get().unwrap();
+    let sync = harness.sync.get().unwrap();
+    let mode = CameraMode {
+        width: 3840,
+        height: 2160,
+        duration_value: 1,
+        duration_scale: 60,
+    };
+    doc.vdom
+        .runtime()
+        .in_scope(harness.source_row.get().unwrap(), || {
+            crate::source_settings::change_camera_settings(
+                sync.project,
+                1,
+                "fixture-camera",
+                |_, mirrored| *mirrored = true,
+            );
+            crate::source_settings::change_camera_settings(
+                sync.project,
+                1,
+                "fixture-camera",
+                |selected, _| *selected = Some(mode),
+            );
+        });
+    assert!((live.scoped_pending)());
+    until(&mut doc, || !(live.scoped_pending)()).await;
+    assert!(live.error.peek().is_none());
+    assert!(matches!(
+        sync.saved_source(1).unwrap().kind,
+        SourceKind::Camera { mode: Some(saved), mirrored: true, .. } if saved == mode
+    ));
+    assert_eq!(sync.project.peek().edit_revision, 2);
+    server.abort();
+}
+
+#[tokio::test]
+async fn removing_a_saved_camera_reenables_remove_for_remaining_sources() {
+    let (mut doc, harness, server) = camera_document().await;
+    let live = harness.live.get().unwrap();
+    let sync = harness.sync.get().unwrap();
     doc.vdom
         .runtime()
         .in_scope(harness.source_row.get().unwrap(), || {

@@ -14,7 +14,12 @@ use acheflow_media_api::{MediaCapabilities, workspace::BitrateMode};
 use dioxus_native::prelude::*;
 
 #[component]
-pub fn Live(project: Signal<Workspace>, visible: bool, mut monitor_tab: Signal<bool>) -> Element {
+pub fn Live(
+    project: Signal<Workspace>,
+    visible: bool,
+    mut monitor_tab: Signal<bool>,
+    workspace_notices: Element,
+) -> Element {
     let client = use_context::<LiveClient>();
     let histories = use_scene_histories(project);
     use_context_provider(|| histories);
@@ -39,6 +44,7 @@ pub fn Live(project: Signal<Workspace>, visible: bool, mut monitor_tab: Signal<b
         nav {class:"subnav",for name in ["Analytics","Sources","Scenes","Mixer","Studio","Chat","Interactive","Settings"] {
             button {class:if tab()==name {"selected"}else{""},onclick:move |_|{separate.set(None);tab.set(name);},"{name}"}
         }}
+        {workspace_notices}
         LiveNotice {}
         // Keep the mounted tabs in the layout tree when swapping views. Blitz can
         // retain stale layout children if we hide the tree while updating its contents.
@@ -511,6 +517,7 @@ fn CameraSettings(
         .map(|(label, _)| label.clone())
         .unwrap_or_else(|| "Saved mode unavailable".into());
     let mode_device_id = device_id.clone();
+    let mirror_device_id = device_id.clone();
     let device_labels = device_options
         .iter()
         .map(|(label, _)| label.clone())
@@ -544,7 +551,7 @@ fn CameraSettings(
         } else {
             crate::extension_panel::PanelSelect {label:"Capture mode",value:mode_value,options:mode_labels,onselect:move |label:String|{
                 let Some((_, next))=mode_options.iter().find(|(choice, _)| *choice==label) else {return};
-                change_camera_mode(project, source_id, &mode_device_id, *next);
+                crate::source_settings::change_camera_settings(project, source_id, &mode_device_id, |mode, _| *mode = *next);
             }}
         }
         div {class:"field",
@@ -553,54 +560,12 @@ fn CameraSettings(
                 class:if mirrored {"selected"}else{""},
                 role:"switch","aria-label":"Mirror horizontally","aria-checked":mirrored.to_string(),
                 onclick:move |_|{
-                    if let Some(source)=project.write().sources.iter_mut().find(|source|source.id==source_id)
-                        && let SourceKind::Camera{mirrored,..}=&mut source.kind {*mirrored = !*mirrored;}
+                    crate::source_settings::change_camera_settings(project, source_id, &mirror_device_id, |_, mirrored| {
+                        *mirrored = !*mirrored;
+                    });
                 },
                 if mirrored {"On"} else {"Off"}
             }
-        }
-    }
-}
-
-fn change_camera_mode(
-    mut project: Signal<Workspace>,
-    source_id: u32,
-    expected_device: &str,
-    next: Option<acheflow_media_api::visual::CameraMode>,
-) {
-    use acheflow_media_api::{live::SourceCapture, visual::SourceKind};
-    let capture = {
-        let mut workspace = project.write();
-        let Some(source) = workspace
-            .sources
-            .iter_mut()
-            .find(|source| source.id == source_id)
-        else {
-            return;
-        };
-        let SourceKind::Camera {
-            device_id, mode, ..
-        } = &mut source.kind
-        else {
-            return;
-        };
-        if device_id != expected_device || *mode == next {
-            return;
-        }
-        *mode = next;
-        SourceCapture::of(source)
-    };
-    if let Some(client) = try_consume_context::<LiveClient>()
-        .filter(|client| client.owns() && !*client.busy.peek() && !*client.scoped_pending.peek())
-        && let Some(mut saved) = try_consume_context::<crate::workspace_sync::WorkspaceSync>()
-            .and_then(|sync| sync.saved_source(source_id))
-        && let SourceKind::Camera { mode, .. } = &mut saved.kind
-    {
-        *mode = next;
-        // Apply a preset change on its own. Device and mirror edits use the
-        // existing capture settings action, which applies those drafts together.
-        if capture.matches(&saved) {
-            client.source_edit(source_id, SourceEdit::Capture(capture));
         }
     }
 }

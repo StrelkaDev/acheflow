@@ -31,6 +31,7 @@ nav { display: flex; flex-direction: column; gap: 6px; }
 .status-dot { flex: 0 0 6px; height: 6px; border-radius: 3px; background: #74bd9a; }
 .workspace { flex: 1; min-width: 0; min-height: 0; height: 100%; position: relative; overflow: hidden; display: flex; flex-direction: column; }
 .workspace-body { display:flex; flex:1; min-width:0; min-height:0; position:relative; z-index:1; }
+.workspace-notices { position:relative; z-index:2; flex-shrink:0; }
 .tab-viewport { position: relative; flex: 1; min-width:0; min-height: 0; overflow: hidden; z-index: 1; }
 /* Keep inactive panes laid out so Blitz retains each node's scroll offset. */
 .tab-scroll { position: absolute; inset: 0; overflow-y: auto; visibility: hidden; pointer-events: none; }
@@ -291,7 +292,7 @@ button.selected { background:var(--accent-surface); color:var(--accent-text); bo
 .input-waiting { color:#ffc48e; }
 
 .scene-layer.selected-layer { border:2px solid var(--accent-text); }
-.scene-layer .resize-handle { position:absolute; width:16px; height:16px; min-width:0; padding:0; border:2px solid #101822; border-radius:2px; background:var(--accent-text); }
+.scene-layer .resize-handle { position:absolute; z-index:1; width:16px; height:16px; min-width:0; padding:0; border:2px solid #101822; border-radius:2px; background:var(--accent-text); }
 .resize-handle.top-left { left:0; top:0; cursor:nwse-resize; }
 .resize-handle.top-right { right:0; top:0; cursor:nesw-resize; }
 .resize-handle.bottom-left { left:0; bottom:0; cursor:nesw-resize; }

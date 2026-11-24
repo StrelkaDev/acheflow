@@ -875,6 +875,171 @@ mod tests {
     use super::*;
     use crate::project::Layer;
 
+    #[tokio::test]
+    async fn active_preview_switches_to_editing_and_resizes_the_selected_layer() {
+        use blitz_dom::{Document, DocumentConfig};
+        use blitz_traits::{
+            events::{
+                BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons,
+                PointerCoords, UiEvent,
+            },
+            shell::Viewport,
+        };
+        use dioxus_native::DioxusDocument;
+        use std::{cell::Cell, rc::Rc};
+
+        #[derive(Default)]
+        struct Harness {
+            project: Cell<Option<Signal<Workspace>>>,
+            editing: Cell<Option<Signal<bool>>>,
+        }
+        fn app() -> Element {
+            let harness = consume_context::<Rc<Harness>>();
+            let project = use_signal(|| {
+                let mut workspace = Workspace::default();
+                workspace.add_source();
+                let source = workspace.sources[0].id;
+                workspace.sources[0].resolution.width = 800;
+                workspace.sources[0].resolution.height = 800;
+                workspace.add_scene(Orientation::Horizontal);
+                workspace.scenes[0].layers = [1, 2]
+                    .map(|id| Layer {
+                        id,
+                        source_id: source,
+                        x: 80,
+                        y: 100,
+                        width: 400,
+                        height: 200,
+                        ..Default::default()
+                    })
+                    .to_vec();
+                workspace
+            });
+            crate::live_client::use_live_client(project);
+            crate::control_client::use_control_client(project);
+            harness.project.set(Some(project));
+            let editing = use_signal(|| false);
+            harness.editing.set(Some(editing));
+            let selection = use_signal(|| Some(1));
+            let scene_id = project.peek().scenes[0].id;
+            rsx! {
+                style {{include_str!("dashboard.css")}}
+                Canvas {project, scene_id:Some(scene_id), orientation:Orientation::Horizontal,
+                    editable:editing(), selection:Some(selection)}
+            }
+        }
+
+        let harness = Rc::new(Harness::default());
+        let mut doc = DioxusDocument::new(
+            VirtualDom::new(app).with_root_context(harness.clone()),
+            DocumentConfig {
+                font_ctx: Some(dioxus_native::build_single_font_ctx(include_bytes!(
+                    "../assets/DejaVuSans.woff2"
+                ))),
+                ..Default::default()
+            },
+        );
+        doc.initial_build();
+        doc.inner.borrow_mut().set_viewport(Viewport {
+            window_size: (1000, 800),
+            ..Default::default()
+        });
+        let settle = |doc: &mut DioxusDocument| {
+            for _ in 0..30 {
+                if !doc.poll(None) {
+                    doc.inner.borrow_mut().resolve(0.);
+                    return;
+                }
+            }
+            panic!("Canvas did not settle");
+        };
+        settle(&mut doc);
+        let preview_version = |doc: &DioxusDocument| {
+            let inner = doc.inner.borrow();
+            let preview = inner.query_selector(".scene-gpu-preview").unwrap().unwrap();
+            let version = inner
+                .get_node(preview)
+                .unwrap()
+                .attr("data-frame".into())
+                .unwrap();
+            (preview, version.parse::<u64>().unwrap())
+        };
+        let (preview, before) = preview_version(&doc);
+        harness.editing.get().unwrap().set(true);
+        settle(&mut doc);
+        let (editing_preview, after) = preview_version(&doc);
+        assert_eq!(editing_preview, preview);
+        assert!(after > before);
+
+        let pointer = |x, y, pressed, mods| BlitzPointerEvent {
+            id: BlitzPointerId::Mouse,
+            is_primary: true,
+            coords: PointerCoords {
+                page_x: x,
+                page_y: y,
+                screen_x: x,
+                screen_y: y,
+                client_x: x,
+                client_y: y,
+            },
+            button: MouseEventButton::Main,
+            buttons: if pressed {
+                MouseEventButtons::Primary
+            } else {
+                MouseEventButtons::None
+            },
+            mods,
+            details: Default::default(),
+            element: Default::default(),
+            active_pointers: Default::default(),
+        };
+        let project = harness.project.get().unwrap();
+        for (mods, ratio) in [
+            (Modifiers::SHIFT, 2.),
+            (Modifiers::SHIFT | Modifiers::ALT, 1.),
+            (Modifiers::empty(), 0.),
+        ] {
+            let point = {
+                let inner = doc.inner.borrow();
+                let handle = inner
+                    .query_selector(".selected-layer .resize-handle.bottom-right")
+                    .unwrap()
+                    .unwrap();
+                inner.get_node(handle).unwrap().absolute_position(8., 8.)
+            };
+            doc.handle_ui_event(UiEvent::PointerMove(pointer(point.x, point.y, false, mods)));
+            doc.handle_ui_event(UiEvent::PointerDown(pointer(point.x, point.y, true, mods)));
+            settle(&mut doc);
+            let (x, y) = (point.x + 34., point.y + 16.);
+            doc.handle_ui_event(UiEvent::PointerMove(pointer(x, y, true, mods)));
+            doc.handle_ui_event(UiEvent::PointerUp(pointer(x, y, false, mods)));
+            settle(&mut doc);
+
+            let workspace = project.peek();
+            let layers = &workspace.scenes[0].layers;
+            assert_eq!(
+                (layers[1].x, layers[1].y, layers[1].width, layers[1].height),
+                (80, 100, 400, 200)
+            );
+            let selected = &layers[0];
+            assert_eq!((selected.x, selected.y), (80, 100));
+            assert!(selected.width > 400);
+            if ratio > 0. {
+                assert!(
+                    (f64::from(selected.width) - ratio * f64::from(selected.height)).abs() <= 1.
+                );
+            } else {
+                assert!(selected.width > selected.height);
+            }
+        }
+        let (_, before) = preview_version(&doc);
+        harness.editing.get().unwrap().set(false);
+        settle(&mut doc);
+        let (viewing_preview, after) = preview_version(&doc);
+        assert_eq!(viewing_preview, preview);
+        assert!(after > before);
+    }
+
     #[test]
     fn offline_camera_aspect_follows_the_preset_and_auto_restores_the_manual_size() {
         use acheflow_media_api::visual::{CameraMode, SourceKind};

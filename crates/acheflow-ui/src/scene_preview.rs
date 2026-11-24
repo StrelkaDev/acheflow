@@ -125,7 +125,9 @@ pub fn ScenePreview(
         })
     });
     let config_shared = shared.clone();
-    use_effect(use_reactive((&camera_preview,), move |(camera_preview,)| {
+    use_effect(use_reactive!(|camera_preview,
+                              viewport_content,
+                              placeholders| {
         let workspace = project.read();
         let Some(scene) = workspace.scenes.iter().find(|s| s.id == scene_id) else {
             return;
@@ -160,14 +162,14 @@ pub fn ScenePreview(
             .as_ref()
             .map(|f| f.inputs.clone())
             .unwrap_or_default();
+        // Discard old placeholders when changing preview mode or source size.
+        inputs.retain(|id, input| {
+            state
+                .patterns
+                .get(id)
+                .is_none_or(|pattern| !Arc::ptr_eq(&input.image, &pattern.image))
+        });
         if placeholders {
-            // Reuse decoded frames and replace old placeholders after a size change.
-            inputs.retain(|id, input| {
-                state
-                    .patterns
-                    .get(id)
-                    .is_none_or(|pattern| !Arc::ptr_eq(&input.image, &pattern.image))
-            });
             for source in workspace.sources.iter().filter(|s| s.kind.is_video_input()) {
                 let size = source
                     .camera_mode_resolution()
@@ -191,6 +193,8 @@ pub fn ScenePreview(
             for (id, pattern) in &state.patterns {
                 inputs.entry(*id).or_insert_with(|| pattern.clone());
             }
+        } else {
+            state.patterns.clear();
         }
         let mut contents = scene.clone();
         if viewport_content {
@@ -300,11 +304,7 @@ pub fn ScenePreview(
                     received = downloaded.iter().any(Option::is_some);
                     let mut state = shared.lock().unwrap();
                     if state.owner == owner && state.server == server {
-                        let patterns = if placeholders {
-                            state.patterns.clone()
-                        } else {
-                            HashMap::new()
-                        };
+                        let patterns = state.patterns.clone();
                         if let Some(frame) = state.frame.as_mut() {
                             frame.inputs = downloaded.into_iter().flatten().collect();
                             for (id, pattern) in patterns {

@@ -224,10 +224,12 @@ These actions preserve the active scene and other inputs.
   grant camera access when the Acheflow app asks. The server opens each camera
   by its saved device identity. Add each camera once and reuse it across scenes.
   The source card can switch devices, choose a **Capture mode** reported by that
-  camera or keep **Auto**, and mirror the source horizontally. Changing only
-  **Capture mode** on a saved camera applies it directly. Use the card's capture
-  action when changing the device or mirror setting. Camera capture preserves
-  native dimensions, including portrait modes. Set rotation on the layer in the scene.
+  camera or keep **Auto**, and mirror the source horizontally. **Capture mode**
+  and **Mirror horizontally** apply directly to the saved device while the
+  workspace is synchronized. Use the card's capture action when changing the
+  device. Resolve any workspace conflict shown below the Live tabs before
+  applying capture settings. Camera capture preserves native dimensions,
+  including portrait modes. Set rotation on the layer in the scene.
   The card reports the observed incoming FPS after frames arrive.
   Camera sources provide video.
   The device list refreshes while the picker is open. For OBS, start

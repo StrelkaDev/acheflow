@@ -46,6 +46,17 @@ pub fn dashboard() -> Element {
     crate::interaction::use_chat_draft(project);
     #[cfg(not(target_arch = "wasm32"))]
     let activation_notice = crate::native_activation::provide(project, page);
+    let notices = || {
+        rsx! {
+            div {class:"workspace-notices",
+                {native_activation_notice(
+                    #[cfg(not(target_arch = "wasm32"))]
+                    activation_notice,
+                )}
+                crate::workspace_sync::Notice {}
+            }
+        }
+    };
     rsx! {
         {text_input_mount()}
         style {{include_str!("dashboard.css")}}
@@ -59,20 +70,16 @@ pub fn dashboard() -> Element {
                         span {class:"nav-symbol",if item=="Live"{"▷"}else if item=="Settings"{"⚙"}else{"▦"}}"{item}"
                     }
                 }}
-                SidebarFooter {backend,following:(sync.following)(),ready:(sync.ready)()}
+                SidebarFooter {backend,following:(sync.following)(),ready:(sync.ready)(),conflict:(control.sync_conflict)()}
             }
             div {class:"workspace",
-                {native_activation_notice(
-                    #[cfg(not(target_arch = "wasm32"))]
-                    activation_notice,
-                )}
                 if effects(){SparksBackground {backend}}
                 Workspaces {project,catalog,storage_status,open:workspace_open}
-                crate::workspace_sync::Notice {}
+                if page()!="Live" {{notices()}}
                 div {class:if live.running(){"workspace-body with-live-chat"}else{"workspace-body"},
                 div {class:"tab-viewport",for tab in ["Overview","Live","Extensions","Settings"] {
                     div {key:"{tab}",class:if page()==tab{"tab-scroll active"}else{"tab-scroll"},"aria-hidden":if page()==tab{"false"}else{"true"},
-                        if tab=="Live"{Live {key:"{catalog.read().active_id()}",project,visible:page()=="Live",monitor_tab}}else{
+                        if tab=="Live"{Live {key:"{catalog.read().active_id()}",project,visible:page()=="Live",monitor_tab,workspace_notices:if page()=="Live" {notices()} else {VNode::empty()}}}else{
                             main {class:"content",
                                 if tab=="Overview"{
                                     div {class:"page-heading",div {h1 {"Overview"}p {"Your broadcast workspace, in one place."}}span {class:"badge",if live.running(){"Running"}else{"Idle"}}}
@@ -103,11 +110,17 @@ pub fn dashboard() -> Element {
 }
 
 #[component]
-fn SidebarFooter(backend: Signal<String>, following: bool, ready: bool) -> Element {
-    let status = match (following, ready) {
-        (true, true) => "Server workspace",
-        (true, false) => "Connecting to workspace",
-        (false, _) => "Local draft",
+fn SidebarFooter(
+    backend: Signal<String>,
+    following: bool,
+    ready: bool,
+    #[props(default)] conflict: bool,
+) -> Element {
+    let status = match (following, ready, conflict) {
+        (true, _, true) => "Workspace conflict",
+        (true, true, false) => "Server workspace",
+        (true, false, false) => "Connecting to workspace",
+        (false, _, _) => "Local draft",
     };
     rsx! {
         div {class:"sidebar-footer",

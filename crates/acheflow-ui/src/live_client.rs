@@ -421,6 +421,10 @@ impl LiveClient {
                 {
                     *previous = edit
                 }
+                (
+                    Some(ScopedEdit::Source(previous_id, SourceEdit::Capture(previous))),
+                    ScopedEdit::Source(id, SourceEdit::Capture(capture)),
+                ) if *previous_id == id => *previous = capture,
                 (_, edit) => edits.push(edit),
             }
         }
