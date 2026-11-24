@@ -21,7 +21,7 @@ pub(super) fn WorkspacePermissions() -> Element {
         div {class:"padded permission-list",hidden:!expanded(),
             if let Some(state) = current {
                 if state.client_capabilities.is_empty() {
-                    div {class:"permission-empty",h3 {"No channel access granted"} p {class:"form-help","Connect an account in its server integration settings to choose a channel and allow access."}}
+                    div {class:"permission-empty",h3 {"No separate channel rules"} p {class:"form-help","Connected server accounts use the features enabled in their integration settings and authorized by the platform."}}
                 }
                 for grant in state.client_capabilities {
                     PermissionCard {key:"{grant.provider}:{grant.account_id}:{grant.channel_id}",grant}

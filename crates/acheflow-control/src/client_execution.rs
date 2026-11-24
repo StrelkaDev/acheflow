@@ -16,6 +16,7 @@ const MAX_INSTRUCTIONS: usize = 512;
 struct Registration {
     requested: ClientRegistration,
     status: ExecutorStatus,
+    server_owned: bool,
     retired_at_ms: Option<u64>,
 }
 impl Registration {
@@ -45,22 +46,47 @@ pub struct ExecutionRegistry {
 fn identity(value: &str) -> bool {
     valid_id(value, 128)
 }
-fn granted(connection: &Connection, policy: &[CapabilityGrant]) -> Option<Connection> {
-    let allowed: BTreeSet<_> = policy
+/// A missing rule and an explicit empty rule have different meanings for a server binding.
+pub fn channel_policy(
+    policy: &[CapabilityGrant],
+    provider: &str,
+    account_id: &str,
+    channel_id: &str,
+) -> Option<BTreeSet<Capability>> {
+    let mut matches = policy
         .iter()
         .filter(|grant| {
-            grant.provider == connection.provider
-                && grant.account_id == connection.account_id
-                && grant.channel_id == connection.channel_id
+            grant.provider == provider
+                && grant.account_id == account_id
+                && grant.channel_id == channel_id
         })
-        .flat_map(|grant| grant.capabilities.iter().copied())
-        .collect();
+        .peekable();
+    matches.peek()?;
+    Some(
+        matches
+            .flat_map(|grant| grant.capabilities.iter().copied())
+            .collect(),
+    )
+}
+
+fn granted(
+    connection: &Connection,
+    policy: &[CapabilityGrant],
+    server_owned: bool,
+) -> Option<Connection> {
     let mut result = connection.clone();
-    result.capabilities = connection
-        .capabilities
-        .intersection(&allowed)
-        .copied()
-        .collect();
+    match channel_policy(
+        policy,
+        &connection.provider,
+        &connection.account_id,
+        &connection.channel_id,
+    ) {
+        Some(allowed) => result
+            .capabilities
+            .retain(|capability| allowed.contains(capability)),
+        None if !server_owned => return None,
+        None => {}
+    }
     (!result.capabilities.is_empty()).then_some(result)
 }
 fn valid_action(action: &ClientAction) -> bool {
@@ -145,7 +171,7 @@ impl ExecutionRegistry {
                     .requested
                     .connections
                     .iter()
-                    .filter_map(|c| granted(c, &policy))
+                    .filter_map(|c| granted(c, &policy, registration.server_owned))
                     .collect();
                 if registration.status.connections.is_empty() {
                     registration.retire(now.min(registration.status.expires_at_ms));
@@ -164,6 +190,28 @@ impl ExecutionRegistry {
         request: ClientRegistration,
         now: u64,
     ) -> Result<ExecutorStatus, String> {
+        self.register_inner(workspace, actor, request, now, false)
+    }
+
+    /// The host must verify that this actor owns the enabled server binding.
+    pub fn register_server(
+        &mut self,
+        workspace: &str,
+        actor: &str,
+        request: ClientRegistration,
+        now: u64,
+    ) -> Result<ExecutorStatus, String> {
+        self.register_inner(workspace, actor, request, now, true)
+    }
+
+    fn register_inner(
+        &mut self,
+        workspace: &str,
+        actor: &str,
+        request: ClientRegistration,
+        now: u64,
+        server_owned: bool,
+    ) -> Result<ExecutorStatus, String> {
         self.maintain(now);
         if !identity(workspace) || !identity(actor) {
             return Err("invalid_argument: workspace or client identity".into());
@@ -171,7 +219,8 @@ impl ExecutionRegistry {
         validate_registration(&request)?;
         let key = (workspace.to_owned(), actor.to_owned());
         if let Some(old) = self.clients.get_mut(&key) {
-            if request.generation < old.requested.generation
+            if server_owned != old.server_owned
+                || request.generation < old.requested.generation
                 || (request.generation == old.requested.generation
                     && (!old.is_active() || old.requested != request))
             {
@@ -197,7 +246,7 @@ impl ExecutionRegistry {
         let connections: Vec<_> = request
             .connections
             .iter()
-            .filter_map(|c| granted(c, policy))
+            .filter_map(|c| granted(c, policy, server_owned))
             .collect();
         if connections.is_empty() {
             return Err("forbidden: no authorized client capabilities".into());
@@ -230,6 +279,7 @@ impl ExecutionRegistry {
             Registration {
                 requested: request,
                 status: status.clone(),
+                server_owned,
                 retired_at_ms: None,
             },
         );

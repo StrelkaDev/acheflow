@@ -80,7 +80,7 @@ fn ServerCard(source: String) -> Element {
         "not_authorized" => "Channel permission required",
         "reconnecting" => "Reconnecting",
         "failed" => "Unavailable",
-        "stopped" => "Stopped",
+        "stopped" if current.is_some() => "Stopped",
         "connecting" => "Connecting",
         _ => "Not configured",
     };

@@ -20,7 +20,7 @@ at package level.
 Each account card shows its state and identity. Open **Account & settings** to
 change authorization or features. Client panels remain mounted when switching
 tabs, retaining the open account session and unsaved input. Package installation
-and **Advanced permissions** are separate secondary sections below the cards.
+and **Channel permissions** are separate secondary sections below the cards.
 
 `acheflow-client` contains the native reactor and typed MCP adapter. See
 [client executor setup and limitations](client-executor.md).

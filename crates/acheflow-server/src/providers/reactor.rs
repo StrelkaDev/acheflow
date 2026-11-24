@@ -62,7 +62,7 @@ impl Registration<'_> {
             .into_iter()
             .flatten()
             .filter_map(|v| serde_json::from_value(v.clone()).ok())
-            .filter(|c| spec.capabilities.contains(c))
+            .filter(|c| spec.policy.as_ref().is_none_or(|policy| policy.contains(c)))
             .collect();
         if !capabilities.contains(&Capability::ChatRead) {
             return Err("Provider cannot collect this channel.".into());

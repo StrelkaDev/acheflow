@@ -5,6 +5,7 @@ use acheflow_client::{
     runtime::{Identity, ProviderRuntime},
     server_account::ServerAccount,
 };
+use acheflow_control::client_execution::channel_policy;
 use acheflow_extension_api::client_execution::*;
 use acheflow_media_api::{
     server_provider::{ServerIntegration, ServerProviderStatus},
@@ -21,7 +22,7 @@ mod reactor;
 struct Spec {
     workspace: String,
     binding: ServerIntegration,
-    capabilities: BTreeSet<Capability>,
+    policy: Option<BTreeSet<Capability>>,
 }
 struct Entry {
     spec: Spec,
@@ -202,22 +203,17 @@ impl Manager {
             .iter()
             .filter(|(_, b)| b.enabled)
             .map(|(id, b)| {
-                let capabilities = workspace
-                    .client_capabilities
-                    .iter()
-                    .filter(|g| {
-                        g.provider == *id
-                            && g.account_id == b.account_id
-                            && g.channel_id == b.channel_id
-                    })
-                    .flat_map(|g| g.capabilities.iter().copied())
-                    .collect();
                 (
                     id.clone(),
                     Spec {
                         workspace: workspace.id.clone(),
                         binding: b.clone(),
-                        capabilities,
+                        policy: channel_policy(
+                            &workspace.client_capabilities,
+                            id,
+                            &b.account_id,
+                            &b.channel_id,
+                        ),
                     },
                 )
             })
@@ -270,7 +266,11 @@ impl Manager {
                 },
             );
             retire_external(host, &workspace.id, &provider, &spec.binding.channel_id);
-            if !spec.capabilities.contains(&Capability::ChatRead) {
+            if spec
+                .policy
+                .as_ref()
+                .is_some_and(|policy| !policy.contains(&Capability::ChatRead))
+            {
                 self.mark(&provider, &actor, "not_authorized", 0);
                 continue;
             }
@@ -371,7 +371,7 @@ async fn worker(
                 provider: provider.clone(),
                 account_id: spec.binding.account_id.clone(),
                 channel_id: spec.binding.channel_id.clone(),
-                capabilities: spec.capabilities.clone(),
+                capabilities: BTreeSet::new(),
             },
         };
         let Ok(mut runtime) = ProviderRuntime::new_for_host(

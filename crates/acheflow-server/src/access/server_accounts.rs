@@ -1,7 +1,6 @@
 //! Explicit trusted-server connection. No caller-supplied storage or account identity is trusted.
 use super::*;
 use acheflow_client::server_account::{ServerAccount, authorization};
-use acheflow_extension_api::client_execution::{Capability, CapabilityGrant};
 use acheflow_media_api::{server_provider::*, workspace::Workspace};
 
 fn check(
@@ -282,19 +281,15 @@ fn prepare(workspace: &mut Workspace, provider: &str, binding: &ServerIntegratio
     let old = workspace
         .server_integrations
         .insert(provider.into(), binding.clone());
-    workspace.client_capabilities.retain(|g| {
-        !(g.provider == provider
-            && ((g.account_id == binding.account_id && g.channel_id == binding.channel_id)
-                || old.as_ref().is_some_and(|old| {
-                    g.account_id == old.account_id && g.channel_id == old.channel_id
-                })))
-    });
-    workspace.client_capabilities.push(CapabilityGrant {
-        provider: provider.into(),
-        account_id: binding.account_id.clone(),
-        channel_id: binding.channel_id.clone(),
-        capabilities: [Capability::ChatRead, Capability::AudienceRead].into(),
-    });
+    if let Some(old) = old
+        .filter(|old| old.account_id != binding.account_id || old.channel_id != binding.channel_id)
+    {
+        workspace.client_capabilities.retain(|grant| {
+            grant.provider != provider
+                || grant.account_id != old.account_id
+                || grant.channel_id != old.channel_id
+        });
+    }
 }
 pub(super) async fn disconnect(
     State(access): State<Arc<Access>>,

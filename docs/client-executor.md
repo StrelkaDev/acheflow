@@ -76,14 +76,16 @@ its connection generation, not its saved permission. YouTube uses the resource's
 for the channel and the video ID for the broadcast. Twitch and VK Video Live keep
 their stable channel identities under the same contract.
 
-The Server tab shows one permission card per account/channel. Read chat, audience
-and sending are independent controls. **Revoke access** saves an empty permission
-set so reconnecting cannot restore it; explicitly select rights to allow access again.
+The Server tab shows one permission card per saved account/channel rule. Without
+a rule, an enabled server binding uses the capabilities its provider reports for
+that channel, based on **Server features** and platform authorization. Saved rules
+can restrict these capabilities. **Revoke access** saves an empty permission set
+so reconnecting cannot restore it. Select rights to allow access again.
 The versioned `channel_permissions` object replaces legacy broadcast-scoped
-`client_capabilities` arrays. Old arrays are deliberately discarded on load; reconnect
-or explicitly grant channel access again. Credentials are unaffected. Existing
-YouTube server bindings that still contain a video ID must be reconnected with the
-stable channel ID; a mismatched binding fails closed.
+`client_capabilities` arrays. Old arrays are deliberately discarded on load.
+Server bindings and credentials are preserved. External executors still need
+an explicit grant. YouTube server bindings that still contain a video ID must be
+reconnected with the stable channel ID; a mismatched binding fails closed.
 
 This is a fragment of a complete workspace, not a standalone import. Apply requires
 the normal management grants and expected revision. Settings must match nonsecret
@@ -190,10 +192,11 @@ current workspace/revision, a `unix_milliseconds:unique_suffix` intent ID and:
 ```
 
 Only grant implemented capabilities. Policy persists as workspace
-`channel_permissions`; default is empty/deny. The client sends connection metadata
-through `register` after local authorization, using a monotonic generation and
-connection IDs local to that client. Server permissions are the intersection of saved policy and requested live
-capabilities; the trusted executor must advertise only its implemented handlers.
+`channel_permissions`. External executors require an explicit matching rule.
+The client sends connection metadata through `register` after local authorization,
+using a monotonic generation and connection IDs local to that client. The server
+intersects the requested capabilities with the saved rule. Executors must
+advertise only their implemented handlers.
 Host identities and IDs owned by server logic cannot be claimed as client providers. Automatic registration
 does not rewrite saved policy. Only one executor may own a provider/channel at once.
 Switching an account, workspace or expired session requires a new generation.

@@ -91,7 +91,7 @@ fn pending(access: &Access, workspace: &Workspace, slot: &str) -> PendingAccount
     }
 }
 #[tokio::test]
-async fn connection_is_read_only_and_locked_vault_preserves_the_old_binding() {
+async fn connection_needs_no_separate_grant_and_locked_vault_preserves_the_old_binding() {
     let (_dir, access, owner, workspace) = fixture();
     let store = Memory::default();
     let result = complete(
@@ -105,11 +105,7 @@ async fn connection_is_read_only_and_locked_vault_preserves_the_old_binding() {
     .unwrap();
     assert_eq!(result.0.binding.account_id, "verified-bot");
     let current = access.host.runtime.saved_state().1.unwrap();
-    assert_eq!(current.client_capabilities.len(), 1);
-    assert_eq!(
-        current.client_capabilities[0].capabilities,
-        [Capability::ChatRead, Capability::AudienceRead].into()
-    );
+    assert!(current.client_capabilities.is_empty());
     let old = current.server_integrations["alpha"].clone();
     store.fail_write.store(true, Ordering::SeqCst);
     assert_eq!(

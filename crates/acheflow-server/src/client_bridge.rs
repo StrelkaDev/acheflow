@@ -148,20 +148,21 @@ async fn call_inner(
     let workspace = &actor.workspace_id;
     match request {
         ExecutorRequest::Register { registration } => {
+            let saved = host.runtime.workspace.read().unwrap();
             for connection in &registration.connections {
-                if server_provider.is_none()
-                    && host
-                        .runtime
-                        .workspace
-                        .read()
-                        .unwrap()
-                        .as_ref()
-                        .is_some_and(|w| {
-                            w.server_integrations
-                                .get(&connection.provider)
-                                .is_some_and(|b| b.enabled && b.channel_id == connection.channel_id)
-                        })
-                {
+                let server_binding = saved
+                    .as_ref()
+                    .and_then(|w| w.server_integrations.get(&connection.provider))
+                    .filter(|b| b.enabled && b.channel_id == connection.channel_id);
+                if let Some(provider) = server_provider {
+                    if provider != connection.provider
+                        || !server_binding.is_some_and(|b| b.account_id == connection.account_id)
+                    {
+                        return Err(
+                            "forbidden: connection does not match the server binding".into()
+                        );
+                    }
+                } else if server_binding.is_some() {
                     return Err("forbidden: this channel is collected by the server".into());
                 }
                 if host
@@ -173,12 +174,12 @@ async fn call_inner(
                     return Err("conflict: provider identity is reserved by server logic".into());
                 }
             }
-            let status = host.client_execution.lock().unwrap().register(
-                workspace,
-                &actor.id,
-                registration,
-                now,
-            )?;
+            let mut registry = host.client_execution.lock().unwrap();
+            let status = if server_provider.is_some() {
+                registry.register_server(workspace, &actor.id, registration, now)
+            } else {
+                registry.register(workspace, &actor.id, registration, now)
+            }?;
             Ok(json!(status))
         }
         ExecutorRequest::Unregister { generation } => {

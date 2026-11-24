@@ -128,10 +128,9 @@ Twitch requests chat-read, chat-send and poll-management scopes independently.
 YouTube requests `youtube.readonly` for reading and `youtube.force-ssl` when chat
 sending is enabled. VK Video Live sending requests `chat:message:send` and
 requires an active stream; reconnect an older read-only account after enabling
-**Send chat**. For an existing workspace restricted to reading, open
-**Extensions → Server → Advanced permissions → Review permissions** and choose **Allow sending** for
-the account. This changes only that account/channel’s workspace chat permission;
-platform authorization is still required. Native VK polls remain unavailable.
+**Send chat**. If the channel also has a saved rule that limits it to reading,
+enable **Send chat** for the account under **Extensions → Server → Channel permissions**.
+Platform authorization is still required. Native VK polls remain unavailable.
 Turning off a function also disables the corresponding guest operation. Enabling
 new functions validates the existing token against their requirements and requests
 reconnection when permissions are missing. Older broader platform consent is not

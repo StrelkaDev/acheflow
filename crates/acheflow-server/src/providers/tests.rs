@@ -79,7 +79,10 @@ async fn ready(host: &ControlHost) {
 }
 #[tokio::test]
 async fn two_real_wasm_providers_collect_once_and_send_from_server_without_a_client() {
-    let (host, workspace) = fixture();
+    let (host, mut workspace) = fixture();
+    // Older workspaces can retain bindings after losing broadcast-scoped grants.
+    workspace.client_capabilities.clear();
+    *host.runtime.workspace.write().unwrap() = Some(workspace.clone());
     host.providers.reconcile(&host).await;
     ready(&host).await;
     let actors: Vec<_> = host
@@ -231,7 +234,17 @@ async fn capability_revocation_and_workspace_switch_retire_provider_authority() 
         workspace_id: workspace.id.clone(),
         request_id: format!("{}:revoke", crate::control::now_ms()),
         expected_revision: host.snapshot(0, 1).revision,
-        action: ControlAction::SetClientCapabilities { grants: vec![] },
+        action: ControlAction::SetClientCapabilities {
+            grants: workspace
+                .client_capabilities
+                .iter()
+                .cloned()
+                .map(|mut grant| {
+                    grant.capabilities.clear();
+                    grant
+                })
+                .collect(),
+        },
     })
     .await
     .unwrap();
