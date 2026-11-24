@@ -20,6 +20,7 @@ impl SourceCrop {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectKind {
+    ColorCorrection,
     Brightness,
     Contrast,
     Saturation,
@@ -30,7 +31,8 @@ pub enum EffectKind {
     Wgsl,
 }
 impl EffectKind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
+        Self::ColorCorrection,
         Self::Brightness,
         Self::Contrast,
         Self::Saturation,
@@ -40,8 +42,15 @@ impl EffectKind {
         Self::ChromaKey,
         Self::Wgsl,
     ];
+    pub const ADDABLE: [Self; 4] = [
+        Self::ColorCorrection,
+        Self::ChromaKey,
+        Self::Blur,
+        Self::Wgsl,
+    ];
     pub fn label(self) -> &'static str {
         match self {
+            Self::ColorCorrection => "Color correction",
             Self::Brightness => "Brightness",
             Self::Contrast => "Contrast",
             Self::Saturation => "Saturation",
@@ -70,11 +79,49 @@ impl EffectKind {
         match self {
             Self::Brightness | Self::Contrast => 120,
             Self::Saturation => 50,
-            Self::Grayscale | Self::ChromaKey => 100,
+            Self::ColorCorrection | Self::Grayscale | Self::ChromaKey | Self::Wgsl => 100,
             Self::Blur => 3,
             Self::Opacity => 75,
-            Self::Wgsl => 100,
         }
+    }
+}
+
+/// Percentages, with 100 representing a neutral multiplier or a gamma of 1.0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ColorCorrection {
+    pub brightness: u32,
+    pub contrast: u32,
+    pub saturation: u32,
+    pub grayscale: u32,
+    pub gamma: u32,
+    pub opacity: u32,
+}
+
+impl Default for ColorCorrection {
+    fn default() -> Self {
+        Self {
+            brightness: 100,
+            contrast: 100,
+            saturation: 100,
+            grayscale: 0,
+            gamma: 100,
+            opacity: 100,
+        }
+    }
+}
+
+impl ColorCorrection {
+    pub const MIN_GAMMA: u32 = 10;
+    pub const MAX_GAMMA: u32 = 300;
+
+    fn is_valid(self) -> bool {
+        self.brightness <= EffectKind::Brightness.max()
+            && self.contrast <= EffectKind::Contrast.max()
+            && self.saturation <= EffectKind::Saturation.max()
+            && self.grayscale <= EffectKind::Grayscale.max()
+            && self.opacity <= EffectKind::Opacity.max()
+            && (Self::MIN_GAMMA..=Self::MAX_GAMMA).contains(&self.gamma)
     }
 }
 
@@ -121,6 +168,8 @@ pub struct LayerEffect {
     pub shader: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chroma_key: Option<ChromaKey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_correction: Option<ColorCorrection>,
     pub kind: EffectKind,
     pub amount: u32,
     pub enabled: bool,
@@ -136,12 +185,18 @@ impl LayerEffect {
             },
             kind,
             chroma_key: (kind == EffectKind::ChromaKey).then(ChromaKey::default),
+            color_correction: (kind == EffectKind::ColorCorrection).then(ColorCorrection::default),
             amount: kind.default_amount(),
             enabled: true,
         }
     }
 
-    pub(crate) fn validate_chroma_key(&self) -> Result<(), String> {
+    pub(crate) fn validate_settings(&self) -> Result<(), String> {
+        if self.color_correction.is_some_and(|correction| {
+            self.kind != EffectKind::ColorCorrection || !correction.is_valid()
+        }) {
+            return Err("Invalid Color correction settings".into());
+        }
         if self
             .chroma_key
             .is_some_and(|key| self.kind != EffectKind::ChromaKey || !key.is_valid())
@@ -149,5 +204,26 @@ impl LayerEffect {
             return Err("Invalid Chroma key settings".into());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_correction_can_be_saved_with_a_gamma_value() {
+        let saved = serde_json::json!({
+            "id": 1, "kind": "color_correction", "amount": 100, "enabled": true,
+            "color_correction": {"gamma": 150}
+        });
+        let effect = serde_json::from_value::<LayerEffect>(saved).unwrap();
+        assert!(effect.validate_settings().is_ok());
+        let encoded = serde_json::to_value(&effect).unwrap();
+        assert_eq!(encoded["color_correction"]["gamma"], 150);
+        assert_eq!(encoded["color_correction"]["brightness"], 100);
+        let mut invalid = effect;
+        invalid.color_correction.as_mut().unwrap().gamma = 0;
+        assert!(invalid.validate_settings().is_err());
     }
 }

@@ -439,6 +439,46 @@ mod tests {
         let pixels = gpu.render(&frame).unwrap();
         assert_eq!(pixels.get_pixel(12, 16).0, [0, 255, 0]);
         assert_eq!(pixels.get_pixel(48, 16).0, [0, 0, 0]);
+
+        frame.inputs.insert(
+            1,
+            SourceFrame {
+                image: Arc::new(RgbImage::from_fn(64, 32, |x, _| {
+                    if x < 32 {
+                        image::Rgb([0, 255, 0])
+                    } else {
+                        image::Rgb([64, 0, 0])
+                    }
+                })),
+                size: frame.size.clone(),
+            },
+        );
+        let correction = LayerEffect {
+            color_correction: Some(acheflow_media_api::layer::ColorCorrection {
+                gamma: 200,
+                opacity: 50,
+                ..Default::default()
+            }),
+            ..LayerEffect::new(EffectKind::ColorCorrection)
+        };
+        let key = LayerEffect {
+            chroma_key: Some(ChromaKey {
+                color: [0, 255, 0],
+                ..Default::default()
+            }),
+            ..LayerEffect::new(EffectKind::ChromaKey)
+        };
+        frame.scene.layers[0].effects = vec![key, correction];
+        let pixels = gpu.render(&frame).unwrap();
+        assert_eq!(pixels.get_pixel(12, 16).0, [0, 0, 0]);
+        let [r, 0, 0] = pixels.get_pixel(48, 16).0 else {
+            panic!("Gamma should keep a red-only pixel red");
+        };
+        assert!((62..=66).contains(&r), "gamma 2 and 50% opacity: {r}");
+        frame.scene.layers[0].effects[0].enabled = false;
+        let pixels = gpu.render(&frame).unwrap();
+        assert!((126..=129).contains(&pixels.get_pixel(12, 16)[1]));
+        assert!((62..=66).contains(&pixels.get_pixel(48, 16)[0]));
     }
 
     #[test]
@@ -625,7 +665,9 @@ mod tests {
         frame.scene.layers[0].css =
             "left:8px;top:8px;width:32px;height:32px;--crop-left:8px;".into();
         frame.scene.layers[0].effects.push(LayerEffect {
-                chroma_key: None, id: acheflow_media_api::workspace::new_entity_id(),kind:EffectKind::Wgsl,amount:100,enabled:true,shader:"fn effect(uv:vec2f,color:vec4f)->vec4f {return vec4f(vec3f(1.)-color.rgb,color.a);}".into()});
+            shader:"fn effect(uv:vec2f,color:vec4f)->vec4f {return vec4f(vec3f(1.)-color.rgb,color.a);}".into(),
+            ..LayerEffect::new(EffectKind::Wgsl)
+        });
         let image = gpu.render(&frame).unwrap();
         assert!(
             image.get_pixel(20, 20)[0] > 240

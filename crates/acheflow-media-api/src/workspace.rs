@@ -797,7 +797,7 @@ impl Workspace {
                     if effect.id == 0 || !effect_ids.insert(effect.id) {
                         return Err("Invalid or duplicate effect identity".into());
                     }
-                    effect.validate_chroma_key()?;
+                    effect.validate_settings()?;
                     if effect.kind == EffectKind::Wgsl {
                         crate::appearance::validate_shader(&effect.shader)?;
                     } else if !effect.shader.is_empty() {

@@ -335,14 +335,17 @@ browser-only editor is used.
 against the common scene timeline, but transitions between separate stylesheet
 edits are not retained.
 
-Built-in effects run as wgpu fragment passes, including brightness, contrast,
-saturation, grayscale, blur, opacity and Chroma key. Up to eight
-ordered effects per layer are allowed, each independently enabled/removed/moved.
+**Color correction** combines brightness, contrast, saturation, grayscale, gamma
+and opacity in one GPU pass. Gamma defaults to 1.00. Higher values brighten
+midtones and lower values darken them. **Chroma key**, **Blur** and custom WGSL
+are separate effects. A layer can have up to eight ordered effects, each with its
+own enable, remove and move controls. Previously saved effects keep their original
+order and settings.
 
-**Chroma key** uses a hex RGB key color in the layer inspector. **Tolerance**
+Add **Chroma key** and enter a hex RGB key color. **Tolerance**
 sets the chroma range to remove. **Softness** feathers the transition, **Edge
 smoothing** samples nearby pixels, and **Despill** reduces the key-color fringe.
-**Amount** controls the strength of the complete effect. Save the scene to use
+**Amount** controls the strength of the key. Save the scene to use
 the same settings in Studio and the broadcast.
 
 Custom WGSL uses this signature.

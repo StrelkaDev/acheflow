@@ -955,12 +955,10 @@ async fn output_pipeline(encoder: &str) {
     edited.scenes[0].layers[1]
         .effects
         .push(acheflow_media_api::workspace::LayerEffect {
-            chroma_key: None,
-            id: acheflow_media_api::workspace::new_entity_id(),
-            shader: String::new(),
-            kind: acheflow_media_api::workspace::EffectKind::Opacity,
             amount: 50,
-            enabled: true,
+            ..acheflow_media_api::workspace::LayerEffect::new(
+                acheflow_media_api::workspace::EffectKind::Opacity,
+            )
         });
     let Json(_) = save_content(&edited).await.unwrap();
     until(|| {

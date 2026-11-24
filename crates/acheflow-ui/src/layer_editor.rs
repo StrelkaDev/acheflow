@@ -4,7 +4,7 @@ use crate::{
     scene_canvas::SceneHistory,
     slider::Slider,
 };
-use acheflow_media_api::layer::ChromaKey;
+use acheflow_media_api::layer::{ChromaKey, ColorCorrection};
 use dioxus_native::prelude::*;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -342,7 +342,7 @@ fn LayerInspector(
                 CodeEditor {label:"Layer CSS",kind:CodeKind::Css,value:layer_css(layer),change:move |value|edit_css(project,target,layer_id,history,|_|value)}
                 div {class:"panel-heading",h3 {"Layer effects"}span {class:"badge","{layer.effects.len()} / 8"}}
                 p {class:"inspector-help form-help","GPU effects run from top to bottom after cropping. CSS decorates the processed layer. Audio is unchanged."}
-                div {class:"row padded effect-add",for kind in EffectKind::ALL {button {disabled:layer.effects.len()>=8,onclick:move |_|edit_effects(project,target,layer_id,history,None,|effects|{if effects.len()<8{effects.push(LayerEffect::new(kind));}}),"+ {kind.label()}"}}}
+                div {class:"row padded effect-add",for kind in EffectKind::ADDABLE {button {disabled:layer.effects.len()>=8,onclick:move |_|edit_effects(project,target,layer_id,history,None,|effects|{if effects.len()<8{effects.push(LayerEffect::new(kind));}}),"+ {kind.label()}"}}}
                 for (effect_index,entry) in layer.effects.iter().enumerate() {
                     {let effect_id=entry.id; let effect=entry; rsx! {
                     div {key:"{effect_id}",class:"effect-row",
@@ -352,7 +352,11 @@ fn LayerInspector(
                             button {disabled:effect_index+1==layer.effects.len(),"aria-label":"Move effect later",onclick:move |_|move_effect(project,target,layer_id,effect_id,1,history),"↓"}
                             button {onclick:move |_|edit_effects(project,target,layer_id,history,None,|effects|effects.retain(|e| e.id!=effect_id)),"Remove"}
                         }
-                        Slider {label:effect.kind.amount_label(),unit:if effect.kind==EffectKind::Blur {"px"}else{"%"},value:effect.amount as i32,min:0,max:effect.kind.max() as i32,reset:Some(effect.kind.default_amount() as i32),change:move |v:i32|edit_effect(project,target,layer_id,effect_id,history,Some("amount"),|e|e.amount=v as u32)}
+                        if effect.kind==EffectKind::ColorCorrection {
+                            ColorCorrectionControls {project,target,layer_id,effect_id,history,correction:effect.color_correction.unwrap_or_default()}
+                        } else {
+                            Slider {label:effect.kind.amount_label(),unit:if effect.kind==EffectKind::Blur {"px"}else{"%"},value:effect.amount as i32,min:0,max:effect.kind.max() as i32,reset:Some(effect.kind.default_amount() as i32),change:move |v:i32|edit_effect(project,target,layer_id,effect_id,history,Some("amount"),|e|e.amount=v as u32)}
+                        }
                         if effect.kind==EffectKind::Wgsl {
                             p {class:"form-help","fn effect(uv, color) → vec4f · sample_source(uv) · params.time (seconds), params.strength, params.size. Bounded fragment functions; no loops or custom bindings."}
                             CodeEditor {label:"WGSL shader",kind:CodeKind::Wgsl,value:effect.shader.clone(),change:move |v|edit_effect(project,target,layer_id,effect_id,history,None,|e|e.shader=v)}
@@ -365,6 +369,79 @@ fn LayerInspector(
                 }}}
             }
 
+    }
+}
+
+#[component]
+fn ColorCorrectionControls(
+    project: Signal<Workspace>,
+    target: LayerTarget,
+    layer_id: u64,
+    effect_id: u64,
+    history: Option<Signal<SceneHistory>>,
+    correction: ColorCorrection,
+) -> Element {
+    let defaults = ColorCorrection::default();
+    type SetValue = fn(&mut ColorCorrection, u32);
+    let sliders = [
+        (
+            "Brightness",
+            correction.brightness,
+            defaults.brightness,
+            0,
+            EffectKind::Brightness.max(),
+            (|c, v| c.brightness = v) as SetValue,
+        ),
+        (
+            "Contrast",
+            correction.contrast,
+            defaults.contrast,
+            0,
+            EffectKind::Contrast.max(),
+            |c, v| c.contrast = v,
+        ),
+        (
+            "Saturation",
+            correction.saturation,
+            defaults.saturation,
+            0,
+            EffectKind::Saturation.max(),
+            |c, v| c.saturation = v,
+        ),
+        (
+            "Grayscale",
+            correction.grayscale,
+            defaults.grayscale,
+            0,
+            EffectKind::Grayscale.max(),
+            |c, v| c.grayscale = v,
+        ),
+        (
+            "Gamma",
+            correction.gamma,
+            defaults.gamma,
+            ColorCorrection::MIN_GAMMA,
+            ColorCorrection::MAX_GAMMA,
+            |c, v| c.gamma = v,
+        ),
+        (
+            "Opacity",
+            correction.opacity,
+            defaults.opacity,
+            0,
+            EffectKind::Opacity.max(),
+            |c, v| c.opacity = v,
+        ),
+    ];
+    rsx! {
+        for (label, value, reset, min, max, set) in sliders {
+            Slider {key:"{label}",label,value:value as i32,min:min as i32,max:max as i32,reset:Some(reset as i32),unit:"%",
+                format_value:(label=="Gamma").then(|| Callback::new(|v:i32|format!("{:.2}", f64::from(v)/100.))),
+                change:move |v:i32|edit_effect(project,target,layer_id,effect_id,history,Some(label),|effect|{
+                    set(effect.color_correction.get_or_insert_with(ColorCorrection::default),v as u32);
+                })
+            }
+        }
     }
 }
 
@@ -445,6 +522,73 @@ fn parse_key_color(input: &str) -> Option<[u8; 3]> {
 #[cfg(test)]
 mod viewport_target_tests {
     use super::*;
+
+    #[test]
+    fn layer_inspector_lists_color_correction_with_a_neutral_gamma() {
+        use blitz_dom::DocumentConfig;
+        use dioxus_native::DioxusDocument;
+
+        fn app() -> Element {
+            let project = use_signal(|| {
+                let mut workspace = Workspace::default();
+                workspace.add_source();
+                let scene = workspace.add_scene(crate::project::Orientation::Horizontal);
+                workspace.add_layer(scene, workspace.sources[0].id);
+                workspace.scenes[0].layers[0]
+                    .effects
+                    .push(LayerEffect::new(EffectKind::ColorCorrection));
+                workspace
+            });
+            let workspace = project.read();
+            let scene = &workspace.scenes[0];
+            let target = LayerTarget {
+                scene: scene.id,
+                viewport: None,
+            };
+            let layer_id = scene.layers[0].id;
+            let selection = use_signal(|| Some(layer_id));
+            rsx! { LayerInspector {project,target,layer_id,selected:true,selection,history:None} }
+        }
+
+        let mut doc = DioxusDocument::new(
+            VirtualDom::new(app),
+            DocumentConfig {
+                font_ctx: Some(dioxus_native::build_single_font_ctx(include_bytes!(
+                    "../assets/DejaVuSans.woff2"
+                ))),
+                ..Default::default()
+            },
+        );
+        doc.initial_build();
+        let dom = doc.inner.borrow();
+        let add_buttons: Vec<_> = dom
+            .query_selector_all(".effect-add button")
+            .unwrap()
+            .into_iter()
+            .map(|id| dom.get_node(id).unwrap().text_content())
+            .collect();
+        assert_eq!(
+            add_buttons,
+            [
+                "+ Color correction",
+                "+ Chroma key",
+                "+ Blur",
+                "+ WGSL shader"
+            ]
+        );
+        assert_eq!(
+            dom.query_selector_all(".effect-row [role='slider']")
+                .unwrap()
+                .len(),
+            6
+        );
+        assert!(
+            dom.query_selector(".effect-row [aria-label='Gamma'][aria-valuetext='1.00']")
+                .unwrap()
+                .is_some()
+        );
+    }
+
     #[test]
     fn viewport_edits_do_not_touch_primary_or_other_viewports_even_with_shared_layer_ids() {
         use acheflow_media_api::spatial::{ObjectKind, SceneObject, Transform};

@@ -221,7 +221,7 @@ fn validate_viewport_layer(layer: &Layer, source_ids: &[u32]) -> Result<(), Stri
     }
     crate::appearance::validate_css(&layer.css)?;
     for effect in &layer.effects {
-        effect.validate_chroma_key()?;
+        effect.validate_settings()?;
         if effect.enabled && effect.kind == crate::layer::EffectKind::Wgsl {
             crate::appearance::validate_shader(&effect.shader)?;
         }

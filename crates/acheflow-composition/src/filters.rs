@@ -1,7 +1,7 @@
 //! Bounded, reusable GPU passes. Input/output textures contain straight RGBA.
 use acheflow_media_api::{
     appearance::{shader_module, validate_shader},
-    layer::ChromaKey,
+    layer::{ChromaKey, ColorCorrection},
     workspace::{EffectKind, LayerEffect},
 };
 use wgpu::*;
@@ -22,11 +22,13 @@ pub struct Filters {
     crop: RenderPipeline,
     premultiply: RenderPipeline,
     chroma_key: Option<RenderPipeline>,
+    color_correction: Option<RenderPipeline>,
     passes: Vec<(LayerEffect, RenderPipeline)>,
 }
 struct EffectUniforms {
     frame: [f32; 6],
     chroma: Option<ChromaKey>,
+    correction: Option<ColorCorrection>,
 }
 
 impl From<[f32; 6]> for EffectUniforms {
@@ -34,6 +36,7 @@ impl From<[f32; 6]> for EffectUniforms {
         Self {
             frame,
             chroma: None,
+            correction: None,
         }
     }
 }
@@ -119,6 +122,7 @@ impl Filters {
             crop,
             premultiply,
             chroma_key: None,
+            color_correction: None,
             passes: vec![],
         }
     }
@@ -145,6 +149,16 @@ impl Filters {
                             device,
                             &self.layout,
                             &shader_module(include_str!("chroma_key.wgsl")),
+                        )
+                    })
+                    .clone(),
+                EffectKind::ColorCorrection => self
+                    .color_correction
+                    .get_or_insert_with(|| {
+                        pipeline(
+                            device,
+                            &self.layout,
+                            &shader_module(include_str!("color_correction.wgsl")),
                         )
                     })
                     .clone(),
@@ -215,6 +229,8 @@ impl Filters {
                     ],
                     chroma: (effect.kind == EffectKind::ChromaKey)
                         .then(|| effect.chroma_key.unwrap_or_default()),
+                    correction: (effect.kind == EffectKind::ColorCorrection)
+                        .then(|| effect.color_correction.unwrap_or_default()),
                 },
             );
             current = next;
@@ -239,7 +255,7 @@ impl Filters {
         params: EffectUniforms,
         timestamp_writes: Option<RenderPassTimestampWrites<'_>>,
     ) {
-        let mut floats = [0.; 16];
+        let mut floats = [0.; 24];
         floats[..2].copy_from_slice(&[target.width() as f32, target.height() as f32]);
         floats[2..8].copy_from_slice(&params.frame);
         if let Some(key) = params.chroma {
@@ -249,6 +265,21 @@ impl Filters {
                 f32::from(key.softness.max(1)) / 100.,
                 f32::from(key.edge),
                 f32::from(key.despill) / 100.,
+            ]);
+        }
+        if let Some(correction) = params.correction {
+            floats[16..20].copy_from_slice(
+                &[
+                    correction.brightness,
+                    correction.contrast,
+                    correction.saturation,
+                    correction.grayscale,
+                ]
+                .map(|percent| percent as f32 / 100.),
+            );
+            floats[20..22].copy_from_slice(&[
+                100. / correction.gamma.max(ColorCorrection::MIN_GAMMA) as f32,
+                correction.opacity as f32 / 100.,
             ]);
         }
         let bytes: Vec<u8> = floats.into_iter().flat_map(f32::to_le_bytes).collect();
@@ -349,7 +380,7 @@ fn builtin(kind: EffectKind) -> String {
         }
         EffectKind::Opacity => "vec4f(color.rgb,color.a * params.strength)",
         EffectKind::Blur => return BLUR.into(),
-        EffectKind::Wgsl | EffectKind::ChromaKey => unreachable!(),
+        EffectKind::Wgsl | EffectKind::ChromaKey | EffectKind::ColorCorrection => unreachable!(),
     };
     format!(
         "fn effect(uv:vec2f,color:vec4f)->vec4f {{return clamp({expression},vec4f(0.),vec4f(1.));}}"

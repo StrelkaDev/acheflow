@@ -829,12 +829,8 @@ mod tests {
             [0, 0, 255]
         );
         w.scenes[0].layers[1].effects.push(LayerEffect {
-            chroma_key: None,
-            id: acheflow_media_api::workspace::new_entity_id(),
-            shader: String::new(),
-            kind: EffectKind::Opacity,
             amount: 50,
-            enabled: true,
+            ..LayerEffect::new(EffectKind::Opacity)
         });
         let blended = renderer.render(16, 16, Some(&w.scenes[0]), &inputs);
         assert_eq!(blended.get_pixel(0, 0).0, [127, 0, 128]);

@@ -6,6 +6,7 @@ pub mod headless;
 pub mod spatial;
 mod visual;
 // Reference CPU processing for fixed-effect regression tests.
+use acheflow_media_api::layer::ColorCorrection;
 use acheflow_media_api::workspace::{EffectKind, LayerEffect, Resolution, SourceCrop};
 use image::{GenericImageView, RgbImage, Rgba, RgbaImage, imageops};
 
@@ -37,6 +38,10 @@ pub fn prepare_source(
         Rgba([r, g, b, 255])
     });
     for effect in effects.iter().filter(|e| e.enabled) {
+        if effect.kind == EffectKind::ColorCorrection {
+            correct_colors(&mut image, effect.color_correction.unwrap_or_default());
+            continue;
+        }
         if effect.kind == EffectKind::Blur {
             let radius = effect.amount as f32 * w as f32 / size.width.max(1) as f32;
             if radius > 0. {
@@ -64,6 +69,34 @@ pub fn prepare_source(
         }
     }
     image
+}
+
+fn correct_colors(image: &mut RgbaImage, correction: ColorCorrection) {
+    let gamma = 100. / correction.gamma.max(ColorCorrection::MIN_GAMMA) as f32;
+    let [brightness, contrast, saturation, grayscale, opacity] = [
+        correction.brightness,
+        correction.contrast,
+        correction.saturation,
+        correction.grayscale,
+        correction.opacity,
+    ]
+    .map(|value| value as f32 / 100.);
+    let luma = |[r, g, b]: [f32; 3]| 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    for pixel in image.pixels_mut() {
+        let [r, g, b, alpha] = pixel.0;
+        let contrasted = [r, g, b].map(|channel| {
+            let bright = (f32::from(channel) / 255. * brightness).clamp(0., 1.);
+            ((bright - 0.5) * contrast + 0.5).clamp(0., 1.)
+        });
+        let gray = luma(contrasted);
+        let saturated = contrasted.map(|c| (gray + (c - gray) * saturation).clamp(0., 1.));
+        let gray = luma(saturated);
+        let [r, g, b] = saturated.map(|c| {
+            let value = c + (gray - c) * grayscale;
+            (value.powf(gamma) * 255.).round() as u8
+        });
+        pixel.0 = [r, g, b, (f32::from(alpha) * opacity).round() as u8];
+    }
 }
 
 /// Source-over onto the opaque output canvas, preserving lower layers.
@@ -127,12 +160,8 @@ mod tests {
             height: 4,
         };
         let effect = |kind, amount| LayerEffect {
-            chroma_key: None,
-            id: acheflow_media_api::workspace::new_entity_id(),
-            shader: String::new(),
-            kind,
             amount,
-            enabled: true,
+            ..LayerEffect::new(kind)
         };
         let effects = [
             effect(EffectKind::Brightness, 200),
@@ -176,12 +205,8 @@ mod tests {
             &size,
             SourceCrop::default(),
             &[LayerEffect {
-                chroma_key: None,
-                id: acheflow_media_api::workspace::new_entity_id(),
-                shader: String::new(),
-                kind: EffectKind::Blur,
                 amount: 2,
-                enabled: true,
+                ..LayerEffect::new(EffectKind::Blur)
             }],
         );
         assert!(layer.get_pixel(4, 4)[0] < 255);
