@@ -1,5 +1,5 @@
 //! One layer renderer for native/WASM editing and headless server composition.
-use crate::filters::{Filters, texture};
+use crate::filters::{Filters, texture, validate_texture_size};
 use acheflow_media_api::{
     appearance::{default_layer_css, layer_stylesheet, validate_css},
     workspace::{Layer, Resolution, Scene as MediaScene},
@@ -292,6 +292,7 @@ impl LayerGpu {
         self.targets = None;
         self.input = None;
         self.source = None;
+        *self.slot.lock().unwrap() = None;
     }
 }
 
@@ -329,6 +330,7 @@ impl GpuScene {
         while self.layers.len() < frame.scene.layers.len() {
             self.layers.push(LayerGpu::new(&self.device));
         }
+        let texture_limit = self.device.limits().max_texture_dimension_2d;
         let mut boxes = Vec::with_capacity(self.layers.len());
         for (index, (gpu, layer)) in self.layers.iter_mut().zip(&frame.scene.layers).enumerate() {
             gpu.document(
@@ -383,6 +385,8 @@ impl GpuScene {
             }
             let crop = [left, top, 1. - right, 1. - bottom];
             let (w, h) = (source.image.width(), source.image.height());
+            validate_texture_size(w, h, texture_limit)
+                .map_err(|error| format!("Layer {}: {error}", index + 1))?;
             let (cw, ch) = (
                 ((1. - left - right) * w as f32).round().max(1.) as u32,
                 ((1. - top - bottom) * h as f32).round().max(1.) as u32,
@@ -397,14 +401,18 @@ impl GpuScene {
                     .is_none_or(|t| t[0].width() != cw || t[0].height() != ch);
             if replace {
                 gpu.release(ctx);
-                gpu.input = Some(texture(&self.device, w, h));
-                gpu.targets = Some([texture(&self.device, cw, ch), texture(&self.device, cw, ch)]);
-                for target in gpu.targets.as_ref().unwrap() {
-                    gpu.ids.push(
-                        ctx.try_register_custom_resource(Box::new(target.clone()))
-                            .map_err(|e| format!("GPU texture: {e:?}"))?,
-                    );
+                let targets = [texture(&self.device, cw, ch), texture(&self.device, cw, ch)];
+                for target in &targets {
+                    match ctx.try_register_custom_resource(Box::new(target.clone())) {
+                        Ok(id) => gpu.ids.push(id),
+                        Err(error) => {
+                            gpu.release(ctx);
+                            return Err(format!("Layer {} GPU texture: {error:?}", index + 1));
+                        }
+                    }
                 }
+                gpu.input = Some(texture(&self.device, w, h));
+                gpu.targets = Some(targets);
             }
             let changed = gpu
                 .source

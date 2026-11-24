@@ -8,11 +8,11 @@ use std::{
 
 const VIDEO_HISTORY_BYTES: usize = 128 * 1024 * 1024;
 const MAX_VIDEO_FRAMES_PER_SOURCE: usize = 32;
-const DISCONTINUITY: i64 = AUDIO_RATE as i64 / 2;
+const DISCONTINUITY: u128 = AUDIO_RATE as u128 / 2;
 const SAMPLES_PER_MS: i64 = AUDIO_RATE as i64 / 1000;
 const CLOCK_WINDOW: usize = 7;
 const CLOCK_WARMUP: usize = 12;
-const MAX_NORMAL_SLEW: i64 = SAMPLES_PER_MS;
+const MAX_NORMAL_SLEW: i128 = SAMPLES_PER_MS as i128;
 
 pub fn audio_target(
     mode: SyncMode,
@@ -21,17 +21,18 @@ pub fn audio_target(
     legacy_pts: i64,
     video_pts: Option<i64>,
 ) -> (i64, u32, bool) {
-    let audio_delay = (video_delay_ms as i32 + offset_ms).max(0);
+    let video_delay = i64::from(video_delay_ms);
+    let audio_delay = (video_delay + i64::from(offset_ms)).clamp(0, u32::MAX.into());
     if let Some(pts) = video_pts.filter(|_| mode != SyncMode::Manual) {
         // The presented video PTS already includes its own delay.
         (
-            pts - i64::from(audio_delay - video_delay_ms as i32) * SAMPLES_PER_MS,
+            pts.saturating_sub((audio_delay - video_delay) * SAMPLES_PER_MS),
             audio_delay as u32,
             true,
         )
     } else {
         (
-            legacy_pts - i64::from(audio_delay) * SAMPLES_PER_MS,
+            legacy_pts.saturating_sub(audio_delay * SAMPLES_PER_MS),
             audio_delay as u32,
             false,
         )
@@ -148,9 +149,9 @@ impl VideoHistory {
 
 #[derive(Default)]
 pub struct PresentationClock {
-    offset: Option<i64>,
+    offset: Option<i128>,
     last: Option<Presentation>,
-    observations: VecDeque<i64>,
+    observations: VecDeque<i128>,
     acquired: usize,
 }
 
@@ -166,12 +167,12 @@ impl PresentationClock {
         });
         if !same_policy || self.last.is_none_or(|last| last.received != video.received) {
             let elapsed = video.shown.saturating_duration_since(started);
-            let observed =
-                pts - (elapsed.as_nanos() * u128::from(AUDIO_RATE) / 1_000_000_000) as i64;
+            let elapsed_samples = elapsed.as_nanos() * u128::from(AUDIO_RATE) / 1_000_000_000;
+            let observed = i128::from(pts) - elapsed_samples as i128;
             let discontinuity = self
                 .observations
                 .back()
-                .is_some_and(|previous| (observed - previous).abs() > DISCONTINUITY);
+                .is_some_and(|previous| observed.abs_diff(*previous) > DISCONTINUITY);
             if !same_policy || discontinuity {
                 self.observations.clear();
                 self.offset = None;
@@ -199,7 +200,8 @@ impl PresentationClock {
             }
             self.last = Some(video);
         }
-        self.offset.map(|offset| now + offset)
+        self.offset
+            .and_then(|offset| i64::try_from(i128::from(now) + offset).ok())
     }
 }
 
@@ -207,6 +209,29 @@ impl PresentationClock {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn extreme_presentation_timestamps_reacquire_the_clock() {
+        let mut clock = PresentationClock::default();
+        let start = Instant::now();
+        let presentation = |pts, ms| Presentation {
+            pts: Some(pts),
+            generation: 1,
+            received: start + Duration::from_millis(ms),
+            shown: start + Duration::from_millis(ms),
+            video_delay_ms: 0,
+            requested_delay_ms: 0,
+            limited: false,
+        };
+        assert_eq!(clock.source_pts(presentation(i64::MAX, 0), start, 0), None);
+        assert_eq!(clock.source_pts(presentation(i64::MIN, 1), start, 48), None);
+        assert_eq!(clock.source_pts(presentation(96, 2), start, 96), None);
+        assert_eq!(clock.source_pts(presentation(144, 3), start, 144), None);
+        assert_eq!(
+            clock.source_pts(presentation(192, 4), start, 192),
+            Some(192)
+        );
+    }
 
     #[test]
     fn signed_trim_preserves_a_common_video_delay_across_tracks() {

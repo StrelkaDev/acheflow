@@ -37,6 +37,16 @@ impl From<[f32; 6]> for EffectUniforms {
         }
     }
 }
+
+pub(crate) fn validate_texture_size(width: u32, height: u32, limit: u32) -> Result<(), String> {
+    if width == 0 || height == 0 || width > limit || height > limit {
+        return Err(format!(
+            "Unsupported GPU texture size {width}×{height}; each dimension must be 1–{limit}"
+        ));
+    }
+    Ok(())
+}
+
 pub fn texture(device: &Device, width: u32, height: u32) -> Texture {
     device.create_texture(&TextureDescriptor {
         label: Some("Acheflow layer texture"),

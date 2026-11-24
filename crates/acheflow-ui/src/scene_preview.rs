@@ -449,13 +449,14 @@ impl Widget for SceneWidget {
                     .as_ref()
                     .is_none_or(|s| s.size() != &frame.size)
                 {
+                    let renderer = acheflow_composition::spatial::SpatialRenderer::new(
+                        self.handle.as_ref().ok_or("GPU device is missing")?.clone(),
+                        frame.size.clone(),
+                    )?;
                     if let Some((_, id)) = self.spatial_resource.take() {
                         ctx.unregister_resource(id);
                     }
-                    self.spatial = Some(acheflow_composition::spatial::SpatialRenderer::new(
-                        self.handle.as_ref().ok_or("GPU device is missing")?.clone(),
-                        frame.size.clone(),
-                    ));
+                    self.spatial = Some(renderer);
                 }
                 let renderer = self.spatial.as_mut().unwrap();
                 let texture = if editor.is_some() {

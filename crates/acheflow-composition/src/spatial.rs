@@ -1,4 +1,5 @@
 //! Shared native/web/headless 3D pass over GPU-rendered 2D viewport textures.
+use crate::filters::{texture, validate_texture_size};
 use crate::gpu::{GpuScene, SceneFrame};
 use crate::gpu_profile::GpuProfile;
 use acheflow_media_api::{
@@ -16,6 +17,14 @@ use vello_gpu::{
 use wgpu::util::DeviceExt;
 use wgpu_context::DeviceHandle;
 
+fn validate_canvas_size(device: &wgpu::Device, size: &Resolution) -> Result<(), String> {
+    let limit = device
+        .limits()
+        .max_texture_dimension_2d
+        .min(u16::MAX.into());
+    validate_texture_size(size.width, size.height, limit)
+}
+
 struct Viewport {
     core: GpuScene,
     renderer: Renderer,
@@ -27,7 +36,8 @@ struct Viewport {
     size: Resolution,
 }
 impl Viewport {
-    fn new(handle: &DeviceHandle, size: Resolution) -> Self {
+    fn new(handle: &DeviceHandle, size: Resolution) -> Result<Self, String> {
+        validate_canvas_size(&handle.device, &size)?;
         let (renderer, resources) = Renderer::new(
             &handle.device,
             &RenderTargetConfig {
@@ -36,16 +46,16 @@ impl Viewport {
                 height: size.height as u16,
             },
         );
-        Self {
+        Ok(Self {
             core: GpuScene::new(handle.device.clone(), handle.queue.clone()),
             renderer,
             resources,
             scene: vello_gpu::Scene::new(size.width as u16, size.height as u16),
-            texture: crate::filters::texture(&handle.device, size.width, size.height),
+            texture: texture(&handle.device, size.width, size.height),
             bindings: FxHashMap::default(),
             images: FxHashMap::default(),
             size,
-        }
+        })
     }
     fn render(
         &mut self,
@@ -129,9 +139,10 @@ pub struct SpatialRenderer {
     uniforms: HashMap<u64, wgpu::Buffer>,
 }
 impl SpatialRenderer {
-    pub fn new(handle: DeviceHandle, size: Resolution) -> Self {
+    pub fn new(handle: DeviceHandle, size: Resolution) -> Result<Self, String> {
         use wgpu::*;
         let device = &handle.device;
+        validate_canvas_size(device, &size)?;
         let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("3D scene objects"),
             entries: &[
@@ -203,7 +214,7 @@ impl SpatialRenderer {
             multiview_mask: None,
             cache: None,
         });
-        let output = crate::filters::texture(device, size.width, size.height);
+        let output = texture(device, size.width, size.height);
         let depth = device.create_texture(&TextureDescriptor {
             label: Some("3D scene depth"),
             size: Extent3d {
@@ -218,7 +229,7 @@ impl SpatialRenderer {
             usage: TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
-        let white = crate::filters::texture(device, 1, 1);
+        let white = texture(device, 1, 1);
         handle.queue.write_texture(
             white.as_image_copy(),
             &[255, 255, 255, 255],
@@ -239,7 +250,7 @@ impl SpatialRenderer {
             min_filter: FilterMode::Linear,
             ..Default::default()
         });
-        Self {
+        Ok(Self {
             handle,
             size,
             output,
@@ -250,7 +261,7 @@ impl SpatialRenderer {
             sampler,
             viewports: HashMap::new(),
             uniforms: HashMap::new(),
-        }
+        })
     }
     pub fn size(&self) -> &Resolution {
         &self.size
@@ -319,7 +330,7 @@ impl SpatialRenderer {
                         .is_none_or(|v| v.size != *canvas)
                     {
                         self.viewports
-                            .insert(object.id, Viewport::new(&self.handle, canvas.clone()));
+                            .insert(object.id, Viewport::new(&self.handle, canvas.clone())?);
                     }
                     let viewport = self.viewports.get_mut(&object.id).unwrap();
                     let mut contents = frame.clone();

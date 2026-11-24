@@ -119,6 +119,20 @@ mod tests {
     }
 
     #[test]
+    fn playout_accepts_frames_at_the_limits_of_the_pcm_clock() {
+        for pts in [i64::MIN, i64::MAX] {
+            let mut queue = Playout::default();
+            let samples = Arc::new(constant(1000, -1000));
+            queue.push(Arc::new(crate::audio_input::AudioFrame {
+                pts,
+                samples: samples.clone(),
+            }));
+            assert!(queue.has_samples_at(pts));
+            assert_eq!(&queue.render(pts), samples.as_ref());
+        }
+    }
+
+    #[test]
     fn playout_preserves_timestamps_gaps_and_bounds_latency() {
         let mut queue = Playout::default();
         let frame = |pts, value| {
@@ -249,7 +263,7 @@ mod tests {
 
 /// Bounded PCM timeline. Missing samples become silence; old data never adds latency.
 const MIX_HISTORY_BLOCKS: usize = 48;
-const USED_PCM_HISTORY_SAMPLES: i64 = 28_800;
+const USED_PCM_HISTORY_SAMPLES: i128 = 28_800;
 #[derive(Default)]
 struct Playout {
     frames: std::collections::VecDeque<std::sync::Arc<crate::audio_input::AudioFrame>>,
@@ -265,27 +279,29 @@ impl Playout {
         }
     }
     fn has_samples_at(&self, pts: i64) -> bool {
-        self.frames
-            .iter()
-            .any(|frame| frame.pts <= pts && pts < frame.pts + (frame.samples.len() / 2) as i64)
+        let pts = i128::from(pts);
+        self.frames.iter().any(|frame| {
+            let start = i128::from(frame.pts);
+            (start..start + (frame.samples.len() / 2) as i128).contains(&pts)
+        })
     }
     fn render(&mut self, pts: i64) -> Vec<i16> {
         use acheflow_media_api::audio::AUDIO_FRAMES;
-        let end = pts + AUDIO_FRAMES as i64;
-        while self
-            .frames
-            .front()
-            .is_some_and(|f| f.pts + (f.samples.len() / 2) as i64 <= pts - USED_PCM_HISTORY_SAMPLES)
-        {
+        let pts = i128::from(pts);
+        let end = pts + AUDIO_FRAMES as i128;
+        while self.frames.front().is_some_and(|f| {
+            i128::from(f.pts) + (f.samples.len() / 2) as i128 <= pts - USED_PCM_HISTORY_SAMPLES
+        }) {
             self.frames.pop_front();
         }
         let mut out = vec![0; AUDIO_SAMPLES];
         for frame in &self.frames {
-            let start = pts.max(frame.pts);
-            let stop = end.min(frame.pts + (frame.samples.len() / 2) as i64);
+            let frame_start = i128::from(frame.pts);
+            let start = pts.max(frame_start);
+            let stop = end.min(frame_start + (frame.samples.len() / 2) as i128);
             if start < stop {
                 let dst = (start - pts) as usize * 2;
-                let src = (start - frame.pts) as usize * 2;
+                let src = (start - frame_start) as usize * 2;
                 let len = (stop - start) as usize * 2;
                 out[dst..dst + len].copy_from_slice(&frame.samples[src..src + len]);
             }
@@ -331,7 +347,7 @@ pub async fn run(
     let mut ticker = tokio::time::interval_at(started, Duration::from_millis(20));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sources = BTreeMap::<u32, Arc<crate::ingest::Input>>::new();
-    let mut clocks = BTreeMap::<u32, i64>::new();
+    let mut clocks = BTreeMap::<u32, i128>::new();
     let mut video_clocks = BTreeMap::<u32, PresentationClock>::new();
     let mut generations = BTreeMap::new();
     let mut subscriptions = BTreeMap::<TrackKey, Subscription>::new();
@@ -397,11 +413,10 @@ pub async fn run(
                     Ok(frame) => {
                         // Share a source clock across tracks, preserving their relative PTS.
                         // Rebase after a large discontinuity rather than accumulating delay.
-                        let offset = clocks
-                            .entry(key.source_id)
-                            .or_insert(now + 2880 - frame.pts);
-                        if (frame.pts + *offset - now).abs() > AUDIO_RATE as i64 / 2 {
-                            *offset = now + 2880 - frame.pts;
+                        let delta = i128::from(now) - i128::from(frame.pts);
+                        let offset = clocks.entry(key.source_id).or_insert(delta + 2880);
+                        if offset.abs_diff(delta) > u128::from(AUDIO_RATE / 2) {
+                            *offset = delta + 2880;
                             sub.playout.frames.clear();
                         }
                         sub.playout.push(frame);
@@ -439,7 +454,9 @@ pub async fn run(
                     && video.received.elapsed() < Duration::from_secs(2)
             });
             let video_delay_ms = video.map(|video| video.video_delay_ms).unwrap_or(0);
-            let legacy_pts = now - fallback;
+            let legacy_pts = (i128::from(now) - fallback)
+                .clamp(i128::from(i64::MIN), i128::from(i64::MAX))
+                as i64;
             let video_pts = video.and_then(|video| {
                 video_clocks.entry(key.source_id).or_default().source_pts(
                     video,
@@ -474,7 +491,8 @@ pub async fn run(
                 video_delay_ms,
                 audio_delay_ms,
                 video_delay_limited: video.is_some_and(|video| video.limited),
-                estimated_clock_offset_ms: video_pts.map(|pts| (pts - legacy_pts) as f64 / 48.),
+                estimated_clock_offset_ms: video_pts
+                    .map(|pts| (i128::from(pts) - i128::from(legacy_pts)) as f64 / 48.),
             });
         }
         *sync.audio.lock().unwrap() = readouts;

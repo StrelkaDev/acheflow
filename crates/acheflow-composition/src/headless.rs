@@ -1,4 +1,5 @@
 //! Windowless native GPU rendering and bounded readback for FFmpeg's RGB pipe.
+use crate::filters::validate_texture_size;
 use crate::gpu::{GpuScene, SceneFrame};
 use crate::gpu_profile::GpuProfile;
 use acheflow_media_api::live::GpuFrameProfile;
@@ -28,6 +29,7 @@ pub struct Headless {
 }
 impl Headless {
     pub fn new(size: Resolution) -> Result<Self, String> {
+        validate_texture_size(size.width, size.height, u16::MAX.into())?;
         let handle = pollster::block_on(DeviceHandle::new_from_compatible_surface(
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle()),
             None,
@@ -35,6 +37,16 @@ impl Headless {
             None,
         ))
         .map_err(|e| format!("GPU compositor initialization: {e}"))?;
+        let limits = handle.device.limits();
+        validate_texture_size(size.width, size.height, limits.max_texture_dimension_2d)?;
+        let readback_bytes =
+            u64::from((size.width * 4).next_multiple_of(256)) * u64::from(size.height);
+        if readback_bytes > limits.max_buffer_size {
+            return Err(format!(
+                "GPU canvas {}×{} exceeds the device's readback buffer limit",
+                size.width, size.height
+            ));
+        }
         let (renderer, resources) = Renderer::new(
             &handle.device,
             &RenderTargetConfig {
@@ -60,7 +72,7 @@ impl Headless {
         });
         let buffer = handle.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("FFmpeg frame readback"),
-            size: u64::from((size.width * 4).next_multiple_of(256)) * u64::from(size.height),
+            size: readback_bytes,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -104,7 +116,7 @@ impl Headless {
                 self.spatial = Some(crate::spatial::SpatialRenderer::new(
                     self.handle.clone(),
                     self.size.clone(),
-                ));
+                )?);
             }
             self.spatial
                 .as_mut()
@@ -260,6 +272,15 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     #[test]
+    fn headless_rejects_an_empty_canvas() {
+        let result = Headless::new(Resolution {
+            width: 0,
+            height: 32,
+        });
+        assert!(result.err().is_some_and(|error| error.contains("0×32")));
+    }
+
+    #[test]
     fn readback_preserves_rgb_order_and_discards_alpha_and_row_padding() {
         let first = [1, 2, 3, 111, 4, 5, 6, 112, 200, 201, 202, 203];
         let second = [7, 8, 9, 113, 10, 11, 12, 114, 204, 205, 206, 207];
@@ -267,6 +288,65 @@ mod tests {
         let image = rgb_from_readback(&raw, 2, 2, 12);
         assert_eq!(image.dimensions(), (2, 2));
         assert_eq!(image.into_raw(), (1..=12).collect::<Vec<u8>>());
+    }
+
+    #[test]
+    #[ignore = "requires an actual GPU adapter"]
+    fn layer_can_retry_after_partial_texture_registration() {
+        use anyrender::{RegisterResourceError, RegisterResourceErrorKind, RenderContext};
+
+        #[derive(Default)]
+        struct Context {
+            registered: Vec<ResourceId>,
+            fail_second: bool,
+        }
+
+        impl RenderContext for Context {
+            fn try_register_custom_resource(
+                &mut self,
+                _: Box<dyn std::any::Any>,
+            ) -> Result<ResourceId, RegisterResourceError> {
+                if self.fail_second && self.registered.len() == 1 {
+                    return Err(RegisterResourceErrorKind::Other.into());
+                }
+                let id = ResourceId::new();
+                self.registered.push(id);
+                Ok(id)
+            }
+
+            fn unregister_resource(&mut self, id: ResourceId) {
+                self.registered.retain(|&registered| registered != id);
+            }
+        }
+
+        let size = Resolution {
+            width: 64,
+            height: 32,
+        };
+        let mut workspace = Workspace::default();
+        workspace.horizontal.base = size.clone();
+        workspace.add_source();
+        let scene = workspace.add_scene(Orientation::Horizontal);
+        workspace.add_layer(scene, 1);
+        let frame = SceneFrame {
+            size: size.clone(),
+            scene: workspace.scenes.remove(0),
+            inputs: HashMap::from([(1, SourceFrame::test_pattern(&size))]),
+            source_documents: HashMap::new(),
+            epoch_ms: 0,
+            time: 0.,
+        };
+
+        let mut gpu = Headless::new(size).unwrap();
+        let mut ctx = Context {
+            fail_second: true,
+            ..Default::default()
+        };
+        assert!(gpu.core.prepare(&mut ctx, &frame).is_err());
+        assert!(ctx.registered.is_empty());
+        ctx.fail_second = false;
+        assert!(gpu.core.prepare(&mut ctx, &frame).is_ok());
+        assert_eq!(ctx.registered.len(), 2);
     }
 
     #[test]

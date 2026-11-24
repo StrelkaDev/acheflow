@@ -288,6 +288,11 @@ impl Widget for PreviewWidget {
         let Some(gpu) = self.gpu.as_mut() else {
             return scene;
         };
+        let limit = gpu.device.limits().max_texture_dimension_2d;
+        if !(1..=limit).contains(&frame.width) || !(1..=limit).contains(&frame.height) {
+            gpu.sequence = frame.sequence;
+            return scene;
+        }
         if gpu
             .targets
             .first()
@@ -317,6 +322,9 @@ impl Widget for PreviewWidget {
                     view_formats: &[],
                 });
                 let Ok(id) = ctx.try_register_custom_resource(Box::new(texture.clone())) else {
+                    for target in gpu.targets.drain(..) {
+                        ctx.unregister_resource(target.id);
+                    }
                     return scene;
                 };
                 gpu.targets.push(Target { texture, id });

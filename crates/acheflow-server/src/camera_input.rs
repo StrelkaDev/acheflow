@@ -117,7 +117,7 @@ mod macos {
                     "Allow Acheflow camera access in macOS System Settings"
                 }
                 Err(OpenError::Unavailable) => {
-                    "Cannot open the camera. Check whether another app is using it."
+                    "Cannot open the camera. Check whether another source or app is using it."
                 }
                 Err(OpenError::UnsupportedMode) => {
                     "Camera cannot apply this capture mode. Select another mode or Auto."

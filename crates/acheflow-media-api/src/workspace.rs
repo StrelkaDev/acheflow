@@ -560,19 +560,20 @@ impl Workspace {
         true
     }
     pub fn resize_base(&mut self, o: Orientation, size: Resolution) {
+        fn scale(value: u32, old: u32, new: u32) -> u32 {
+            // An unfinished local draft can have a zero-sized canvas axis.
+            (u64::from(value) * u64::from(new))
+                .checked_div(u64::from(old))
+                .map_or(value, |scaled| u32::try_from(scaled).unwrap_or(u32::MAX))
+        }
+
         let old = self.stream(o).base.clone();
         for scene in self.scenes.iter_mut().filter(|s| s.orientation == o) {
             for layer in &mut scene.layers {
-                layer.x =
-                    (u64::from(layer.x) * u64::from(size.width) / u64::from(old.width)) as u32;
-                layer.y =
-                    (u64::from(layer.y) * u64::from(size.height) / u64::from(old.height)) as u32;
-                layer.width = ((u64::from(layer.width) * u64::from(size.width)
-                    / u64::from(old.width)) as u32)
-                    .max(1);
-                layer.height = ((u64::from(layer.height) * u64::from(size.height)
-                    / u64::from(old.height)) as u32)
-                    .max(1);
+                layer.x = scale(layer.x, old.width, size.width);
+                layer.y = scale(layer.y, old.height, size.height);
+                layer.width = scale(layer.width, old.width, size.width).max(1);
+                layer.height = scale(layer.height, old.height, size.height).max(1);
             }
         }
         self.stream_mut(o).base = size;
@@ -1230,6 +1231,26 @@ mod tests {
         assert!(p.scenes[0].layers.is_empty());
         assert!(p.validate().is_ok());
     }
+    #[test]
+    fn resize_recovers_a_draft_with_an_empty_canvas_axis() {
+        let mut workspace = Workspace::default();
+        workspace.add_source();
+        let scene_id = workspace.add_scene(Orientation::Horizontal);
+        workspace.add_layer(scene_id, 1);
+        workspace.horizontal.base.width = 0;
+        workspace.scenes[0].layers[0].x = 20;
+
+        let size = Resolution {
+            width: 2000,
+            height: 720,
+        };
+        workspace.resize_base(Orientation::Horizontal, size.clone());
+        let layer = &workspace.scenes[0].layers[0];
+        assert_eq!((layer.x, layer.width, layer.height), (20, 1920, 720));
+        assert_eq!(workspace.horizontal.base, size);
+        assert!(workspace.validate().is_ok());
+    }
+
     #[test]
     fn rejects_broken_references_and_versions() {
         let mut p = Workspace {

@@ -52,6 +52,24 @@ static NSArray<AVCaptureDevice *> *cameras(void) {
     return connected.allValues;
 }
 
+// Keep discovery, device configuration and teardown on one AVFoundation queue.
+// Sample delivery has its own queues and may access the inventory.
+static dispatch_queue_t cameraLifecycleQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create("com.acheflow.camera.lifecycle", DISPATCH_QUEUE_SERIAL);
+    });
+    return queue;
+}
+
+// Accessed only on the lifecycle queue. A session owns its device until teardown.
+static NSMutableSet<NSString *> *openCameraIDs(void) {
+    static NSMutableSet<NSString *> *ids;
+    if (!ids) ids = [[NSMutableSet alloc] init];
+    return ids;
+}
+
 static BOOL containsDuration(AVFrameRateRange *range, CMTime duration) {
     return CMTimeCompare(duration, range.minFrameDuration) >= 0
         && CMTimeCompare(duration, range.maxFrameDuration) <= 0;
@@ -66,7 +84,7 @@ static void publishMode(void *context, ModeCallback callback, CMVideoDimensions 
     }
 }
 
-void acheflow_cameras(void *context, DeviceCallback deviceCallback, ModeCallback modeCallback) {
+static void enumerateCameras(void *context, DeviceCallback deviceCallback, ModeCallback modeCallback) {
     @autoreleasepool {
         for (AVCaptureDevice *device in cameras()) {
             const char *id = device.uniqueID.UTF8String;
@@ -92,6 +110,12 @@ void acheflow_cameras(void *context, DeviceCallback deviceCallback, ModeCallback
             }
         }
     }
+}
+
+void acheflow_cameras(void *context, DeviceCallback deviceCallback, ModeCallback modeCallback) {
+    dispatch_sync(cameraLifecycleQueue(), ^{
+        enumerateCameras(context, deviceCallback, modeCallback);
+    });
 }
 
 static BOOL configureMode(AVCaptureDevice *device, const CameraMode *mode) {
@@ -139,6 +163,7 @@ static BOOL modeIsActive(AVCaptureDevice *device, const CameraMode *mode) {
 @property(nonatomic, strong) AVCaptureSession *session;
 @property(nonatomic, strong) AVCaptureVideoDataOutput *output;
 @property(nonatomic, strong) AVCaptureDevice *lockedDevice;
+@property(nonatomic, copy) NSString *deviceID;
 @property(nonatomic, strong) dispatch_queue_t queue;
 @property void *context;
 @property VideoCallback callback;
@@ -167,10 +192,15 @@ static BOOL modeIsActive(AVCaptureDevice *device, const CameraMode *mode) {
 }
 @end
 
-void *acheflow_camera_open(const char *id, const CameraMode *mode, void *context, VideoCallback callback, int *status) {
+static void *openCamera(const char *id, const CameraMode *mode, void *context, VideoCallback callback, int *status) {
     @autoreleasepool {
         *status = 1;
         NSString *deviceID = [NSString stringWithUTF8String:id];
+        if (!deviceID) return NULL;
+        if ([openCameraIDs() containsObject:deviceID]) {
+            *status = 5;
+            return NULL;
+        }
         AVCaptureDevice *selected = nil;
         for (AVCaptureDevice *device in cameras()) {
             if ([device.uniqueID isEqualToString:deviceID]) {
@@ -202,6 +232,7 @@ void *acheflow_camera_open(const char *id, const CameraMode *mode, void *context
         AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:selected error:NULL];
         if (!input) return NULL;
         AcheflowCamera *capture = [[AcheflowCamera alloc] init];
+        capture.deviceID = deviceID;
         capture.session = [[AVCaptureSession alloc] init];
         capture.output = [[AVCaptureVideoDataOutput alloc] init];
         capture.queue = dispatch_queue_create("com.acheflow.camera.frames", DISPATCH_QUEUE_SERIAL);
@@ -232,17 +263,38 @@ void *acheflow_camera_open(const char *id, const CameraMode *mode, void *context
             *status = 6;
             return NULL;
         }
+        [openCameraIDs() addObject:deviceID];
         [capture.output setSampleBufferDelegate:capture queue:capture.queue];
         return (__bridge_retained void *)capture;
     }
 }
 
+void *acheflow_camera_open(const char *id, const CameraMode *mode, void *context, VideoCallback callback, int *status) {
+    __block void *handle = NULL;
+    dispatch_sync(cameraLifecycleQueue(), ^{
+        handle = openCamera(id, mode, context, callback, status);
+    });
+    return handle;
+}
+
 void acheflow_camera_close(void *handle) {
     @autoreleasepool {
         AcheflowCamera *capture = (__bridge_transfer AcheflowCamera *)handle;
-        [capture.session stopRunning];
-        [capture.output setSampleBufferDelegate:nil queue:NULL];
-        dispatch_sync(capture.queue, ^{});
+        @autoreleasepool {
+            [capture.output setSampleBufferDelegate:nil queue:NULL];
+            // A consumer can access the camera inventory from its frame callback.
+            dispatch_sync(capture.queue, ^{});
+        }
+        dispatch_sync(cameraLifecycleQueue(), ^{
+            @autoreleasepool {
+                [capture.session stopRunning];
+                [capture.lockedDevice unlockForConfiguration];
+                capture.lockedDevice = nil;
+                capture.output = nil;
+                capture.session = nil;
+            }
+            [openCameraIDs() removeObject:capture.deviceID];
+        });
     }
 }
 

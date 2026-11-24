@@ -719,14 +719,18 @@ pub async fn save_source(
     Json(request): Json<SourceSettingsRequest>,
 ) -> Result<Json<SourceSettingsAck>, (StatusCode, Json<ApiError>)> {
     let _guard = runtime.control.lock().await;
+    let mut changed = false;
     let revision = runtime
         .update_workspace_checked(
             &request.workspace_id,
             Some(request.expected_revision),
-            |workspace| request.edit.apply(workspace, request.source_id).map(|_| ()),
+            |workspace| {
+                changed = request.edit.apply(workspace, request.source_id)?;
+                Ok(())
+            },
         )
         .map_err(invalid)?;
-    if request.edit.renews_capture() {
+    if changed && request.edit.renews_capture() {
         runtime.refresh_source_capture(request.source_id).await;
     }
     Ok(Json(SourceSettingsAck { revision }))
@@ -1916,6 +1920,40 @@ mod tests {
         workspace.edit_revision = runtime.saved_state().0;
         runtime.apply(workspace).await.unwrap();
         assert!(Arc::ptr_eq(&input, &runtime.inputs.lock().unwrap()[&1]));
+    }
+    #[tokio::test]
+    async fn unchanged_capture_settings_keep_the_source_preview_connected() {
+        use acheflow_media_api::live::SourceEdit;
+        let runtime = Runtime::new(Default::default(), "127.0.0.1:0".into());
+        let mut workspace = Workspace::default();
+        workspace.add_source();
+        runtime.install(workspace.clone(), false).await.unwrap();
+        runtime
+            .renew_source_preview(SourcePreviewRequest {
+                workspace_id: workspace.id.clone(),
+                source_id: 1,
+            })
+            .await
+            .unwrap();
+        let input = runtime.inputs.lock().unwrap()[&1].clone();
+        let connection = CancellationToken::new();
+        *input.cancel.lock().unwrap() = Some(connection.clone());
+
+        let Json(_) = save_source(
+            State(runtime.clone()),
+            Json(SourceSettingsRequest {
+                workspace_id: workspace.id,
+                expected_revision: runtime.saved_state().0,
+                source_id: 1,
+                edit: SourceEdit::Capture(SourceCapture::of(&workspace.sources[0])),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(!connection.is_cancelled());
+        assert!(Arc::ptr_eq(&input, &runtime.inputs.lock().unwrap()[&1]));
+        runtime.close().await;
     }
     #[tokio::test]
     async fn activating_sources_promotes_the_preview_input_without_disconnect() {
